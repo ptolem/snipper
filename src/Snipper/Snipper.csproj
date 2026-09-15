@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>preview</LangVersion>
+  </PropertyGroup>
+
+  <!-- .NET global tool packaging -->
+  <PropertyGroup>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>snipper</ToolCommandName>
+    <PackageId>Snipper</PackageId>
+    <Version>1.1.2</Version>
+    <Authors>Snipper Contributors</Authors>
+    <Description>Roslyn-based dead-code and unreferenced-dependency analyser for .NET solutions. Flags unused members, unreachable code, unreferenced packages/project references, and stale appsettings keys with certainty-tiered findings, JSON/SARIF reports, and CI baselines.</Description>
+    <PackageTags>roslyn;static-analysis;dead-code;cleanup;msbuild;monorepo</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Snipper.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Build.Locator" Version="1.7.8" />
+    <!-- Direct reference is load-bearing: it transitively supplies Microsoft.CodeAnalysis.CSharp
+         (syntax APIs used throughout Analysis/). Do not remove on SNP0003's earlier advice. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.9.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="5.9.0" />
+    <PackageReference Include="NuGet.ProjectModel" Version="7.9.0" />
+    <PackageReference Include="Spectre.Console" Version="0.49.1" />
+  </ItemGroup>
+</Project>

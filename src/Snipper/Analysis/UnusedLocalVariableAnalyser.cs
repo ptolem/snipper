@@ -1,0 +1,135 @@
+namespace Snipper.Analysis;
+
+using System.Collections.Immutable;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
+using Snipper.Models;
+
+/// <summary>
+/// SNP0009 — Flags local variables that are declared/assigned but never read:
+/// ordinary locals, out-var declarations, deconstruction elements, and pattern
+/// variables. A local cannot be referenced from outside its declaring method, by
+/// reflection, or from another file — zero references is a complete proof.
+/// Tier 1 (Guaranteed).
+/// </summary>
+public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+{
+    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
+
+    public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
+        Solution solution,
+        CancellationToken cancellationToken,
+        Action<string>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(solution);
+        var findings = new List<SnipperFinding>();
+        var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
+        var usageIndex = SolutionUsageIndex.Get(solution);
+
+        foreach (var project in solution.Projects)
+        {
+            if (!project.SupportsCompilation)
+            {
+                continue;
+            }
+
+            progress?.Invoke($"UnusedLocalVariableAnalyser: scanning {project.Name}");
+
+            foreach (var document in project.Documents)
+            {
+                if (!document.SupportsSyntaxTree)
+                {
+                    continue;
+                }
+
+                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                if (semanticModel is null || root is null || ExclusionEngine.ShouldSkipDocument(document.FilePath, root, analysisRoots))
+                {
+                    continue;
+                }
+
+                foreach (var node in root.DescendantNodes())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // Syntax gate: local declarations (excluding using-declarations and
+                    // ref locals, both of which carry side effects) plus single-variable
+                    // designations (out var, deconstruction elements, pattern variables).
+                    // Discard designations are a different node kind and never match.
+                    var (name, _) = node switch
+                    {
+                        VariableDeclaratorSyntax { Parent: VariableDeclarationSyntax { Parent: LocalDeclarationStatementSyntax localDeclaration } } declarator
+                            when !localDeclaration.UsingKeyword.IsKind(SyntaxKind.UsingKeyword)
+                                && localDeclaration.Declaration.Type is not RefTypeSyntax
+                            => (declarator.Identifier.Text, true),
+                        SingleVariableDesignationSyntax designation
+                            => (designation.Identifier.Text, true),
+                        _ => (null, false),
+                    };
+
+                    if (name is null or "_")
+                    {
+                        continue;
+                    }
+
+                    // A declaration in unreachable code belongs to SNP0002, which
+                    // reports the root cause — don't double-report the variable.
+                    var enclosingStatement = node.FirstAncestorOrSelf<StatementSyntax>();
+                    if (enclosingStatement is not null
+                        && semanticModel.AnalyzeControlFlow(enclosingStatement) is { StartPointIsReachable: false })
+                    {
+                        continue;
+                    }
+
+                    if (ExclusionEngine.IsNamespaceExcluded(node, semanticModel, _exclusions, cancellationToken))
+                    {
+                        continue;
+                    }
+
+                    // Fast path: the name never appears in a usage position anywhere
+                    // in the document — provably unread with no semantic search.
+                    if (!usageIndex.IsNameUsedInDocument(document, name))
+                    {
+                        findings.Add(CreateFinding(name, node.GetLocation().GetLineSpan()));
+                        continue;
+                    }
+
+                    // Slow path: the name appears in the document (possibly on another
+                    // symbol sharing it) — confirm semantically. A local's references
+                    // can only live in this document.
+                    var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+                    if (symbol is not ILocalSymbol local)
+                    {
+                        continue;
+                    }
+
+                    var referenced = await SymbolReferenceQuery.HasAnyReferenceAsync(
+                        local, solution, ImmutableHashSet.Create(document), cancellationToken).ConfigureAwait(false);
+                    if (!referenced)
+                    {
+                        findings.Add(CreateFinding(name, node.GetLocation().GetLineSpan()));
+                    }
+                }
+            }
+        }
+
+        return findings;
+    }
+
+    private static SnipperFinding CreateFinding(string name, FileLinePositionSpan lineSpan)
+    {
+        return new SnipperFinding(
+            RuleId: "SNP0009",
+            Title: "Unused Local Variable",
+            Message: $"Local variable '{name}' is declared but never read.",
+            Certainty: CertaintyTier.Guaranteed,
+            Category: FindingCategory.UnusedLocalVariable,
+            FilePath: lineSpan.Path ?? string.Empty,
+            LineNumber: lineSpan.StartLinePosition.Line + 1,
+            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
+            Symbol: null);
+    }
+}
