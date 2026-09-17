@@ -8,6 +8,8 @@ using Snipper.Models;
 
 public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0001"];
+
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(

@@ -12,6 +12,8 @@ using Snipper.Models;
 /// </summary>
 public sealed class UnreachableCodeAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0002"];
+
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(

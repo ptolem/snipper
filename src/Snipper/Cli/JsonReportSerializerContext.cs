@@ -8,4 +8,5 @@ using System.Text.Json.Serialization;
 [JsonSerializable(typeof(CliRunner.FindingReportEntry[]))]
 [JsonSerializable(typeof(SarifLog))]
 [JsonSerializable(typeof(BaselineFile))]
+[JsonSerializable(typeof(JsonConfigModel))]
 internal partial class JsonReportSerializerContext : JsonSerializerContext;

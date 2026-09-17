@@ -1,7 +1,6 @@
 namespace Snipper.Analysis;
 
 using Microsoft.CodeAnalysis;
-using NuGet.Versioning;
 using Snipper.Models;
 
 /// <summary>
@@ -16,6 +15,8 @@ using Snipper.Models;
 /// </summary>
 public sealed class FrameworkInboxPackageAnalyser : IWorkspaceAnalyser
 {
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0013"];
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -23,6 +24,7 @@ public sealed class FrameworkInboxPackageAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new List<SnipperFinding>();
+        var usageCache = ProjectPackageUsageCache.Get(solution);
 
         var packsDirectory = TargetingPackLocator.FindPacksDirectory();
         if (packsDirectory is null)
@@ -45,6 +47,8 @@ public sealed class FrameworkInboxPackageAnalyser : IWorkspaceAnalyser
             {
                 continue;
             }
+
+            var usage = await usageCache.GetAsync(project.FilePath, cancellationToken).ConfigureAwait(false);
 
             var includeAspNetCore = IsAspNetCoreProject(projectFile);
 
@@ -76,7 +80,6 @@ public sealed class FrameworkInboxPackageAnalyser : IWorkspaceAnalyser
 
             progress?.Invoke($"FrameworkInboxPackageAnalyser: scanning {project.Name}");
 
-            Compilation? compilation = null;
             foreach (var package in projectFile.PackageReferences)
             {
                 if (package.CompileAssetsExcluded || package.DeclaredMinVersion is null)
@@ -99,14 +102,8 @@ public sealed class FrameworkInboxPackageAnalyser : IWorkspaceAnalyser
                     continue;
                 }
 
-                compilation ??= await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
-                if (compilation is null)
-                {
-                    continue;
-                }
-
                 // Dedup: an unused package is SNP0003's finding, not ours.
-                if (await PackageAssemblyUsage.IsUnusedByProjectAsync(project, compilation, package.Id, cancellationToken).ConfigureAwait(false))
+                if (usage.IsUnusedPackage(package.Id))
                 {
                     continue;
                 }

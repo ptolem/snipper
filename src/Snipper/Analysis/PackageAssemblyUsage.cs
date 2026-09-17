@@ -4,10 +4,11 @@ using System.Collections.Frozen;
 using Microsoft.CodeAnalysis;
 
 /// <summary>
-/// Shared package-to-assembly mapping and usage probing. SNP0003's "contributes
-/// assemblies but none are used" verdict is reused by SNP0012/SNP0013 as a dedup
-/// suppressor: an unused package is reported by SNP0003 alone, never double-reported
-/// as redundant or framework-provided.
+/// Shared package-to-assembly mapping, derived from metadata reference paths under
+/// the NuGet "packages" folder. Consumed by <see cref="ProjectPackageUsageCache"/>,
+/// whose per-csproj memoization backs SNP0003's usage verdict and the SNP0012/SNP0013
+/// dedup suppressor: an unused package is reported by SNP0003 alone, never
+/// double-reported as redundant or framework-provided.
 /// </summary>
 internal static class PackageAssemblyUsage
 {
@@ -53,39 +54,6 @@ internal static class PackageAssemblyUsage
             static pair => pair.Key,
             static pair => pair.Value.ToArray(),
             StringComparer.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// True when the package contributes compile-time assemblies but the project uses
-    /// none of them — SNP0003 territory. False when the package is build-only/analyser
-    /// (no compile assets) or any contributed assembly is used.
-    /// </summary>
-    public static async Task<bool> IsUnusedByProjectAsync(
-        Project project,
-        Compilation compilation,
-        string packageId,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(project);
-        ArgumentNullException.ThrowIfNull(compilation);
-        ArgumentException.ThrowIfNullOrWhiteSpace(packageId);
-
-        var assembliesByPackage = MapAssembliesToPackages(compilation);
-        if (!assembliesByPackage.TryGetValue(packageId, out var packageAssemblies))
-        {
-            return false;
-        }
-
-        var usedAssemblies = await SymbolUsageCollector.CollectUsedAssembliesAsync(project, cancellationToken).ConfigureAwait(false);
-        foreach (var packageAssembly in packageAssemblies)
-        {
-            if (usedAssemblies.Contains(packageAssembly))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static string? ExtractPackageId(string referencePath)

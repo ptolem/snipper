@@ -4,7 +4,6 @@ using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Text;
 using Snipper.Models;
 
 /// <summary>
@@ -16,6 +15,8 @@ using Snipper.Models;
 /// </summary>
 public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0009"];
+
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(

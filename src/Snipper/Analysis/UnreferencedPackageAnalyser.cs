@@ -17,6 +17,8 @@ using Snipper.Models;
 /// </summary>
 public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
 {
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0003", "SNP0004"];
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -30,58 +32,32 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
             .Where(static p => p.FilePath is not null)
             .ToFrozenDictionary(static p => p.FilePath!, static p => p, StringComparer.OrdinalIgnoreCase);
 
-        // Multi-targeted projects surface as one Project per TFM. Merge them: reference
-        // removal affects the csproj (every TFM), and assembly identity is compared by
-        // name because each TFM compilation binds its own symbol instances.
-        var projectGroups = solution.Projects
-            .Where(static p => p.SupportsCompilation && p.FilePath is not null && File.Exists(p.FilePath))
-            .GroupBy(static p => p.FilePath!, StringComparer.OrdinalIgnoreCase);
+        var usageCache = ProjectPackageUsageCache.Get(solution);
 
-        foreach (var group in projectGroups)
+        // Multi-targeted projects surface as one Project per TFM; usage is judged per
+        // csproj (the cache unions all TFM instances) so each file is analysed once.
+        var analysedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var project in solution.Projects)
         {
-            var projectFilePath = group.Key;
-            var projectName = group.First().Name;
+            if (!project.SupportsCompilation || project.FilePath is null || !File.Exists(project.FilePath))
+            {
+                continue;
+            }
 
-            var projectFile = ProjectFileReader.Read(projectFilePath);
+            if (!analysedPaths.Add(project.FilePath))
+            {
+                continue;
+            }
+
+            var projectFile = ProjectFileReader.Read(project.FilePath);
             if (projectFile is null || (projectFile.PackageReferences.Length == 0 && projectFile.ProjectReferences.Length == 0))
             {
                 continue;
             }
 
-            progress?.Invoke($"UnreferencedPackageAnalyser: scanning {projectName}");
+            progress?.Invoke($"UnreferencedPackageAnalyser: scanning {project.Name}");
 
-            var usedAssemblyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var assemblyNamesByPackage = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-            foreach (var project in group)
-            {
-                var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
-                if (compilation is null)
-                {
-                    continue;
-                }
-
-                var usedAssemblies = await SymbolUsageCollector.CollectUsedAssembliesAsync(project, cancellationToken).ConfigureAwait(false);
-                foreach (var usedAssembly in usedAssemblies)
-                {
-                    usedAssemblyNames.Add(usedAssembly.Name);
-                }
-
-                foreach (var pair in PackageAssemblyUsage.MapAssembliesToPackages(compilation))
-                {
-                    if (!assemblyNamesByPackage.TryGetValue(pair.Key, out var names))
-                    {
-                        names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        assemblyNamesByPackage[pair.Key] = names;
-                    }
-
-                    foreach (var assembly in pair.Value)
-                    {
-                        names.Add(assembly.Name);
-                    }
-                }
-            }
-
-            var lockModel = new NuGetLockFileReader().Read(projectFilePath);
+            var usage = await usageCache.GetAsync(project.FilePath, cancellationToken).ConfigureAwait(false);
 
             foreach (var package in projectFile.PackageReferences)
             {
@@ -90,20 +66,15 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
                     continue;
                 }
 
-                if (!assemblyNamesByPackage.TryGetValue(package.Id, out var packageAssemblyNames))
+                if (!usage.IsUnusedPackage(package.Id))
                 {
-                    // Build-only/analyser/source-generator package — cannot judge statically.
-                    continue;
-                }
-
-                if (packageAssemblyNames.Any(usedAssemblyNames.Contains))
-                {
+                    // Used, build-only/analyser (no compile assets), or unjudgeable.
                     continue;
                 }
 
                 // Own assemblies unused — but the reference may still root a transitive
                 // subtree the project depends on.
-                if (lockModel is not null && IsSubtreeLoadBearing(lockModel, projectFile, package.Id, assemblyNamesByPackage, usedAssemblyNames))
+                if (usage.LockModel is not null && IsSubtreeLoadBearing(usage.LockModel, projectFile, package.Id, usage))
                 {
                     continue;
                 }
@@ -111,10 +82,10 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
                 findings.Add(new SnipperFinding(
                     RuleId: "SNP0003",
                     Title: "Unreferenced Package",
-                    Message: $"Package '{package.Id}' contributes assemblies but no symbol from it is used in project '{projectName}'.",
+                    Message: $"Package '{package.Id}' contributes assemblies but no symbol from it is used in project '{project.Name}'.",
                     Certainty: CertaintyTier.High,
                     Category: FindingCategory.UnreferencedPackage,
-                    FilePath: projectFilePath,
+                    FilePath: project.FilePath,
                     LineNumber: package.LineNumber,
                     CharacterOffset: 1,
                     Symbol: null));
@@ -138,15 +109,15 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
                     continue;
                 }
 
-                if (!usedAssemblyNames.Contains(referencedCompilation.Assembly.Name))
+                if (!usage.UsedAssemblyNames.Contains(referencedCompilation.Assembly.Name))
                 {
                     findings.Add(new SnipperFinding(
                         RuleId: "SNP0004",
                         Title: "Unreferenced Project Reference",
-                        Message: $"Project reference '{Path.GetFileNameWithoutExtension(projectReference.FullPath)}' is declared but no symbol from it is used in project '{projectName}'.",
+                        Message: $"Project reference '{Path.GetFileNameWithoutExtension(projectReference.FullPath)}' is declared but no symbol from it is used in project '{project.Name}'.",
                         Certainty: CertaintyTier.High,
                         Category: FindingCategory.UnreferencedProject,
-                        FilePath: projectFilePath,
+                        FilePath: project.FilePath,
                         LineNumber: projectReference.LineNumber,
                         CharacterOffset: 1,
                         Symbol: null));
@@ -166,8 +137,7 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
         LockFileModel lockModel,
         ProjectFileInfo projectFile,
         string packageId,
-        Dictionary<string, HashSet<string>> assemblyNamesByPackage,
-        HashSet<string> usedAssemblyNames)
+        ProjectPackageUsageEntry usage)
     {
         foreach (var packagesByTfm in lockModel.PackagesByTfm.Values)
         {
@@ -178,8 +148,8 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
 
             foreach (var subtreeId in ComputeExclusiveSubtreeIds(packagesByTfm, root, projectFile))
             {
-                if (assemblyNamesByPackage.TryGetValue(subtreeId, out var names)
-                    && names.Any(usedAssemblyNames.Contains))
+                if (usage.AssemblyNamesByPackage.TryGetValue(subtreeId, out var names)
+                    && names.Any(usage.UsedAssemblyNames.Contains))
                 {
                     return true;
                 }

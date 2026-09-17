@@ -14,5 +14,7 @@ public enum FindingCategory : byte
     OrphanProject = 10,
     RedundantTransitivePackage = 11,
     FrameworkProvidedPackage = 12,
-    ObsoleteUnreferencedMember = 13
+    ObsoleteUnreferencedMember = 13,
+    UnusedUsingDirective = 14,
+    CommentedOutCode = 15
 }

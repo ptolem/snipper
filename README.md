@@ -84,8 +84,31 @@ snipper ./MyMonorepo.slnx --baseline .snipper-baseline.json
 | SNP0012 | Moderate (~70%) | Direct `PackageReference` already supplied transitively by another direct reference at an equal or higher required version on every target framework. |
 | SNP0013 | High (~90%) | `PackageReference` that ships inside the project's own shared framework (per the targeting pack's `PackageOverrides.txt`) at a version greater than or equal to the declared one. |
 | SNP0018 | High/Moderate | `[Obsolete]` types/members with zero references. High for non-public members and `error: true`; Moderate for public. Overrides and interface implementations are excluded. |
+| SNP0019 | Guaranteed (100%) | Using directives the compiler itself proved unnecessary: unused ordinary and `global using` directives (CS8019), and ordinary usings duplicating a global one (CS8933). |
+| SNP0020 | Advisory (~50%) | Blocks of commented-out code (≥2 comment lines that look like code). Doc comments, license headers, URLs, and TODO/FIXME markers are excluded. |
 
 Framework entry points are excluded automatically: ASP.NET Core controllers, MediatR/MassTransit/Quartz handlers, hosted services, xUnit facts/theories, `IAsyncLifetime` fixtures and `[CollectionDefinition]` types, `[ModuleInitializer]` methods, entry-point (`Main`) containing types, source-generated members (`[LoggerMessage]`, `[GeneratedRegex]`), DI-registered services, and members whose interface contracts have callers. Package findings are additionally suppressed when the reference roots a transitive subtree the project actually uses (removal would break compilation).
+
+## Configuration file
+
+Snipper discovers `snipper.json` by walking up from the target solution/project directory (first file wins). Schema `"version": 1`:
+
+```json
+{
+  "version": 1,
+  "rules": { "SNP0010": "off", "SNP0018": "advisory" },
+  "exclude": {
+    "namespaces": ["Company.Generated"],
+    "paths": ["**/Generated/**", "src/Legacy/**"]
+  }
+}
+```
+
+- `rules`: per-rule `off` or a severity override (`advisory`/`moderate`/`high`/`guaranteed`). An analyser whose rules are all `off` never runs.
+- `exclude.namespaces`: unioned with `--exclude-namespaces`; suppresses findings, never usage evidence.
+- `exclude.paths`: glob patterns (`**`, `*`, `?`) matched against finding paths — findings are filtered, evidence is retained.
+
+Config applies at report time, after baseline fingerprinting — toggling it never churns your baseline. Malformed files and unknown entries degrade to warnings, never failures.
 
 ## Development
 

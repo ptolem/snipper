@@ -16,12 +16,3 @@ internal sealed record ResolvedPackage(
 /// <summary>Per-TFM resolved package graphs, keyed by short folder name ("net10.0").</summary>
 internal sealed record LockFileModel(
     FrozenDictionary<string, FrozenDictionary<string, ResolvedPackage>> PackagesByTfm);
-
-internal interface ILockFileReader
-{
-    /// <summary>
-    /// Reads obj/project.assets.json next to the given project file. Returns null on
-    /// missing/malformed file or restore drift — never throws.
-    /// </summary>
-    LockFileModel? Read(string projectFilePath);
-}

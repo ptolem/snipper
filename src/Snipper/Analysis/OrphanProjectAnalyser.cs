@@ -11,10 +11,13 @@ using Snipper.Models;
 /// (removed from the solution, never deleted). Tier 3 (Moderate): plugin/reflection
 /// loading can invisibly consume an assembly, so assembly-name string evidence
 /// (literals, JSON configuration) suppresses findings and messages advise verifying
-/// before deletion.
+/// before deletion. Evidence is gathered in ONE batched pass for all candidates —
+/// a per-candidate scan would multiply the sweep by the candidate count.
 /// </summary>
 public sealed class OrphanProjectAnalyser : IWorkspaceAnalyser
 {
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0011"];
+
     public Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -46,17 +49,54 @@ public sealed class OrphanProjectAnalyser : IWorkspaceAnalyser
             }
         }
 
+        var orphanCandidates = new List<(string AssemblyName, string FilePath)>();
         foreach (var node in graph.NodesByPath.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (node.IsEntryPoint || node.IsTestProject || inboundCounts.GetValueOrDefault(node.FilePath) > 0)
+            if (!node.IsEntryPoint && !node.IsTestProject && inboundCounts.GetValueOrDefault(node.FilePath) == 0)
             {
-                continue;
+                orphanCandidates.Add((node.AssemblyName, node.FilePath));
             }
+        }
 
-            progress?.Invoke($"OrphanProjectAnalyser: checking evidence for {node.AssemblyName}");
-            if (HasNameEvidence(solution, rootDirectory, node.AssemblyName))
+        var detachedCandidates = new List<(string AssemblyName, string FilePath)>();
+        if (rootDirectory is not null)
+        {
+            foreach (var detachedFile in DetachedProjectScanner.FindUnattachedProjectFiles(rootDirectory, loadedProjectPaths))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var detachedInfo = ProjectFileReader.Read(detachedFile);
+                detachedCandidates.Add((detachedInfo?.AssemblyName ?? Path.GetFileNameWithoutExtension(detachedFile), detachedFile));
+            }
+        }
+
+        var candidateNames = new List<string>(orphanCandidates.Count + detachedCandidates.Count);
+        foreach (var (assemblyName, _) in orphanCandidates)
+        {
+            candidateNames.Add(assemblyName);
+        }
+
+        foreach (var (assemblyName, _) in detachedCandidates)
+        {
+            candidateNames.Add(assemblyName);
+        }
+
+        var evidence = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (candidateNames.Count > 0)
+        {
+            progress?.Invoke("OrphanProjectAnalyser: scanning for assembly-name evidence");
+            evidence.UnionWith(AssemblyNameEvidenceScanner.FindSpelledNames(solution, candidateNames));
+            if (rootDirectory is not null)
+            {
+                evidence.UnionWith(AssemblyNameEvidenceScanner.FindSpelledNamesInJsonFiles(rootDirectory, candidateNames));
+            }
+        }
+
+        foreach (var (assemblyName, filePath) in orphanCandidates)
+        {
+            if (evidence.Contains(assemblyName))
             {
                 continue;
             }
@@ -64,49 +104,35 @@ public sealed class OrphanProjectAnalyser : IWorkspaceAnalyser
             findings.Add(new SnipperFinding(
                 RuleId: "SNP0011",
                 Title: "Orphan Project",
-                Message: $"Project '{node.AssemblyName}' is loaded but no other project references it and it is not an entry point or test project — candidate for removal. Verify plugin/reflection loading before deleting.",
+                Message: $"Project '{assemblyName}' is loaded but no other project references it and it is not an entry point or test project — candidate for removal. Verify plugin/reflection loading before deleting.",
                 Certainty: CertaintyTier.Moderate,
                 Category: FindingCategory.OrphanProject,
-                FilePath: node.FilePath,
+                FilePath: filePath,
                 LineNumber: 1,
                 CharacterOffset: 1,
                 Symbol: null));
         }
 
-        if (rootDirectory is not null)
+        foreach (var (assemblyName, detachedFile) in detachedCandidates)
         {
-            progress?.Invoke("OrphanProjectAnalyser: scanning for detached project files");
-            foreach (var detachedFile in DetachedProjectScanner.FindUnattachedProjectFiles(rootDirectory, loadedProjectPaths))
+            if (evidence.Contains(assemblyName))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var detachedInfo = ProjectFileReader.Read(detachedFile);
-                var assemblyName = detachedInfo?.AssemblyName ?? Path.GetFileNameWithoutExtension(detachedFile);
-                if (HasNameEvidence(solution, rootDirectory, assemblyName))
-                {
-                    continue;
-                }
-
-                findings.Add(new SnipperFinding(
-                    RuleId: "SNP0011",
-                    Title: "Orphan Project",
-                    Message: $"Project file '{Path.GetFileNameWithoutExtension(detachedFile)}' exists on disk but is not part of the loaded solution/workspace — re-attach it or delete it. Verify plugin/reflection loading before deleting.",
-                    Certainty: CertaintyTier.Moderate,
-                    Category: FindingCategory.OrphanProject,
-                    FilePath: detachedFile,
-                    LineNumber: 1,
-                    CharacterOffset: 1,
-                    Symbol: null));
+                continue;
             }
+
+            findings.Add(new SnipperFinding(
+                RuleId: "SNP0011",
+                Title: "Orphan Project",
+                Message: $"Project file '{Path.GetFileNameWithoutExtension(detachedFile)}' exists on disk but is not part of the loaded solution/workspace — re-attach it or delete it. Verify plugin/reflection loading before deleting.",
+                Certainty: CertaintyTier.Moderate,
+                Category: FindingCategory.OrphanProject,
+                FilePath: detachedFile,
+                LineNumber: 1,
+                CharacterOffset: 1,
+                Symbol: null));
         }
 
         return Task.FromResult<IReadOnlyList<SnipperFinding>>(findings);
-    }
-
-    private static bool HasNameEvidence(Solution solution, string? rootDirectory, string assemblyName)
-    {
-        return AssemblyNameEvidenceScanner.IsAssemblyNameSpelled(solution, assemblyName)
-            || (rootDirectory is not null && AssemblyNameEvidenceScanner.IsAssemblyNameSpelledInJsonFiles(rootDirectory, assemblyName));
     }
 
     /// <summary>

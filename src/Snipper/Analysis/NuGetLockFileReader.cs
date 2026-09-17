@@ -1,12 +1,14 @@
 namespace Snipper.Analysis;
 
 using System.Collections.Frozen;
-using NuGet.Common;
 using NuGet.ProjectModel;
 using NuGet.Versioning;
 
-/// <summary><see cref="ILockFileReader"/> backed by NuGet.ProjectModel's LockFileFormat.</summary>
-internal sealed class NuGetLockFileReader : ILockFileReader
+/// <summary>
+/// Reads obj/project.assets.json next to the given project file via NuGet.ProjectModel's
+/// LockFileFormat. Returns null on missing/malformed file or restore drift — never throws.
+/// </summary>
+internal sealed class NuGetLockFileReader
 {
     public LockFileModel? Read(string projectFilePath)
     {

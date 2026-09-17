@@ -171,6 +171,20 @@ public static class CliRunner
             AnsiConsole.MarkupLine($"[grey]({duplicateWarningCount} duplicate workspace warning(s) suppressed; warnings do not block analysis)[/]");
         }
 
+        var configWarnings = new List<string>();
+        var config = SnipperConfigLoader.Load(targetPath, out var configPath, configWarnings);
+        if (configPath is not null)
+        {
+            AnsiConsole.MarkupLine($"[grey]Config loaded from {Markup.Escape(configPath)}[/]");
+        }
+
+        foreach (var warning in configWarnings)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Warning: {Markup.Escape(warning)}[/]");
+        }
+
+        excludedNamespaces.AddRange(config.ExcludedNamespaces);
+
         var exclusions = AnalysisExclusions.Create(excludedNamespaces);
         if (excludedNamespaces.Count > 0)
         {
@@ -193,6 +207,8 @@ public static class CliRunner
             new OrphanProjectAnalyser(),
             new RedundantTransitivePackageAnalyser(),
             new FrameworkInboxPackageAnalyser(),
+            new UnusedUsingDirectiveAnalyser(exclusions),
+            new CommentedCodeAnalyser(exclusions),
         };
 
         if (includeConfigAnalysis)
@@ -202,6 +218,12 @@ public static class CliRunner
         else
         {
             AnsiConsole.MarkupLine("[grey]Configuration analysis (SNP0007/SNP0008) is off by default — enable with --config-analysis.[/]");
+        }
+
+        if (config.DisabledRules.Count > 0)
+        {
+            analysers.RemoveAll(a => !FindingFilter.IsAnalyserEnabled(a.RuleIds, config));
+            AnsiConsole.MarkupLine($"[grey]Disabled rules (snipper.json): {Markup.Escape(string.Join(", ", config.DisabledRules.Order(StringComparer.Ordinal)))}[/]");
         }
 
         var allFindings = new List<SnipperFinding>();
@@ -268,6 +290,16 @@ public static class CliRunner
             }
 
             reportableFindings = newFindings;
+        }
+
+        // snipper.json filtering (disabled rules, severity overrides, path globs) applies
+        // at report/output time only — after baseline fingerprinting, so toggling config
+        // never churns the baseline file. Same contract as the certainty-tier filter below.
+        var findingsBeforeConfig = reportableFindings.Count;
+        reportableFindings = FindingFilter.Apply(reportableFindings, config);
+        if (reportableFindings.Count != findingsBeforeConfig)
+        {
+            AnsiConsole.MarkupLine($"[grey]Config: {findingsBeforeConfig - reportableFindings.Count} finding(s) suppressed by snipper.json.[/]");
         }
 
         // Certainty-tier filter applies at report/output time only. The baseline

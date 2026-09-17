@@ -14,17 +14,7 @@ using Snipper.Models;
 /// </summary>
 public sealed class RedundantTransitivePackageAnalyser : IWorkspaceAnalyser
 {
-    private readonly ILockFileReader _lockFileReader;
-
-    public RedundantTransitivePackageAnalyser()
-        : this(new NuGetLockFileReader())
-    {
-    }
-
-    internal RedundantTransitivePackageAnalyser(ILockFileReader lockFileReader)
-    {
-        _lockFileReader = lockFileReader;
-    }
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0012"];
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -33,6 +23,7 @@ public sealed class RedundantTransitivePackageAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new List<SnipperFinding>();
+        var usageCache = ProjectPackageUsageCache.Get(solution);
 
         foreach (var project in solution.Projects)
         {
@@ -47,7 +38,8 @@ public sealed class RedundantTransitivePackageAnalyser : IWorkspaceAnalyser
                 continue;
             }
 
-            var model = _lockFileReader.Read(project.FilePath);
+            var usage = await usageCache.GetAsync(project.FilePath, cancellationToken).ConfigureAwait(false);
+            var model = usage.LockModel;
             if (model is null)
             {
                 continue;
@@ -73,7 +65,6 @@ public sealed class RedundantTransitivePackageAnalyser : IWorkspaceAnalyser
 
             progress?.Invoke($"RedundantTransitivePackageAnalyser: scanning {project.Name}");
 
-            Compilation? compilation = null;
             foreach (var package in projectFile.PackageReferences)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -111,14 +102,8 @@ public sealed class RedundantTransitivePackageAnalyser : IWorkspaceAnalyser
                     continue;
                 }
 
-                compilation ??= await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
-                if (compilation is null)
-                {
-                    continue;
-                }
-
                 // Dedup: an unused package is SNP0003's finding, not ours.
-                if (await PackageAssemblyUsage.IsUnusedByProjectAsync(project, compilation, package.Id, cancellationToken).ConfigureAwait(false))
+                if (usage.IsUnusedPackage(package.Id))
                 {
                     continue;
                 }

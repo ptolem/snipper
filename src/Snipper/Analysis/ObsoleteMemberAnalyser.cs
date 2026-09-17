@@ -19,6 +19,8 @@ using Snipper.Models;
 /// </summary>
 public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0018"];
+
     private const string ObsoleteAttributeMetadataName = "System.ObsoleteAttribute";
 
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;

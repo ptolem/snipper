@@ -108,13 +108,15 @@ Evidence-weighted; qualitative items marked.
 
 ## 5. Phase 3 candidate mapping
 
+> **Superseded 2026-09-15 by [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md)**, which commits Waves 1–3 (1.2.0–1.4.0). Notable delta: candidate #5 (`--fix`) is **rejected** — Snipper is read-only forever by design.
+
 Gap → candidate rule, in suggested implementation order (Tier 1 first). IDs provisional.
 
 | # | Candidate | Gap closed | Certainty | Effort | Notes |
 |---|---|---|---|---|---|
-| 1 | **SNP0019 Unused using directives** | Tier 1.1 | Guaranteed | S | Per-document syntax pass; respect global usings + `using static`/aliases; doc-level, not project-wide. |
-| 2 | **Suppression & severity config** (`snipper.json`, per-rule severity, path/glob exclusions) | Tier 1.2 | — | M | Unblocks org adoption; prerequisite for noisy Advisory rules. |
-| 3 | **SNP0020 Commented-out code** | Tier 1.3 | Advisory | S | Comment-trivia token-density heuristic; skip doc comments, license headers, `// TODO`-style. |
+| 1 | **SNP0019 Unused using directives** ✅ shipped 1.2.0 | Tier 1.1 | Guaranteed | S | Shipped as compiler-diagnostic surfacing (CS8019 incl. global usings, CS8933 duplicates) after the spike proved coverage — even simpler than the original design. |
+| 2 | **Suppression & severity config** (`snipper.json`, per-rule severity, path/glob exclusions) ✅ shipped 1.2.0 | Tier 1.2 | — | M | Walk-up discovery, report-time application (baseline-stable), analysers skip when fully disabled. |
+| 3 | **SNP0020 Commented-out code** ✅ shipped 1.2.0 | Tier 1.3 | Advisory | S | Comment-trivia code-likeness heuristic; doc comments/license/URLs/TODO markers excluded. |
 | 4 | **SNP0021 Field assigned, never read** | Tier 2.4 | High | M | Extend `SymbolReferenceQuery` with read/write classification; pair with unassigned-field variant (CS0649 parity, Guaranteed). |
 | 5 | **`--fix` for Guaranteed rules** (dry-run diff first; SNP0019 + SNP0002 initially) | Tier 2.5 | — | L | Keep read-only default; explicit opt-in; idempotent. |
 | 6 | **SNP0022 Redundant code sweep** (casts, type args, default args, qualifiers) | Tier 2.6 | High | M–L | Ship as one umbrella analyser with per-pattern sub-rules. |

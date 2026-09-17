@@ -16,6 +16,8 @@ using Snipper.Models;
 /// </summary>
 public sealed class ConfigurationBindingAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0007", "SNP0008"];
+
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     private static readonly FrozenSet<string> OptionsGenericTypeNames = new HashSet<string>(StringComparer.Ordinal)

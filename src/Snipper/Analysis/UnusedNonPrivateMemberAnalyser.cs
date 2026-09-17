@@ -14,6 +14,8 @@ using Snipper.Models;
 /// </summary>
 public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0005", "SNP0006"];
+
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
@@ -93,12 +95,6 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                         continue;
                     }
 
-                    if (symbol is IMethodSymbol method
-                        && await HasUsedInterfaceContractAsync(method, solution, usageIndex, cancellationToken).ConfigureAwait(false))
-                    {
-                        continue;
-                    }
-
                     // Internal members without friend assemblies can only be referenced
                     // within their own project; public members can be referenced anywhere.
                     // The usage index restricts the search to documents that textually
@@ -109,6 +105,15 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
 
                     var hasReference = candidateDocuments.Count > 0
                         && await SymbolReferenceQuery.HasAnyReferenceAsync(symbol, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+
+                    // Rescue passes run only when the symbol has no direct references of
+                    // its own — each costs its own FindReferencesAsync scan.
+                    if (!hasReference
+                        && symbol is IMethodSymbol method
+                        && await HasUsedInterfaceContractAsync(method, solution, usageIndex, cancellationToken).ConfigureAwait(false))
+                    {
+                        continue;
+                    }
 
                     if (!hasReference
                         && symbol is INamedTypeSymbol { IsStatic: true } staticType
