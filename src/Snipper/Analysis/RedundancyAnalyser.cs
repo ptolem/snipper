@@ -5,16 +5,17 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Snipper.Models;
 
 /// <summary>
-/// SNP0022/SNP0025 — Redundancy sweep, part 1. One umbrella pass over invocations
-/// with two per-pattern evaluators, each shipping only when its soundness gate
-/// holds (see <see cref="RedundantDefaultArgumentEvaluator"/> and
-/// <see cref="RedundantTypeArgumentEvaluator"/>). Per-rule `off` in snipper.json
-/// is honoured by the report-time FindingFilter; semantic work happens only on
+/// SNP0022/SNP0025/SNP0026 — Redundancy sweep. One umbrella pass over
+/// invocations and casts with per-pattern evaluators, each shipping only when
+/// its soundness gate holds (see <see cref="RedundantDefaultArgumentEvaluator"/>,
+/// <see cref="RedundantTypeArgumentEvaluator"/>, and
+/// <see cref="RedundantCastEvaluator"/>). Per-rule `off` in snipper.json is
+/// honoured by the report-time FindingFilter; semantic work happens only on
 /// syntax-pre-filtered candidates. Tier 2 (High).
 /// </summary>
 public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
-    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0022", "SNP0025"];
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0022", "SNP0025", "SNP0026"];
 
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
@@ -70,6 +71,21 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
                     if (RedundantTypeArgumentEvaluator.TryEvaluate(invocation, semanticModel, cancellationToken) is { } typeArgumentFinding)
                     {
                         findings.Add(typeArgumentFinding);
+                    }
+                }
+
+                foreach (var cast in root.DescendantNodes().OfType<CastExpressionSyntax>())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (ExclusionEngine.IsNamespaceExcluded(cast, semanticModel, _exclusions, cancellationToken))
+                    {
+                        continue;
+                    }
+
+                    if (RedundantCastEvaluator.TryEvaluate(cast, semanticModel, cancellationToken) is { } castFinding)
+                    {
+                        findings.Add(castFinding);
                     }
                 }
             }

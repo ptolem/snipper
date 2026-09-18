@@ -21,5 +21,6 @@ public enum FindingCategory : byte
     RedundantArgument = 17,
     RedundantTypeArguments = 18,
     HierarchyDeadCode = 19,
-    Tightening = 20
+    Tightening = 20,
+    RedundantCast = 21
 }
