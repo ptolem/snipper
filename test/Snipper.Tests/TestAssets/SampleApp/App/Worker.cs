@@ -43,6 +43,8 @@ public static class Worker
         _ = JsonRoundTrip.Echo("ping");
         _ = new LegacyHelper().StillUsedApi();
         _ = new WriteOnlyFieldScenarios(21).Exercise(3);
+        _ = RedundantInvocationScenarios.ExerciseRedundancies();
+        _ = RedundantTypeArgScenarios.ExerciseTypeArgs();
 
         // Plugin host loads this assembly by name at runtime — name evidence for SNP0011.
         _ = "PluginLib";

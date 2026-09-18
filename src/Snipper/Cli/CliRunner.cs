@@ -210,6 +210,7 @@ public static class CliRunner
             new UnusedUsingDirectiveAnalyser(exclusions),
             new CommentedCodeAnalyser(exclusions),
             new WriteOnlyFieldAnalyser(exclusions),
+            new RedundancyAnalyser(exclusions),
         };
 
         if (includeConfigAnalysis)

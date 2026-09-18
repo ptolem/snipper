@@ -17,5 +17,7 @@ public enum FindingCategory : byte
     ObsoleteUnreferencedMember = 13,
     UnusedUsingDirective = 14,
     CommentedOutCode = 15,
-    WriteOnlyField = 16
+    WriteOnlyField = 16,
+    RedundantArgument = 17,
+    RedundantTypeArguments = 18
 }

@@ -1,7 +1,7 @@
 # Phase 3 — Wave 2 Team Spec (2A SNP0021; 2B design-sketch only, DEFERRED)
 
-**Target release:** 1.3.0 · **Roadmap:** [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md) · **Baseline:** 1.2.0 (17 rules, 127 tests)
-**Status:** APPROVED. Scope locked by user 2026-09-18: implement **2A only**; 2B ships per-pattern rule IDs but implementation is **deferred** pending user review. Merge order: **2A → cross-cutting → release.**
+**Target release:** 1.3.0 (2A) / 1.3.1 (2B) · **Roadmap:** [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md) · **Baseline:** 1.2.0 (16 rules, 127 tests)
+**Status:** 2A SHIPPED 2026-09-18 as 1.3.0 (17 rules, 141 tests). 2B APPROVED 2026-09-18 after user review — ships as 1.3.1. Merge order: **2A → cross-cutting → 1.3.0 → 2B → cross-cutting → 1.3.1.**
 
 ## Spike results (speculation APIs — resolved 2026-09-18)
 
@@ -100,17 +100,43 @@ No changes to `SymbolUsageCollector` / `SolutionUsageIndex` / `SymbolReferenceQu
 
 ---
 
-## Story 2B — Redundancy sweep part 1 — **DEFERRED (design sketch only)**
+## Story 2B — Redundancy sweep part 1 — APPROVED 2026-09-18 (ships as 1.3.1)
 
-> User call 2026-09-18: per-pattern rule IDs locked; **no implementation until explicitly approved.** SNP0023/SNP0024 remain reserved for Wave 3.
+> User call 2026-09-18: approved for implementation. Per-pattern rule IDs locked; SNP0023/SNP0024 remain reserved for Wave 3.
 
-| Sub-rule | ID / Tier | Soundness gate (spike-proven) | Scope restrictions |
+| Sub-rule | ID / Tier | Soundness gate (spike-proven) | Scope restrictions (v1) |
 |---|---|---|---|
-| Redundant default-value argument | **SNP0022**, High | Literal equals `IParameterSymbol.ExplicitDefaultValue` (via `GetConstantValue`) **and** speculative arg-removal rebinds the *identical* symbol (A1/A2/A3). | Trailing positional args only; literals of primitives/`string`/enum/`null`/`decimal` only; `params`, optional-after-optional chains, and named args excluded. |
-| Redundant method type arguments | **SNP0025**, High | Speculative type-list strip rebinds the identical constructed symbol incl. inferred type arguments (B1/B2). | Invocation-level explicit type lists only; no generic-method-in-delegate-conversion in v1. |
+| Redundant default-value argument | **SNP0022**, High | Literal equals `IParameterSymbol.ExplicitDefaultValue` (via `GetConstantValue`) **and** speculative arg-removal rebinds the *identical* symbol (A1/A2/A3) — plus the caller-info exclusion below. | Trailing positional args only; literal-ish expressions only (literals, ± literals, enum member access); `params` and named args excluded; one trailing arg per invocation per run (iterative convergence). |
+| Redundant method type arguments | **SNP0025**, High | Speculative type-list strip rebinds the identical constructed symbol incl. inferred type arguments (B1/B2). | Invocation-level explicit type lists only; nullable-annotated (`string?`) and `dynamic` type args excluded; no method-group conversions in v1. |
 | Redundant cast | **SNP0026**, High | *(Wave 3 — attempt only if the proof is clean: static types equal + no user-defined conversion involved.)* | Wave 3. |
 
-Umbrella analyser skeleton (one invocation-level binding pass, per-pattern evaluators) is designed but not built; syntax pre-filters (invocations with literal trailing args / explicit type lists) keep it cheap. ~14–18 tests, dominated by overload-trap negatives.
+### Architecture
+
+`RedundancyAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser`, `RuleIds = ["SNP0022", "SNP0025"]` — one umbrella invocation pass with two evaluators. Per-rule `off` in snipper.json is honoured by the existing report-time `FindingFilter.Apply` (1A contract); a fully-disabled analyser is skipped entirely. Sequential binding per the `ConcurrentBuild=false` contract; semantic work happens only on syntax-pre-filtered candidates.
+
+| File | Content |
+|---|---|
+| `Analysis/RedundancyAnalyser.cs` | Document loop (skip `ShouldSkipDocument`), `OfType<InvocationExpressionSyntax>`, namespace exclusion via node overload, delegates to both evaluators. |
+| `Analysis/RedundantDefaultArgumentEvaluator.cs` | SNP0022: pre-filter (last arg positional + literal-ish) → `DetermineParameter(allowParams: false)` → default/constant equality → caller-info exclusion → speculation gate. |
+| `Analysis/RedundantTypeArgumentEvaluator.cs` | SNP0025: pre-filter (generic invoked name) → nullable/dynamic guards → `IsGenericMethod` check → speculation gate. |
+| `Analysis/InvocationSpeculation.cs` | `RebindWithoutArgument` / `RebindWithoutTypeArguments` — syntax-rewrite + `GetSpeculativeSymbolInfo(BindAsExpression)` (spike-proven shapes). |
+| `Models/FindingCategory.cs` | `RedundantArgument = 17`, `RedundantTypeArguments = 18`. |
+
+### Soundness additions beyond the spike
+
+1. **Caller-info parameters are never candidates.** `[CallerMemberName]` / `[CallerFilePath]` / `[CallerLineNumber]` / `[CallerArgumentExpression]` defaults are injected by the caller when the argument is omitted — removing a matching literal changes runtime semantics even though the rebind is identical. Name-matched `FrozenSet` on the parameter's attributes. (Found in 2B design review, not covered by the spike.)
+2. **Nullable-annotated type args are never stripped** — `string?` differs from `string` only by annotation, which is meaningful to nullability analysis and ignored by `SymbolEqualityComparer.Default`. Any `NullableTypeSyntax` inside the type-argument list skips the candidate; `dynamic` is skipped likewise.
+3. **Trailing-only convergence:** only the final positional argument is a candidate; when two trailing args both match defaults, the outer one becomes flaggable on the next run after removal. Named arguments are excluded (readability is a legitimate reason for them).
+4. **Invocations only in v1.** Object creation (`new C(5, 2)`) shares the machinery but its speculative shape was not spike-proven — deferred to a post-Wave-3 candidate.
+
+### Fixture (new files)
+
+`CoreLib/RedundantInvocations.cs` — SNP0022 scenarios (positives: literal/null/enum defaults, multi-default trailing-only; negatives: value mismatch, named, rebind overload trap, `params`, real `[CallerMemberName]`). `CoreLib/RedundantTypeArgs.cs` — SNP0025 scenarios (positives: plain + member-access invocation; negatives: non-generic overload trap, no-arg generic, return-only inference, nullable annotation). Both wired from `App/Worker.cs`; member names are distinctive (substring-based assertions).
+
+### Test matrix (`RedundancyAnalyserShould`, `[Collection("SampleSolution")]`)
+
+- SNP0022 (11): flag literal/null/enum/trailing-of-multi-default; not flag middle-of-multi-default, value mismatch, named, rebind trap, `params`, caller-info; `DeadCode.cs` spot check (covers both rules).
+- SNP0025 (6): flag plain + member-access; not flag overload trap, no-arg generic, return-only inference, nullable-annotated.
 
 ---
 
@@ -123,7 +149,7 @@ Umbrella analyser skeleton (one invocation-level binding pass, per-pattern evalu
 
 ## Release
 
-Bump 1.3.0 → `dotnet pack` → `dotnet tool update` → `snipper --version` → self-run verification → summarise.
+2A shipped 1.3.0. For 2B: bump 1.3.1 → `dotnet pack` → `dotnet tool update` → `snipper --version` → self-run verification → summarise.
 
 ## Judgement calls (pre-approved)
 
@@ -133,3 +159,7 @@ Bump 1.3.0 → `dotnet pack` → `dotnet tool update` → `snipper --version` �
 4. **Unconfirmed candidate reference locations classify as Read** — unknown evidence always suppresses.
 5. **Initializer-only fields stay with SNP0001** — a declarator initializer is not a reference; SNP0021 requires ≥1 actual write reference. No double-reporting.
 6. **`out`-only fields are flagged** — an `out` write discards any prior value and the written value is never observed; semantically identical to plain assignment.
+7. **Caller-info parameters excluded unconditionally (SNP0022)** — the speculation gate cannot see the runtime injection; found in 2B design review, not the spike.
+8. **Per-rule evaluation waste accepted** — when snipper.json disables one of SNP0022/0025, the umbrella still evaluates both and the report-time filter drops the disabled rule's findings (1A architecture: analysers never see config). Speculation is cheap and candidate sets are tiny.
+9. **Invocations only; object creation deferred** — only spike-proven shapes ship.
+10. **2B releases as 1.3.1** — Wave 2's minor-version line was already used by 1.3.0 (2A); Wave 3 keeps 1.4.0. User call 2026-09-18.

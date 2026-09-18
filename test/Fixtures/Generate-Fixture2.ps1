@@ -14,12 +14,12 @@ Usage:
     snipper <dir>/Fixture.slnx
     snipper <dir>/Fixture.slnx --config-analysis
 
-Expected findings (pinned for Snipper 1.3.0, verified 2026-09-18):
-    default run:           18 findings
-    --config-analysis run: 20 findings (adds SNP0007 + SNP0008)
+Expected findings (pinned for Snipper 1.3.1, verified 2026-09-18):
+    default run:           20 findings
+    --config-analysis run: 22 findings (adds SNP0007 + SNP0008)
 Per-rule expectation (default): SNP0001=1 SNP0002=1 SNP0003=1 SNP0004=1 SNP0005=2
     SNP0006=3 SNP0009=1 SNP0010=1 SNP0011=1 SNP0012=1 SNP0013=1 SNP0018=1 SNP0019=1 SNP0020=1
-    SNP0021=1
+    SNP0021=1 SNP0022=1 SNP0025=1
 NOTE: restore the fixture (dotnet restore) before analysing — package rules need obj/project.assets.json.
 A count drift without a corresponding rule change is a regression signal — investigate,
 then either fix the regression or update this header with the new verified counts.
@@ -119,11 +119,19 @@ public static class Worker
         var unusedLocal = 42;
         _ = WithUnusedParam(1, 2);
         _retryBudget = 7;
+        _ = GreetWithFallback("hi", 2);
+        _ = EchoExplicit<int>(5);
         return MultiplyUsed(2);
     }
 
     // SNP0021: written in Run, never read.
     private static int _retryBudget;
+
+    // SNP0022: the literal 2 matches the parameter default.
+    private static string GreetWithFallback(string text, int times = 2) => text + times;
+
+    // SNP0025: inference infers <int> without the explicit list.
+    private static T EchoExplicit<T>(T value) => value;
 
     private static int MultiplyUsed(int used) => used * 2;
 
@@ -237,4 +245,4 @@ internal sealed class DetachedType
 '@
 
 Write-Host "fixture2 generated at $OutputPath"
-Write-Host "Verify: dotnet restore `"$OutputPath/Fixture.slnx`", then snipper `"$OutputPath/Fixture.slnx`" (expect 18) and with --config-analysis (expect 20)."
+Write-Host "Verify: dotnet restore `"$OutputPath/Fixture.slnx`", then snipper `"$OutputPath/Fixture.slnx`" (expect 20) and with --config-analysis (expect 22)."

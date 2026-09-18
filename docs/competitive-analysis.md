@@ -28,7 +28,7 @@
 | Hierarchy dead code (virtual never overridden, class never inherited, member only via overrides/base) | — | ✓ `VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`, `UnusedMemberHierarchy`, `UnusedMemberInSuper` | — | ~ | — |
 | **Redundancy sweeps** | | | | | |
 | Unused usings | ✓ SNP0019 (CS8019 + CS8933, incl. global usings) | ✓ `RedundantUsingDirective` (+global) | ✓ IDE0005 | — | ✓ S1128 |
-| Redundant casts / qualifiers / type args / default args / etc. | — | ✓ 103 inspections | ~ IDE00xx subset | — | ~ |
+| Redundant casts / qualifiers / type args / default args / etc. | ~ SNP0022/0025 (default args, type args) | ✓ 103 inspections | ~ IDE00xx subset | — | ~ |
 | Empty ctor/destructor/namespace, redundant overload/override/initializer/partial | — | ✓ | ~ | — | ~ |
 | Commented-out code | ✓ SNP0020 | — | — | — | ✓ S125 |
 | **Tightening (entropy prevention)** | | | | | |
@@ -69,7 +69,7 @@
 
 4. **Read-vs-write analysis.** ✅ **Shipped 1.3.0 as SNP0021** — write-only private fields at High tier via syntax-role read/write classification at reference locations; unassigned fields deliberately remain SNP0001/CS0649.
 5. **Auto-fix mode.** ❌ **Rejected 2026-09-15** — read-only is a permanent design tenet; ReSharper/VS own the removal workflow, Snipper owns CI-grade detection.
-6. **Redundancy sweep.** ⏸ **Speculation gates spike-proven 2026-09-18; implementation deferred pending review** — split into per-pattern rules (SNP0022 default-value argument, SNP0025 method type arguments, SNP0026 cast in Wave 3).
+6. **Redundancy sweep.** ✅ **Shipped 1.3.1 as SNP0022 + SNP0025** — per-pattern rules (default-value argument, method type arguments), each verified by speculative re-binding so overload traps are never flagged; SNP0026 cast remains Wave 3 scope.
 
 ### Tier 3 — differentiating but harder
 
@@ -102,7 +102,7 @@ Evidence-weighted; qualitative items marked.
 - **SNP0018** — obsolete-member dead code. Unique.
 - **CI-first shape** — read-only, fast (no mandatory build; InspectCode builds by default), SARIF + JSON + baseline in a zero-dependency global tool. InspectCode only matched SARIF in 2024.1 and still has no baseline concept.
 
-**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.3.0, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), and read/write flow analysis (SNP0021). The remaining deltas are deliberate or scheduled: auto-fix is rejected (read-only tenet), the redundancy sweep is spike-proven and deferred pending review (SNP0022/0025/0026), and hierarchy/tightening rules are committed for Wave 3 (SNP0023/0024).
+**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.3.1, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), read/write flow analysis (SNP0021), and the first two redundancy-sweep patterns (SNP0022/0025). The remaining deltas are deliberate or scheduled: auto-fix is rejected (read-only tenet), and the redundant cast (SNP0026) plus hierarchy/tightening rules (SNP0023/0024) are committed Wave 3 scope.
 
 ---
 
@@ -119,7 +119,7 @@ Gap → candidate rule, in suggested implementation order (Tier 1 first). IDs pr
 | 3 | **SNP0020 Commented-out code** ✅ shipped 1.2.0 | Tier 1.3 | Advisory | S | Comment-trivia code-likeness heuristic; doc comments/license/URLs/TODO markers excluded. |
 | 4 | **SNP0021 Field assigned, never read** ✅ shipped 1.3.0 | Tier 2.4 | High | M | Syntax-role read/write classification at reference locations (compound/`++`/`ref` = read, `out`/simple assignment = write); serialization attributes demote to Moderate. Unassigned fields deliberately stay with SNP0001/CS0649 — no separate variant. |
 | 5 | **`--fix` for Guaranteed rules** (dry-run diff first; SNP0019 + SNP0002 initially) | Tier 2.5 | — | L | Keep read-only default; explicit opt-in; idempotent. |
-| 6 | **SNP0022 Redundant code sweep** (casts, type args, default args, qualifiers) | Tier 2.6 | High | M–L | Amended 2026-09-18: split into per-pattern rules — SNP0022 (default-value argument), SNP0025 (method type arguments), SNP0026 (cast, Wave 3) — each speculation-gated (spike-proven). Implementation deferred pending review. |
+| 6 | **SNP0022/0025 Redundant code sweep** ✅ shipped 1.3.1 | Tier 2.6 | High | L | Split into per-pattern rules: SNP0022 (default-value argument) + SNP0025 (method type arguments), both verified by speculative re-binding (spike-proven). SNP0026 (cast) remains Wave 3 scope. |
 | 7 | **SNP0023 Virtual member never overridden / class never inherited** | Tier 3.7 | Moderate | M | Reuse SNP0018 override graph; suppress on entry-point/reflection evidence like SNP0006. |
 | 8 | **SNP0024 Tightening** (can-be-static, can-be-readonly, can-be-sealed) | Tier 3.8 | Moderate/Advisory | M | Entropy prevention; Advisory default to avoid CI noise. |
 | 9 | **Duplicate detection engine** (token-hash, cross-project) | Tier 3.9 | Advisory | L | Separate engine; dupFinder parity; likely new report section, not a finding rule. |
