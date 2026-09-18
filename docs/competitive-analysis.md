@@ -1,6 +1,6 @@
 # Competitive Analysis — Snipper vs. the .NET Code-Analysis Ecosystem
 
-**Date:** 2026-09-14 · **Updated:** 2026-09-18 · **Snipper version:** 1.3.0 (17 rules: SNP0001–0013, 0018–0021)
+**Date:** 2026-09-14 · **Updated:** 2026-09-18 · **Snipper version:** 1.4.0 (22 rules: SNP0001–0013, 0018–0026)
 **Scope:** features for *reducing the entropy of a large codebase* — dead code detection, redundancy/hygiene sweeps, dependency bloat, duplication, and the removal workflow (fix automation, gating, suppression).
 
 **Sources & evidence levels:**
@@ -25,14 +25,14 @@
 | Field written, never read / unassigned | ✓ SNP0021 (write-only; unassigned stays SNP0001/CS0649) | ✓ `NotAccessedField`, `UnassignedField` | ✓ IDE0052, CS0649 | — | ✓ S4487 |
 | Event never invoked | — | ✓ `EventNeverInvoked` | ~ | — | ~ |
 | Return value never used / param-only-precondition / out always discarded / nameof-only | ~ (SNP0021 covers the nameof-only and out-only field slices) | ✓ `UnusedMethodReturnValue`, `ParameterOnlyUsedForPreconditionCheck`, `OutParameterValueIsAlwaysDiscarded`, `EntityNameCapturedOnly` | — | ~ (CQLinq) | — |
-| Hierarchy dead code (virtual never overridden, class never inherited, member only via overrides/base) | — | ✓ `VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`, `UnusedMemberHierarchy`, `UnusedMemberInSuper` | — | ~ | — |
+| Hierarchy dead code (virtual never overridden, class never inherited, member only via overrides/base) | ~ SNP0023 (virtual chain roots never overridden + classes with virtuals never inherited; member-only-via-overrides/base not covered) | ✓ `VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`, `UnusedMemberHierarchy`, `UnusedMemberInSuper` | — | ~ | — |
 | **Redundancy sweeps** | | | | | |
 | Unused usings | ✓ SNP0019 (CS8019 + CS8933, incl. global usings) | ✓ `RedundantUsingDirective` (+global) | ✓ IDE0005 | — | ✓ S1128 |
-| Redundant casts / qualifiers / type args / default args / etc. | ~ SNP0022/0025 (default args, type args) | ✓ 103 inspections | ~ IDE00xx subset | — | ~ |
+| Redundant casts / qualifiers / type args / default args / etc. | ~ SNP0022/0025/0026 (default args, type args, identity casts — all soundness-gated; qualifiers and the rest not covered) | ✓ 103 inspections | ~ IDE00xx subset | — | ~ |
 | Empty ctor/destructor/namespace, redundant overload/override/initializer/partial | — | ✓ | ~ | — | ~ |
 | Commented-out code | ✓ SNP0020 | — | — | — | ✓ S125 |
 | **Tightening (entropy prevention)** | | | | | |
-| can-be-static / readonly / sealed / private / internal / const / init-only / file-local | — | ✓ `MemberCanBeMadeStatic`, `FieldCanBeMadeReadOnly`, `ClassCanBeSealed`, `MemberCanBePrivate/Internal/FileLocal`… | ~ CA1822, CA1852, IDE0044 | ~ | ~ |
+| can-be-static / readonly / sealed / private / internal / const / init-only / file-local | ~ SNP0024 (static / readonly / sealed, Advisory tier) | ✓ `MemberCanBeMadeStatic`, `FieldCanBeMadeReadOnly`, `ClassCanBeSealed`, `MemberCanBePrivate/Internal/FileLocal`… | ~ CA1822, CA1852, IDE0044 | ~ | ~ |
 | **Dependency hygiene** | | | | | |
 | Unreferenced `PackageReference` | ✓ SNP0003 | ✓ Rider 2023.1+ (NuGet-aware); ReSharper: project/assembly refs | ✓ "Remove Unused References" | ~ | — |
 | Unreferenced `ProjectReference` | ✓ SNP0004 | ✓ | ✓ | ✓ | — |

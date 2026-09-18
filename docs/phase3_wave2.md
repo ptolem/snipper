@@ -1,7 +1,7 @@
 # Phase 3 — Wave 2 Team Spec (2A SNP0021; 2B design-sketch only, DEFERRED)
 
 **Target release:** 1.3.0 (2A) / 1.3.1 (2B) · **Roadmap:** [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md) · **Baseline:** 1.2.0 (16 rules, 127 tests)
-**Status:** 2A SHIPPED 2026-09-18 as 1.3.0 (17 rules, 141 tests). 2B APPROVED 2026-09-18 after user review — ships as 1.3.1. Merge order: **2A → cross-cutting → 1.3.0 → 2B → cross-cutting → 1.3.1.**
+**Status:** 2A SHIPPED 2026-09-18 as 1.3.0 (17 rules, 141 tests). 2B SHIPPED 2026-09-18 as 1.3.1 (19 rules, 158 tests). Merge order was: **2A → cross-cutting → 1.3.0 → 2B → cross-cutting → 1.3.1.**
 
 ## Spike results (speculation APIs — resolved 2026-09-18)
 
@@ -100,7 +100,7 @@ No changes to `SymbolUsageCollector` / `SolutionUsageIndex` / `SymbolReferenceQu
 
 ---
 
-## Story 2B — Redundancy sweep part 1 — APPROVED 2026-09-18 (ships as 1.3.1)
+## Story 2B — Redundancy sweep part 1 — SHIPPED 2026-09-18 as 1.3.1
 
 > User call 2026-09-18: approved for implementation. Per-pattern rule IDs locked; SNP0023/SNP0024 remain reserved for Wave 3.
 

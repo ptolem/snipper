@@ -44,13 +44,13 @@ The three features developers see every day in ReSharper/Sonar, all cheap in Sni
 | 2A | **Field written, never read** (IDE0052 parity) | SNP0021, High | Read/write classification in usage collection: assignment target / `++`/`--` / `out` = write; `ref` = read+write; everything else = read. Flag fields with ≥1 write and 0 reads. Demote to Moderate on serialization attributes (`[JsonInclude]`, `[DataMember]`, `[XmlElement]`). Never-assigned fields deliberately excluded — CS0649 is the compiler's job. Starts one tier lower if dogfooding shows noise; promoted after a wave of evidence. | M |
 | 2B | **Redundancy sweep, part 1** *(deferred — see locked decision 4)* | SNP0022 / SNP0025, High | Per-pattern rules, each shipped only when individually soundness-proven. (1) redundant default-value argument (metadata default vs literal + speculative rebinding check — spike-proven 2026-09-18); (2) redundant method type arguments when inference yields identical (speculation-gated — spike-proven). | L |
 
-## Wave 3 → 1.4.0 — "Semantic depth II"
+## Wave 3 → 1.4.0 — "Semantic depth II" ✅ SHIPPED 2026-09-18
 
 | # | Story | Rule / Tier | Design | Effort |
 |---|---|---|---|---|
-| 3A | **Hierarchy dead code** | SNP0023, Moderate | Virtual member never overridden + class with virtuals never inherited (ReSharper-exclusive today). Reuses the override graph built for SNP0018; string-name reflection evidence suppresses (SNP0006 demotion pattern). | M |
-| 3B | **Tightening** | SNP0024, Advisory (default) | One analyser, three sub-checks: member-can-be-static (CA1822 parity), field-can-be-readonly (IDE0044), internal-class-can-be-sealed (CA1852). Advisory default to protect CI; promotable via `snipper.json`. | M |
-| 3C | **Redundancy sweep, part 2** *(if deferred)* | SNP0026, High | Redundant cast sub-rule (types match + no user-defined conversion involved). | M |
+| 3A | **Hierarchy dead code** ✅ | SNP0023, Moderate | Virtual member never overridden + class with virtuals never inherited. Built on the new shared `InheritanceGraph` index — the "SNP0018 override graph" assumed here turned out not to exist (SNP0018 uses per-symbol checks; corrected in [`phase3_wave3.md`](phase3_wave3.md)). String-name reflection evidence suppresses (SNP0006 demotion pattern). | M |
+| 3B | **Tightening** ✅ | SNP0024, Advisory (default) | One analyser, three sub-checks: member-can-be-static (CA1822 parity), field-can-be-readonly (IDE0044 — reuses the SNP0021 reference machinery via the extracted `FieldReferenceMap`), internal-class-can-be-sealed (CA1852). Promotable via `snipper.json`. | M |
+| 3C | **Redundancy sweep, part 2** ✅ | SNP0026, High | Redundant cast, narrowed to identity conversions in v1 (spike-proven: `IsIdentity` discriminates every non-flag shape); the upcast variant needs a rebind gate and stays deferred. | M |
 
 ## Tracked candidates (post-1.4.0, not committed)
 
