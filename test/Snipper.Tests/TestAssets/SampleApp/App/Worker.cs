@@ -46,6 +46,7 @@ public static class Worker
         _ = RedundantInvocationScenarios.ExerciseRedundancies();
         _ = RedundantTypeArgScenarios.ExerciseTypeArgs();
         _ = HierarchyScenarios.Exercise();
+        _ = TighteningExercise.Run(3);
 
         // Plugin host loads this assembly by name at runtime — name evidence for SNP0011.
         _ = "PluginLib";

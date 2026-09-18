@@ -5,7 +5,6 @@ using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.FindSymbols;
 using Snipper.Models;
 
 /// <summary>
@@ -146,36 +145,31 @@ public sealed class WriteOnlyFieldAnalyser(AnalysisExclusions? exclusions = null
         IImmutableSet<Document> candidateDocuments,
         CancellationToken cancellationToken)
     {
-        var references = await SymbolFinder.FindReferencesAsync(field, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+        var references = await FieldReferenceMap.GetReferencesAsync(field, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
 
         var sawWrite = false;
         foreach (var reference in references)
         {
-            foreach (var location in reference.Locations)
+            // Unconfirmed name matches are unknown evidence — treat as a read.
+            if (reference.IsCandidate)
             {
-                // Unconfirmed name matches are unknown evidence — treat as a read.
-                if (location.IsCandidateLocation)
-                {
+                return FieldUsage.HasRead;
+            }
+
+            var kind = reference.Node is null
+                ? FieldReferenceKind.Read
+                : FieldReferenceClassifier.Classify(reference.Node);
+
+            switch (kind)
+            {
+                case FieldReferenceKind.Read:
+                case FieldReferenceKind.ReadWrite:
                     return FieldUsage.HasRead;
-                }
-
-                var node = location.Location.SourceTree?.GetRoot(cancellationToken)
-                    .FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true) as SimpleNameSyntax;
-                var kind = node is null
-                    ? FieldReferenceKind.Read
-                    : FieldReferenceClassifier.Classify(node);
-
-                switch (kind)
-                {
-                    case FieldReferenceKind.Read:
-                    case FieldReferenceKind.ReadWrite:
-                        return FieldUsage.HasRead;
-                    case FieldReferenceKind.Write:
-                        sawWrite = true;
-                        break;
-                    case FieldReferenceKind.None:
-                        break;
-                }
+                case FieldReferenceKind.Write:
+                    sawWrite = true;
+                    break;
+                case FieldReferenceKind.None:
+                    break;
             }
         }
 
