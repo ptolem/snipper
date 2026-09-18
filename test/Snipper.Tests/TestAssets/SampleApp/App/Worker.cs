@@ -45,6 +45,7 @@ public static class Worker
         _ = new WriteOnlyFieldScenarios(21).Exercise(3);
         _ = RedundantInvocationScenarios.ExerciseRedundancies();
         _ = RedundantTypeArgScenarios.ExerciseTypeArgs();
+        _ = HierarchyScenarios.Exercise();
 
         // Plugin host loads this assembly by name at runtime — name evidence for SNP0011.
         _ = "PluginLib";

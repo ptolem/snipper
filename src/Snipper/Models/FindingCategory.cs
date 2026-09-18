@@ -19,5 +19,6 @@ public enum FindingCategory : byte
     CommentedOutCode = 15,
     WriteOnlyField = 16,
     RedundantArgument = 17,
-    RedundantTypeArguments = 18
+    RedundantTypeArguments = 18,
+    HierarchyDeadCode = 19
 }

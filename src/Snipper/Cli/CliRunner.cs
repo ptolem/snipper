@@ -211,6 +211,7 @@ public static class CliRunner
             new CommentedCodeAnalyser(exclusions),
             new WriteOnlyFieldAnalyser(exclusions),
             new RedundancyAnalyser(exclusions),
+            new HierarchyDeadCodeAnalyser(exclusions),
         };
 
         if (includeConfigAnalysis)
