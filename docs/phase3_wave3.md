@@ -1,7 +1,7 @@
 # Phase 3 — Wave 3 Team Spec (3A SNP0023, 3B SNP0024, 3C SNP0026)
 
 **Target release:** 1.4.0 · **Roadmap:** [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md) · **Baseline:** 1.3.1 (19 rules, 158 tests)
-**Status:** DRAFT for review — not yet approved. Merge order once approved: **InheritanceGraph → 3A → 3B → 3C (spike-gated) → cross-cutting → 1.4.0.**
+**Status:** ✅ **SHIPPED 2026-09-18 as 1.4.0** — all three stories landed per the merge order (foundation → 3A → 3B → 3C → cross-cutting): 22 rules, 188/188 tests, fixture2 repinned 23/25 (verified), dogfood clean. 3C shipped: the spike proved `IsIdentity` discriminates every non-flag shape. Two implementation-time adjustments beyond the spec: (1) can-be-static gained the spec's judgement-call-4 usage gate after DeadCode.cs exposed SNP0006 double-reporting, and its clean-file spot check moved to WriteOnlyFields.cs (DeadCode.cs legitimately contains CA1822 hits — it was authored for other rules); (2) the fixture2 Greeter gained instance state so the one-scenario-per-rule pin stays principled. Dogfood triage: two true positives fixed in our own code (`NuGetLockFileReader.Read` → static, `JsonReportSerializerContext` → sealed) plus one self-inflicted unused using.
 
 ## Roadmap deviations found while writing this spec
 

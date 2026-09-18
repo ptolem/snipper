@@ -97,7 +97,7 @@ internal sealed class ProjectPackageUsageCache
             }
         }
 
-        var lockModel = new NuGetLockFileReader().Read(projectFilePath);
+        var lockModel = NuGetLockFileReader.Read(projectFilePath);
 
         return new ProjectPackageUsageEntry(
             usedAssemblyNames.ToFrozenSet(StringComparer.OrdinalIgnoreCase),

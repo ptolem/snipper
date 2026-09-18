@@ -69,12 +69,12 @@
 
 4. **Read-vs-write analysis.** ✅ **Shipped 1.3.0 as SNP0021** — write-only private fields at High tier via syntax-role read/write classification at reference locations; unassigned fields deliberately remain SNP0001/CS0649.
 5. **Auto-fix mode.** ❌ **Rejected 2026-09-15** — read-only is a permanent design tenet; ReSharper/VS own the removal workflow, Snipper owns CI-grade detection.
-6. **Redundancy sweep.** ✅ **Shipped 1.3.1 as SNP0022 + SNP0025** — per-pattern rules (default-value argument, method type arguments), each verified by speculative re-binding so overload traps are never flagged; SNP0026 cast remains Wave 3 scope.
+6. **Redundancy sweep.** ✅ **Complete 1.4.0 as SNP0022 + SNP0025 + SNP0026** — per-pattern rules, each soundness-gated: default-value argument and method type arguments verified by speculative re-binding (1.3.1), redundant cast proven by the type system itself (identity conversions only — removal cannot change the static type).
 
 ### Tier 3 — differentiating but harder
 
-7. **Hierarchy dead code** (`VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`). ReSharper-exclusive; extremely valuable for library pruning. Snipper already computes override relationships for SNP0018 — a Moderate-tier rule waiting to happen.
-8. **Tightening rules** (can-be-static/readonly/sealed/private). Entropy *prevention*; CA1822/CA1852 parity.
+7. **Hierarchy dead code** (`VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`). ✅ **Shipped 1.4.0 as SNP0023** — solution-wide `InheritanceGraph` index; Moderate, demoted to Advisory on exported surfaces/friend assemblies; type-name string/JSON evidence (plugin loading) suppresses.
+8. **Tightening rules** (can-be-static/readonly/sealed/private). ✅ **Shipped 1.4.0 as SNP0024** — CA1822/IDE0044/CA1852 parity at flat Advisory; dogfood-proven (caught two genuine tightenings in Snipper itself on first run).
 9. **Duplicate detection.** dupFinder-style token hashing; a separate engine but monorepo gold.
 10. **Runtime/coverage evidence.** Import coverlet output as a certainty channel (coverage ≠ usage, but strong corroborating evidence — NDepend's model).
 11. **Cross-language reach.** Unused `.resx` keys; XAML/Razor name evidence (the `AssemblyNameEvidenceScanner` pattern generalises here).
@@ -102,7 +102,7 @@ Evidence-weighted; qualitative items marked.
 - **SNP0018** — obsolete-member dead code. Unique.
 - **CI-first shape** — read-only, fast (no mandatory build; InspectCode builds by default), SARIF + JSON + baseline in a zero-dependency global tool. InspectCode only matched SARIF in 2024.1 and still has no baseline concept.
 
-**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.3.1, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), read/write flow analysis (SNP0021), and the first two redundancy-sweep patterns (SNP0022/0025). The remaining deltas are deliberate or scheduled: auto-fix is rejected (read-only tenet), and the redundant cast (SNP0026) plus hierarchy/tightening rules (SNP0023/0024) are committed Wave 3 scope.
+**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.4.0, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), read/write flow analysis (SNP0021), the redundancy sweep (SNP0022/0025/0026), hierarchy dead code (SNP0023 — formerly ReSharper-exclusive), and tightening (SNP0024). The remaining deltas are deliberate or unscheduled: auto-fix is rejected (read-only tenet); duplicates, coverage import, and .resx/XAML evidence are tracked but not committed.
 
 ---
 
@@ -119,9 +119,9 @@ Gap → candidate rule, in suggested implementation order (Tier 1 first). IDs pr
 | 3 | **SNP0020 Commented-out code** ✅ shipped 1.2.0 | Tier 1.3 | Advisory | S | Comment-trivia code-likeness heuristic; doc comments/license/URLs/TODO markers excluded. |
 | 4 | **SNP0021 Field assigned, never read** ✅ shipped 1.3.0 | Tier 2.4 | High | M | Syntax-role read/write classification at reference locations (compound/`++`/`ref` = read, `out`/simple assignment = write); serialization attributes demote to Moderate. Unassigned fields deliberately stay with SNP0001/CS0649 — no separate variant. |
 | 5 | **`--fix` for Guaranteed rules** (dry-run diff first; SNP0019 + SNP0002 initially) | Tier 2.5 | — | L | Keep read-only default; explicit opt-in; idempotent. |
-| 6 | **SNP0022/0025 Redundant code sweep** ✅ shipped 1.3.1 | Tier 2.6 | High | L | Split into per-pattern rules: SNP0022 (default-value argument) + SNP0025 (method type arguments), both verified by speculative re-binding (spike-proven). SNP0026 (cast) remains Wave 3 scope. |
-| 7 | **SNP0023 Virtual member never overridden / class never inherited** | Tier 3.7 | Moderate | M | Reuse SNP0018 override graph; suppress on entry-point/reflection evidence like SNP0006. |
-| 8 | **SNP0024 Tightening** (can-be-static, can-be-readonly, can-be-sealed) | Tier 3.8 | Moderate/Advisory | M | Entropy prevention; Advisory default to avoid CI noise. |
+| 6 | **SNP0022/0025/0026 Redundant code sweep** ✅ complete 1.4.0 | Tier 2.6 | High | L | Per-pattern rules: SNP0022 (default-value argument) + SNP0025 (method type arguments) verified by speculative re-binding (1.3.1); SNP0026 (identity cast) proven by the type system — spike-confirmed IsIdentity discriminates every non-flag shape (1.4.0). Upcast variant deferred: stripping changes the static type (overload/`var` caveats). |
+| 7 | **SNP0023 Hierarchy dead code** ✅ shipped 1.4.0 | Tier 3.7 | Moderate | M | New shared `InheritanceGraph` index (the SNP0018 "override graph" turned out not to exist — per-symbol checks only). Class-level findings suppress member-level (root cause); usage gates keep zero-reference types/members with SNP0001/0005/0006; name-string/JSON evidence suppresses. |
+| 8 | **SNP0024 Tightening** (can-be-static, can-be-readonly, can-be-sealed) ✅ shipped 1.4.0 | Tier 3.8 | Advisory | M | CA1822/IDE0044/CA1852 parity at flat Advisory. can-be-readonly reuses the SNP0021 reference machinery via the extracted `FieldReferenceMap`. |
 | 9 | **Duplicate detection engine** (token-hash, cross-project) | Tier 3.9 | Advisory | L | Separate engine; dupFinder parity; likely new report section, not a finding rule. |
 | 10 | **Coverage evidence import** (`--coverage coverlet.xml` → certainty adjust) | Tier 3.10 | (channel) | M | Downgrade/upgrade certainty; never a standalone finding. |
 | 11 | **Unused `.resx` keys; XAML/Razor evidence** | Tier 3.11 | Moderate | M–L | Generalise `AssemblyNameEvidenceScanner` to resource/view assets. |

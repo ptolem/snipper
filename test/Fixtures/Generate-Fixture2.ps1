@@ -14,12 +14,12 @@ Usage:
     snipper <dir>/Fixture.slnx
     snipper <dir>/Fixture.slnx --config-analysis
 
-Expected findings (pinned for Snipper 1.3.1, verified 2026-09-18):
-    default run:           20 findings
-    --config-analysis run: 22 findings (adds SNP0007 + SNP0008)
+Expected findings (pinned for Snipper 1.4.0, verified 2026-09-18):
+    default run:           23 findings
+    --config-analysis run: 25 findings (adds SNP0007 + SNP0008)
 Per-rule expectation (default): SNP0001=1 SNP0002=1 SNP0003=1 SNP0004=1 SNP0005=2
     SNP0006=3 SNP0009=1 SNP0010=1 SNP0011=1 SNP0012=1 SNP0013=1 SNP0018=1 SNP0019=1 SNP0020=1
-    SNP0021=1 SNP0022=1 SNP0025=1
+    SNP0021=1 SNP0022=1 SNP0023=1 SNP0024=1 SNP0025=1 SNP0026=1
 NOTE: restore the fixture (dotnet restore) before analysing — package rules need obj/project.assets.json.
 A count drift without a corresponding rule change is a regression signal — investigate,
 then either fix the regression or update this header with the new verified counts.
@@ -113,6 +113,9 @@ public static class Worker
         var greeter = new Core.Greeter();
         _ = greeter.Greet("world");
         _ = Core.JsonRoundTrip.Echo("ping");
+        _ = new SpeculativeBase().VirtualHook();
+        _ = new SealableConfig().Level();
+        _ = IdentityCastLength("abc");
 
         Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Console().CreateLogger();
 
@@ -133,6 +136,9 @@ public static class Worker
     // SNP0025: inference infers <int> without the explicit list.
     private static T EchoExplicit<T>(T value) => value;
 
+    // SNP0026: the operand is already a string — an identity cast.
+    private static int IdentityCastLength(string text) => ((string)text).Length;
+
     private static int MultiplyUsed(int used) => used * 2;
 
     private static int MultiplyUnused(int a, int b) => a * b;
@@ -144,6 +150,22 @@ public static class Worker
         return value;
         var dead = value * 3;
     }
+}
+
+// SNP0023: declares virtual members but is never inherited. Public so SNP0024's
+// internal-only can-be-sealed stays silent — one scenario, one finding.
+public class SpeculativeBase
+{
+    public virtual int VirtualHook() => 1;
+}
+
+// SNP0024: internal, unsealed, never inherited — can be sealed. The readonly
+// field keeps can-be-static and SNP0023 (no virtuals) silent.
+internal class SealableConfig
+{
+    private readonly int _level = 3;
+
+    public int Level() => _level;
 }
 '@
 
@@ -176,7 +198,11 @@ namespace Core;
 
 public sealed class Greeter
 {
-    public string Greet(string name) => $"Hello, {name}!";
+    // Instance state keeps SNP0024 can-be-static silent — the fixture pins one
+    // authored scenario per rule, not ambient CA1822 hits.
+    private readonly string _greeting = "Hello";
+
+    public string Greet(string name) => $"{_greeting}, {name}!";
 
     // var prefix = "Hello";
     // if (prefix.Length > 0)
@@ -245,4 +271,4 @@ internal sealed class DetachedType
 '@
 
 Write-Host "fixture2 generated at $OutputPath"
-Write-Host "Verify: dotnet restore `"$OutputPath/Fixture.slnx`", then snipper `"$OutputPath/Fixture.slnx`" (expect 20) and with --config-analysis (expect 22)."
+Write-Host "Verify: dotnet restore `"$OutputPath/Fixture.slnx`", then snipper `"$OutputPath/Fixture.slnx`" (expect 23) and with --config-analysis (expect 25)."

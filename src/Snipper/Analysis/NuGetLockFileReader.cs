@@ -10,7 +10,7 @@ using NuGet.Versioning;
 /// </summary>
 internal sealed class NuGetLockFileReader
 {
-    public LockFileModel? Read(string projectFilePath)
+    public static LockFileModel? Read(string projectFilePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(projectFilePath);
 

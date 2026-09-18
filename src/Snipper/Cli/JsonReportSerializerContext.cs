@@ -9,4 +9,4 @@ using System.Text.Json.Serialization;
 [JsonSerializable(typeof(SarifLog))]
 [JsonSerializable(typeof(BaselineFile))]
 [JsonSerializable(typeof(JsonConfigModel))]
-internal partial class JsonReportSerializerContext : JsonSerializerContext;
+internal sealed partial class JsonReportSerializerContext : JsonSerializerContext;

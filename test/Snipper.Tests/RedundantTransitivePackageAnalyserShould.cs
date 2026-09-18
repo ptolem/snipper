@@ -57,7 +57,7 @@ public sealed class RedundantTransitivePackageAnalyserShould
 
         try
         {
-            new NuGetLockFileReader().Read(fakeProject).Should().BeNull();
+            NuGetLockFileReader.Read(fakeProject).Should().BeNull();
         }
         finally
         {
