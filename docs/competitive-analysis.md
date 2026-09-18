@@ -1,6 +1,6 @@
 # Competitive Analysis — Snipper vs. the .NET Code-Analysis Ecosystem
 
-**Date:** 2026-09-14 · **Snipper version:** 1.1.0 (14 rules: SNP0001–0010, 0011–0013, 0018)
+**Date:** 2026-09-14 · **Updated:** 2026-09-18 · **Snipper version:** 1.3.0 (17 rules: SNP0001–0013, 0018–0021)
 **Scope:** features for *reducing the entropy of a large codebase* — dead code detection, redundancy/hygiene sweeps, dependency bloat, duplication, and the removal workflow (fix automation, gating, suppression).
 
 **Sources & evidence levels:**
@@ -22,15 +22,15 @@
 | Unused locals / parameters | ✓ SNP0009/0010 | ✓ | ✓ IDE0059/IDE0060 | — | ✓ S1481/S1172 |
 | Unreachable statements | ✓ SNP0002 | ✓ | ✓ CS0162 | — | ✓ |
 | Obsolete zero-usage members | ✓ **SNP0018 (unique)** | — | — | — | — |
-| Field written, never read / unassigned | — | ✓ `NotAccessedField`, `UnassignedField` | ✓ IDE0052, CS0649 | — | ✓ S4487 |
+| Field written, never read / unassigned | ✓ SNP0021 (write-only; unassigned stays SNP0001/CS0649) | ✓ `NotAccessedField`, `UnassignedField` | ✓ IDE0052, CS0649 | — | ✓ S4487 |
 | Event never invoked | — | ✓ `EventNeverInvoked` | ~ | — | ~ |
-| Return value never used / param-only-precondition / out always discarded / nameof-only | — | ✓ `UnusedMethodReturnValue`, `ParameterOnlyUsedForPreconditionCheck`, `OutParameterValueIsAlwaysDiscarded`, `EntityNameCapturedOnly` | — | ~ (CQLinq) | — |
+| Return value never used / param-only-precondition / out always discarded / nameof-only | ~ (SNP0021 covers the nameof-only and out-only field slices) | ✓ `UnusedMethodReturnValue`, `ParameterOnlyUsedForPreconditionCheck`, `OutParameterValueIsAlwaysDiscarded`, `EntityNameCapturedOnly` | — | ~ (CQLinq) | — |
 | Hierarchy dead code (virtual never overridden, class never inherited, member only via overrides/base) | — | ✓ `VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`, `UnusedMemberHierarchy`, `UnusedMemberInSuper` | — | ~ | — |
 | **Redundancy sweeps** | | | | | |
-| Unused usings | — | ✓ `RedundantUsingDirective` (+global) | ✓ IDE0005 | — | ✓ S1128 |
+| Unused usings | ✓ SNP0019 (CS8019 + CS8933, incl. global usings) | ✓ `RedundantUsingDirective` (+global) | ✓ IDE0005 | — | ✓ S1128 |
 | Redundant casts / qualifiers / type args / default args / etc. | — | ✓ 103 inspections | ~ IDE00xx subset | — | ~ |
 | Empty ctor/destructor/namespace, redundant overload/override/initializer/partial | — | ✓ | ~ | — | ~ |
-| Commented-out code | — | — | — | — | ✓ S125 |
+| Commented-out code | ✓ SNP0020 | — | — | — | ✓ S125 |
 | **Tightening (entropy prevention)** | | | | | |
 | can-be-static / readonly / sealed / private / internal / const / init-only / file-local | — | ✓ `MemberCanBeMadeStatic`, `FieldCanBeMadeReadOnly`, `ClassCanBeSealed`, `MemberCanBePrivate/Internal/FileLocal`… | ~ CA1822, CA1852, IDE0044 | ~ | ~ |
 | **Dependency hygiene** | | | | | |
@@ -49,7 +49,7 @@
 | **Workflow** | | | | | |
 | Auto-fix / bulk cleanup | — | ✓ quick-fixes + CleanupCode CLT | ✓ Code Cleanup + `dotnet format` | — | ~ |
 | Safe-delete with usage preview | — | ✓ | ~ | — | — |
-| Severity/suppression config (.editorconfig etc.) | — | ✓ .editorconfig + .DotSettings | ✓ .editorconfig | ✓ | ✓ |
+| Severity/suppression config (.editorconfig etc.) | ✓ `snipper.json` (per-rule severity/off, namespace + path/glob exclusions) | ✓ .editorconfig + .DotSettings | ✓ .editorconfig | ✓ | ✓ |
 | CI baseline / new-code gate | ✓ `--baseline` | ~ (severity threshold) | — | ✓ baseline diff | ✓✓ (industry reference) |
 | SARIF output | ✓ | ✓ (CLT default since 2024.1) | ~ | — | ✓ |
 | Design-time squiggles | — | ✓✓ | ✓✓ | ✓ | ✓ (SonarLint) |
@@ -61,15 +61,15 @@
 
 ### Tier 1 — cheap for Snipper, very high perceived value (fits the syntax-first architecture)
 
-1. **Unused usings (IDE0005 parity).** The single most-applied cleanup action in the ecosystem. Guaranteed tier; trivially implementable with existing syntax passes (per-document `using` directives vs. referenced namespaces).
-2. **Severity/suppression configuration.** Every serious tool lets teams tune rules (`.editorconfig`, `.DotSettings`, Sonar profiles). Snipper has no user-facing per-rule severity or exclusion config — this blocks org adoption more than any missing rule. (Natural shape: `snipper.json` / `.snipperignore` + per-rule severity overrides.)
-3. **Commented-out code (Sonar S125 parity).** Trivia-level heuristic (token density inside comment blocks), Advisory tier; a top-hit rule in Sonar deployments.
+1. **Unused usings (IDE0005 parity).** ✅ **Shipped 1.2.0 as SNP0019** — via compiler-diagnostic surfacing (CS8019 incl. global usings, CS8933 duplicates), Guaranteed tier.
+2. **Severity/suppression configuration.** ✅ **Shipped 1.2.0** — `snipper.json` with per-rule severity/off, namespace exclusions, and path globs, applied at report time so baselines never churn.
+3. **Commented-out code (Sonar S125 parity).** ✅ **Shipped 1.2.0 as SNP0020** — comment-trivia code-likeness heuristic, Advisory tier.
 
 ### Tier 2 — the biggest functional gaps developers notice
 
-4. **Read-vs-write analysis.** "Assigned but never read" fields (IDE0052/`NotAccessedField`), unassigned fields (CS0649). Snipper's zero-*reference* model cannot see these; needs read/write reference classification in `SymbolReferenceQuery`.
-5. **Auto-fix mode.** The ecosystem's baseline expectation is Alt+Enter → gone. Even a conservative `--fix` limited to Guaranteed rules (unused usings, unreachable code) closes most of the gap; ReSharper ships a whole CLT (`CleanupCode`) just for automated removal. Design constraint: must respect the read-only CI contract — suggest explicit opt-in flag + dry-run diff output.
-6. **Redundancy sweep.** Redundant casts, type arguments, default-value arguments, name qualifiers. High-volume, low-risk — the visible bulk of ReSharper's "grey code" experience.
+4. **Read-vs-write analysis.** ✅ **Shipped 1.3.0 as SNP0021** — write-only private fields at High tier via syntax-role read/write classification at reference locations; unassigned fields deliberately remain SNP0001/CS0649.
+5. **Auto-fix mode.** ❌ **Rejected 2026-09-15** — read-only is a permanent design tenet; ReSharper/VS own the removal workflow, Snipper owns CI-grade detection.
+6. **Redundancy sweep.** ⏸ **Speculation gates spike-proven 2026-09-18; implementation deferred pending review** — split into per-pattern rules (SNP0022 default-value argument, SNP0025 method type arguments, SNP0026 cast in Wave 3).
 
 ### Tier 3 — differentiating but harder
 
@@ -102,7 +102,7 @@ Evidence-weighted; qualitative items marked.
 - **SNP0018** — obsolete-member dead code. Unique.
 - **CI-first shape** — read-only, fast (no mandatory build; InspectCode builds by default), SARIF + JSON + baseline in a zero-dependency global tool. InspectCode only matched SARIF in 2024.1 and still has no baseline concept.
 
-**Bottom line:** Snipper owns the *dependency-hygiene* quadrant outright and has credible dead-code fundamentals. The ecosystem's most-valued missing pieces are not exotic rules — they are **auto-fix, suppression config, unused usings, and read/write flow analysis**.
+**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.3.0, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), and read/write flow analysis (SNP0021). The remaining deltas are deliberate or scheduled: auto-fix is rejected (read-only tenet), the redundancy sweep is spike-proven and deferred pending review (SNP0022/0025/0026), and hierarchy/tightening rules are committed for Wave 3 (SNP0023/0024).
 
 ---
 
@@ -117,9 +117,9 @@ Gap → candidate rule, in suggested implementation order (Tier 1 first). IDs pr
 | 1 | **SNP0019 Unused using directives** ✅ shipped 1.2.0 | Tier 1.1 | Guaranteed | S | Shipped as compiler-diagnostic surfacing (CS8019 incl. global usings, CS8933 duplicates) after the spike proved coverage — even simpler than the original design. |
 | 2 | **Suppression & severity config** (`snipper.json`, per-rule severity, path/glob exclusions) ✅ shipped 1.2.0 | Tier 1.2 | — | M | Walk-up discovery, report-time application (baseline-stable), analysers skip when fully disabled. |
 | 3 | **SNP0020 Commented-out code** ✅ shipped 1.2.0 | Tier 1.3 | Advisory | S | Comment-trivia code-likeness heuristic; doc comments/license/URLs/TODO markers excluded. |
-| 4 | **SNP0021 Field assigned, never read** | Tier 2.4 | High | M | Extend `SymbolReferenceQuery` with read/write classification; pair with unassigned-field variant (CS0649 parity, Guaranteed). |
+| 4 | **SNP0021 Field assigned, never read** ✅ shipped 1.3.0 | Tier 2.4 | High | M | Syntax-role read/write classification at reference locations (compound/`++`/`ref` = read, `out`/simple assignment = write); serialization attributes demote to Moderate. Unassigned fields deliberately stay with SNP0001/CS0649 — no separate variant. |
 | 5 | **`--fix` for Guaranteed rules** (dry-run diff first; SNP0019 + SNP0002 initially) | Tier 2.5 | — | L | Keep read-only default; explicit opt-in; idempotent. |
-| 6 | **SNP0022 Redundant code sweep** (casts, type args, default args, qualifiers) | Tier 2.6 | High | M–L | Ship as one umbrella analyser with per-pattern sub-rules. |
+| 6 | **SNP0022 Redundant code sweep** (casts, type args, default args, qualifiers) | Tier 2.6 | High | M–L | Amended 2026-09-18: split into per-pattern rules — SNP0022 (default-value argument), SNP0025 (method type arguments), SNP0026 (cast, Wave 3) — each speculation-gated (spike-proven). Implementation deferred pending review. |
 | 7 | **SNP0023 Virtual member never overridden / class never inherited** | Tier 3.7 | Moderate | M | Reuse SNP0018 override graph; suppress on entry-point/reflection evidence like SNP0006. |
 | 8 | **SNP0024 Tightening** (can-be-static, can-be-readonly, can-be-sealed) | Tier 3.8 | Moderate/Advisory | M | Entropy prevention; Advisory default to avoid CI noise. |
 | 9 | **Duplicate detection engine** (token-hash, cross-project) | Tier 3.9 | Advisory | L | Separate engine; dupFinder parity; likely new report section, not a finding rule. |

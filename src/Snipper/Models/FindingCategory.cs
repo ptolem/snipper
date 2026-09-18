@@ -16,5 +16,6 @@ public enum FindingCategory : byte
     FrameworkProvidedPackage = 12,
     ObsoleteUnreferencedMember = 13,
     UnusedUsingDirective = 14,
-    CommentedOutCode = 15
+    CommentedOutCode = 15,
+    WriteOnlyField = 16
 }

@@ -1,13 +1,14 @@
 # Snipper Feature-Parity Roadmap (Waves 1–3)
 
 **Date:** 2026-09-15 · **Baseline:** Snipper 1.1.2 (15 rules, 98 tests) · **Source analysis:** [`competitive-analysis.md`](competitive-analysis.md)
-**Status:** APPROVED — Wave 1 spec is the next deliverable.
+**Status:** Wave 1 SHIPPED 2026-09-17 as 1.2.0 (16 rules, 127 tests). Wave 2 story 2A SHIPPED 2026-09-18 as 1.3.0 (17 rules, 141 tests); 2B deferred pending review — spec: [`phase3_wave2.md`](phase3_wave2.md).
 
 ## Locked decisions
 
 1. **Read-only forever.** Snipper never mutates source. No `snipper fix`, no auto-cleanup — detection and reporting only. This is a permanent design tenet, not a deferral; it supersedes the `--fix` candidate in `competitive-analysis.md` §5. ReSharper/VS own the *removal* workflow; Snipper owns CI-grade *detection*.
 2. **Waves 1–3 committed** (through 1.4.0). Duplicates engine, coverage import, `.resx`/XAML remain tracked candidates, re-evaluated after 1.4.0 dogfooding.
 3. **One release per wave** — 1.2.0, 1.3.0, 1.4.0, each a coherent dogfooded milestone.
+4. **Per-pattern redundancy rule IDs** *(amended 2026-09-18)* — the redundancy sweep does NOT share one SNP0022 id: SNP0022 = redundant default-value argument, SNP0025 = redundant method type arguments, SNP0026 = redundant cast. Independently toggleable via `snipper.json`; SNP0023/0024 stay reserved for Wave 3. 2B implementation is deferred pending user review — 1.3.0 ships 2A only.
 
 ## Guiding principles
 
@@ -41,7 +42,7 @@ The three features developers see every day in ReSharper/Sonar, all cheap in Sni
 | # | Story | Rule / Tier | Design | Effort |
 |---|---|---|---|---|
 | 2A | **Field written, never read** (IDE0052 parity) | SNP0021, High | Read/write classification in usage collection: assignment target / `++`/`--` / `out` = write; `ref` = read+write; everything else = read. Flag fields with ≥1 write and 0 reads. Demote to Moderate on serialization attributes (`[JsonInclude]`, `[DataMember]`, `[XmlElement]`). Never-assigned fields deliberately excluded — CS0649 is the compiler's job. Starts one tier lower if dogfooding shows noise; promoted after a wave of evidence. | M |
-| 2B | **Redundancy sweep, part 1** | SNP0022, High | Umbrella analyser with per-pattern sub-rules, each shipped only when individually soundness-proven. 1.3.0 scope: (1) redundant default-value argument (metadata default vs literal — sound); (2) redundant method type arguments when inference yields identical (speculation-gated). Redundant cast only if its proof is clean, else deferred to Wave 3. | L |
+| 2B | **Redundancy sweep, part 1** *(deferred — see locked decision 4)* | SNP0022 / SNP0025, High | Per-pattern rules, each shipped only when individually soundness-proven. (1) redundant default-value argument (metadata default vs literal + speculative rebinding check — spike-proven 2026-09-18); (2) redundant method type arguments when inference yields identical (speculation-gated — spike-proven). | L |
 
 ## Wave 3 → 1.4.0 — "Semantic depth II"
 
@@ -49,7 +50,7 @@ The three features developers see every day in ReSharper/Sonar, all cheap in Sni
 |---|---|---|---|---|
 | 3A | **Hierarchy dead code** | SNP0023, Moderate | Virtual member never overridden + class with virtuals never inherited (ReSharper-exclusive today). Reuses the override graph built for SNP0018; string-name reflection evidence suppresses (SNP0006 demotion pattern). | M |
 | 3B | **Tightening** | SNP0024, Advisory (default) | One analyser, three sub-checks: member-can-be-static (CA1822 parity), field-can-be-readonly (IDE0044), internal-class-can-be-sealed (CA1852). Advisory default to protect CI; promotable via `snipper.json`. | M |
-| 3C | **Redundancy sweep, part 2** *(if deferred)* | SNP0022, High | Redundant cast sub-rule (types match + no user-defined conversion involved). | M |
+| 3C | **Redundancy sweep, part 2** *(if deferred)* | SNP0026, High | Redundant cast sub-rule (types match + no user-defined conversion involved). | M |
 
 ## Tracked candidates (post-1.4.0, not committed)
 

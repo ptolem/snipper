@@ -42,6 +42,7 @@ public static class Worker
         _ = Triple(2);
         _ = JsonRoundTrip.Echo("ping");
         _ = new LegacyHelper().StillUsedApi();
+        _ = new WriteOnlyFieldScenarios(21).Exercise(3);
 
         // Plugin host loads this assembly by name at runtime — name evidence for SNP0011.
         _ = "PluginLib";

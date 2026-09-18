@@ -209,6 +209,7 @@ public static class CliRunner
             new FrameworkInboxPackageAnalyser(),
             new UnusedUsingDirectiveAnalyser(exclusions),
             new CommentedCodeAnalyser(exclusions),
+            new WriteOnlyFieldAnalyser(exclusions),
         };
 
         if (includeConfigAnalysis)
