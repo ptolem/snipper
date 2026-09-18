@@ -11,6 +11,11 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 /// speculatively re-bound symbol equals the original — this is what makes
 /// "redundant" claims sound against overload-rebinding traps (spike-proven
 /// 2026-09-18: traps rebind to a different symbol; safe cases compare equal).
+/// Invocations touching a conditional access (?.) never speculate: the rewritten
+/// form would carry a MemberBindingExpression detached from its conditional-access
+/// parent, which crashes Roslyn's speculative binder with a NullReferenceException
+/// (monorepo crash 2026-09-18) — and null-propagation changes what the rewrite
+/// even means, so these invocations are never redundancy candidates anyway.
 /// </summary>
 internal static class InvocationSpeculation
 {
@@ -26,6 +31,11 @@ internal static class InvocationSpeculation
     {
         ArgumentNullException.ThrowIfNull(invocation);
         ArgumentNullException.ThrowIfNull(semanticModel);
+
+        if (ContainsConditionalAccess(invocation))
+        {
+            return null;
+        }
 
         var rewrittenArguments = invocation.ArgumentList.Arguments.RemoveAt(argumentIndex);
         var rewritten = invocation.WithArgumentList(invocation.ArgumentList.WithArguments(rewrittenArguments));
@@ -48,6 +58,11 @@ internal static class InvocationSpeculation
         ArgumentNullException.ThrowIfNull(genericName);
         ArgumentNullException.ThrowIfNull(semanticModel);
 
+        if (ContainsConditionalAccess(invocation))
+        {
+            return null;
+        }
+
         var plainName = SyntaxFactory.IdentifierName(genericName.Identifier);
         var rewritten = invocation.Expression is MemberAccessExpressionSyntax memberAccess
             ? invocation.WithExpression(memberAccess.WithName(plainName))
@@ -55,5 +70,16 @@ internal static class InvocationSpeculation
         return semanticModel
             .GetSpeculativeSymbolInfo(invocation.SpanStart, rewritten, SpeculativeBindingOption.BindAsExpression)
             .Symbol as IMethodSymbol;
+    }
+
+    /// <summary>
+    /// Syntax-only guard, checked before any speculative call: true when the
+    /// invocation subtree contains a conditional access or member binding —
+    /// either as the invoked expression (<c>receiver?.Foo(args)</c>,
+    /// <c>receiver?.Helper.Foo&lt;T&gt;(args)</c>) or nested inside an argument.
+    /// </summary>
+    private static bool ContainsConditionalAccess(SyntaxNode node)
+    {
+        return node.DescendantNodesAndSelf().Any(static n => n is ConditionalAccessExpressionSyntax or MemberBindingExpressionSyntax);
     }
 }

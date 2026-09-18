@@ -189,4 +189,39 @@ public sealed class RedundancyAnalyserShould(SampleSolutionFixture fixture)
 
         findings.Should().NotContain(f => f.RuleId == "SNP0025" && f.Message.Contains("EchoAnnotated", StringComparison.Ordinal));
     }
+
+    // Conditional access (?.): speculation must never run on these shapes —
+    // Roslyn's speculative binder throws NullReferenceException on a
+    // MemberBindingExpression detached from its conditional-access parent
+    // (monorepo crash 2026-09-18). These tests completing at all is the
+    // crash-guard assertion; the NotContain clauses pin the no-finding rule.
+    [Fact]
+    public async Task Not_Flag_Or_Crash_When_The_Invocation_Is_Conditional_On_Its_Receiver_For_AnalyzeAsync()
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => f.RuleId == "SNP0022" && f.Message.Contains("GreetViaConditional", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Or_Crash_When_A_Conditional_Access_Chains_Into_A_Generic_Invocation_For_AnalyzeAsync()
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => f.RuleId == "SNP0025" && f.Message.Contains("EchoViaConditional", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Or_Crash_When_A_Conditional_Access_Sits_Inside_An_Argument_For_AnalyzeAsync()
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => f.RuleId == "SNP0025" && f.Message.Contains("EchoPlain", StringComparison.Ordinal));
+    }
 }
