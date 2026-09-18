@@ -127,7 +127,7 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
             }
         }
 
-        if (obsoleteAttribute is null || symbol.IsOverride || IsInterfaceImplementation(symbol))
+        if (obsoleteAttribute is null || symbol.IsOverride || InterfaceImplementationQuery.IsInterfaceImplementation(symbol))
         {
             return;
         }
@@ -182,35 +182,6 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
             IEventSymbol => true,
             _ => false,
         };
-    }
-
-    private static bool IsInterfaceImplementation(ISymbol symbol)
-    {
-        if (symbol is IMethodSymbol { ExplicitInterfaceImplementations.Length: > 0 }
-            || symbol is IPropertySymbol { ExplicitInterfaceImplementations.Length: > 0 }
-            || symbol is IEventSymbol { ExplicitInterfaceImplementations.Length: > 0 })
-        {
-            return true;
-        }
-
-        if (symbol is not (IMethodSymbol or IPropertySymbol or IEventSymbol) || symbol.ContainingType is not { } containingType)
-        {
-            return false;
-        }
-
-        foreach (var contract in containingType.AllInterfaces)
-        {
-            foreach (var member in contract.GetMembers())
-            {
-                var implementation = containingType.FindImplementationForInterfaceMember(member);
-                if (implementation is not null && SymbolEqualityComparer.Default.Equals(implementation, symbol))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
     private static bool IsObsoleteAttributeName(NameSyntax name)
