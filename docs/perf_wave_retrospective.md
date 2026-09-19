@@ -1,17 +1,17 @@
-# Perf Wave Retrospective (1.4.2/1.4.3) — REVERT DECIDED 2026-09-18
+# Perf Wave Retrospective (1.4.2/1.4.3) — REVERTED 2026-09-18
 
-**Verdict:** `SolutionReferenceIndex` is reverted; SNP0005/0006 and SNP0009 return to `FindReferencesAsync`/`SymbolReferenceQuery`. Kept: `UnreachableCodeGate` (SNP0002/0009 flow pre-filter), SNP0019 single-pass diagnostics, the 1.4.1 conditional-access speculation guard. **Status: decided, not yet executed — this document is the plan.**
+**Verdict:** `SolutionReferenceIndex` reverted; SNP0005/0006 and SNP0009 returned to `FindReferencesAsync`/`SymbolReferenceQuery`. Kept: `UnreachableCodeGate` (SNP0002/0009 flow pre-filter), SNP0019 single-pass diagnostics, the 1.4.1 conditional-access speculation guard. **Status: executed — revert shipped as 1.4.4 (191 tests, dogfood 0, fixture2 23/25). Monorepo A/B acceptance pending the user's re-run (expect ≈1,532 SNP0005/0006 findings, ~180s total).**
 
-## Immediate next actions (execute in order)
+## Executed actions (completed)
 
-1. Delete `src/Snipper/Analysis/SolutionReferenceIndex.cs` and `test/Snipper.Tests/SolutionReferenceIndexShould.cs`.
-2. Restore `src/Snipper/Analysis/SymbolUsageCollector.cs` (from git history, commit `58ce63e`) and `test/Snipper.Tests/SymbolUsageCollectorShould.cs`.
-3. Restore `UnusedNonPrivateMemberAnalyser` to the `58ce63e` `FindReferencesAsync` path (usage index + `SymbolReferenceQuery` + the two async rescue passes).
-4. Restore `ProjectPackageUsageCache` line to `SymbolUsageCollector.CollectUsedAssembliesAsync(project, cancellationToken)`.
-5. Revert SNP0009's (`UnusedLocalVariableAnalyser`) slow-path lookup to `SymbolReferenceQuery.HasAnyReferenceAsync(local, solution, ImmutableHashSet.Create(document), ct)` — **keep** the `UnreachableCodeGate.MayStartUnreachable` flow guard and restore the `System.Collections.Immutable` using.
-6. Keep untouched: `UnreachableCodeGate.cs`, the SNP0002 gate call, SNP0019's single-pass `compilation.GetDiagnostics`, the 1.4.1 `?.` guard, all docs commits.
-7. Update this file + roadmap status to REVERTED. Validate: full suite (~189 tests), dogfood 0 findings, fixture2 pins 23/25. Commit as a revert-forward (no `git reset` — preserve history and docs commits). Bump 1.4.4, pack, `dotnet tool update`.
-8. User re-runs the monorepo as the final gate: expect ~1,532 SNP0005/0006 findings and ~180s total.
+1. ~~Delete `src/Snipper/Analysis/SolutionReferenceIndex.cs` and `test/Snipper.Tests/SolutionReferenceIndexShould.cs`.~~ ✔
+2. ~~Restore `src/Snipper/Analysis/SymbolUsageCollector.cs` (from git history, commit `58ce63e`) and `test/Snipper.Tests/SymbolUsageCollectorShould.cs`.~~ ✔
+3. ~~Restore `UnusedNonPrivateMemberAnalyser` to the `58ce63e` `FindReferencesAsync` path (usage index + `SymbolReferenceQuery` + the two async rescue passes).~~ ✔
+4. ~~Restore `ProjectPackageUsageCache` line to `SymbolUsageCollector.CollectUsedAssembliesAsync(project, cancellationToken)`.~~ ✔
+5. ~~Revert SNP0009's (`UnusedLocalVariableAnalyser`) slow-path lookup to `SymbolReferenceQuery.HasAnyReferenceAsync(local, solution, ImmutableHashSet.Create(document), ct)` — **kept** the `UnreachableCodeGate.MayStartUnreachable` flow guard, restored the `System.Collections.Immutable` using.~~ ✔
+6. Kept untouched: `UnreachableCodeGate.cs`, the SNP0002 gate call, SNP0019's single-pass `compilation.GetDiagnostics`, the 1.4.1 `?.` guard, all docs commits. ✔
+7. Docs marked REVERTED. Validated: 191/191 tests, dogfood 0 findings, fixture2 pins 23/25. Committed revert-forward (no `git reset`), released as 1.4.4. ✔
+8. **Pending: user re-runs the monorepo** — expect ≈1,532 SNP0005/0006 findings and ~180s total; any deviation reopens the gate discussion.
 
 ## Why reverted (user-set acceptance gate, breached)
 

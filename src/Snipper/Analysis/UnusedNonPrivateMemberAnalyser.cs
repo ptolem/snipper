@@ -8,12 +8,9 @@ using Snipper.Models;
 
 /// <summary>
 /// SNP0005 (internal) / SNP0006 (public) — Flags members with zero references
-/// across the solution. Existence checks and both rescue passes (interface
-/// contracts, extension-method holders) are O(1) lookups against the shared
-/// <see cref="SolutionReferenceIndex"/> harvest — no per-candidate reference
-/// searches. Certainty is demoted to Advisory when the member could be reached
-/// via reflection, DI registration, friend assemblies, or when it sits on an
-/// externally consumable public API surface.
+/// across the solution. Certainty is demoted to Advisory when the member could
+/// be reached via reflection, DI registration, friend assemblies, or when it
+/// sits on an externally consumable public API surface.
 /// </summary>
 public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
@@ -32,11 +29,13 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         progress?.Invoke("UnusedNonPrivateMemberAnalyser: scanning DI registrations");
         var diRegisteredTypes = await DiRegistrationScanner.ScanAsync(solution, cancellationToken).ConfigureAwait(false);
         var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
-        var referenceIndex = SolutionReferenceIndex.Get(solution);
+        var usageIndex = SolutionUsageIndex.Get(solution);
 
         // Binding is deliberately sequential: workspace compilations are built with
         // ConcurrentBuild=false, so concurrent semantic binding is unsupported and
-        // silently loses symbol information.
+        // silently loses symbol information. Parallelism lives in the syntax-only
+        // SolutionUsageIndex; reference searches stay sequential but are restricted
+        // to the handful of documents that textually contain the symbol name.
         foreach (var project in solution.Projects)
         {
             if (!project.SupportsCompilation)
@@ -96,20 +95,29 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                         continue;
                     }
 
-                    var hasReference = referenceIndex.IsReferenced(symbol);
+                    // Internal members without friend assemblies can only be referenced
+                    // within their own project; public members can be referenced anywhere.
+                    // The usage index restricts the search to documents that textually
+                    // contain the symbol name; an empty set proves the symbol is unused.
+                    var candidateDocuments = symbol.DeclaredAccessibility == Accessibility.Internal && !hasFriendAssemblies
+                        ? usageIndex.GetDocumentsUsingName(project, symbol.Name)
+                        : usageIndex.GetDocumentsUsingName(symbol.Name);
+
+                    var hasReference = candidateDocuments.Count > 0
+                        && await SymbolReferenceQuery.HasAnyReferenceAsync(symbol, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
 
                     // Rescue passes run only when the symbol has no direct references of
-                    // its own — each is now an index lookup, not a reference search.
+                    // its own — each costs its own FindReferencesAsync scan.
                     if (!hasReference
                         && symbol is IMethodSymbol method
-                        && HasUsedInterfaceContract(method, referenceIndex))
+                        && await HasUsedInterfaceContractAsync(method, solution, usageIndex, cancellationToken).ConfigureAwait(false))
                     {
                         continue;
                     }
 
                     if (!hasReference
                         && symbol is INamedTypeSymbol { IsStatic: true } staticType
-                        && HasAnyUsedExtensionMethod(staticType, referenceIndex))
+                        && await HasAnyUsedExtensionMethodAsync(staticType, solution, usageIndex, cancellationToken).ConfigureAwait(false))
                     {
                         hasReference = true;
                     }
@@ -225,7 +233,11 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         return true;
     }
 
-    private static bool HasAnyUsedExtensionMethod(INamedTypeSymbol staticType, SolutionReferenceIndex referenceIndex)
+    private static async Task<bool> HasAnyUsedExtensionMethodAsync(
+        INamedTypeSymbol staticType,
+        Solution solution,
+        SolutionUsageIndex usageIndex,
+        CancellationToken cancellationToken)
     {
         // Extension invocations (value.Method()) bind to the method symbol, not the
         // class — a heavily used extension-method holder shows zero type references
@@ -233,8 +245,14 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         // its extension methods is.
         foreach (var member in staticType.GetMembers())
         {
-            if (member is IMethodSymbol { IsExtensionMethod: true } extensionMethod
-                && referenceIndex.IsReferenced(extensionMethod))
+            if (member is not IMethodSymbol { IsExtensionMethod: true } extensionMethod)
+            {
+                continue;
+            }
+
+            var candidateDocuments = usageIndex.GetDocumentsUsingName(extensionMethod.Name);
+            if (candidateDocuments.Count > 0
+                && await SymbolReferenceQuery.HasAnyReferenceAsync(extensionMethod, solution, candidateDocuments, cancellationToken).ConfigureAwait(false))
             {
                 return true;
             }
@@ -243,7 +261,11 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         return false;
     }
 
-    private static bool HasUsedInterfaceContract(IMethodSymbol method, SolutionReferenceIndex referenceIndex)
+    private static async Task<bool> HasUsedInterfaceContractAsync(
+        IMethodSymbol method,
+        Solution solution,
+        SolutionUsageIndex usageIndex,
+        CancellationToken cancellationToken)
     {
         var containingType = method.ContainingType;
         if (containingType is null)
@@ -261,8 +283,11 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                     continue;
                 }
 
-                // A call dispatched through the interface binds the interface member.
-                if (referenceIndex.IsReferenced(interfaceMember))
+                // A call dispatched through the interface references the interface
+                // member, whose name must appear at the call site.
+                var candidateDocuments = usageIndex.GetDocumentsUsingName(interfaceMember.Name);
+                if (candidateDocuments.Count > 0
+                    && await SymbolReferenceQuery.HasAnyReferenceAsync(interfaceMember, solution, candidateDocuments, cancellationToken).ConfigureAwait(false))
                 {
                     return true;
                 }
