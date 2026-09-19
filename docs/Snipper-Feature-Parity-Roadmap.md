@@ -59,6 +59,34 @@ The three features developers see every day in ReSharper/Sonar, all cheap in Sni
 - **Coverage evidence import** — `--coverage coverlet.xml` (cobertura); corroborating channel that adjusts certainty, never a standalone finding. M.
 - **Unused `.resx` keys / XAML-Razor evidence** — generalise `AssemblyNameEvidenceScanner`. M–L.
 
+## Next steps (as of 1.4.2, 2026-09-18)
+
+1. **Monorepo A/B validation of 1.4.2** — user re-runs their large monorepo and reports per-analyser timings + finding counts. Gate (user-approved): SNP0005/0006 reduction acceptable (over-approximation doctrine — each delta needs a defensible "used" explanation); **any SNP0005/0006 increase blocks**; all other rules count-identical. Baseline from the user's 1.4.1 run (total 224.7s):
+
+   | Analyser | Time | Findings | 1.4.2 expectation |
+   |---|---|---|---|
+   | UnusedNonPrivateMember (SNP0005/0006) | 105.1s | 1,532 | ~20–25s (index harvest) |
+   | UnreachableCode (SNP0002) | 47.1s | 0 | <5s (syntax gate) |
+   | UnusedLocalVariable (SNP0009) | 28.4s | 56 | <5s + index (gate + index) |
+   | UnreferencedPackage (SNP0003/0004) | 17.9s | 47 | ~0 marginal (shared harvest) |
+   | UnusedUsingDirective (SNP0019) | 14.2s | 207 | ~2s (single-pass diagnostics) |
+   | Everything else | ≤2.5s each | 19, 8, 49, 0, 34, 0, 12, 8, 72, 3, 670 | unchanged |
+   | **Total** | **224.7s** | | **~60–80s** |
+
+2. **Parallel-binding adoption decision (1.4.3 candidate)** — spike verdict GO (see Tracked candidates). If the user approves: parallelize the `SolutionReferenceIndex` harvest + per-document analyser sweeps behind a revertible degree-of-parallelism switch; validate full suite + dogfood + fixture2 + monorepo A/B. Expected: harvest (the post-1.4.2 bottleneck) drops ~10×.
+
+3. **Wave 4 direction — PENDING USER DECISION** (asked 2026-09-18, interrupted before answer). Options as presented:
+   - **Trust wave first (recommended then):** coverage import (M) + gap-fillers below (S–M each); duplicates becomes Wave 5's big rock.
+   - **Duplicates engine now:** token-shingle engine (L) as the wave's centerpiece.
+   - **Coverage import only** (M), smallest surface.
+   - **.resx/XAML evidence** (M–L).
+   - **Gap-filler sweep only.**
+   Dogfood evidence informing the choice: SNP0024 caught two genuine tightenings in Snipper itself on first run (entropy-prevention family punches above its weight); SNP0023/0026 were silent on the clean self-run.
+
+   **Gap-filler inventory** (honest `~` cells in competitive-analysis.md §1 after 1.4.0): tightening remainder (can-be-private/internal/const/init-only/file-local); hierarchy remainder (`UnusedMemberHierarchy`/`UnusedMemberInSuper` — member only referenced via overrides/base; `InheritanceGraph` already exists); SNP0026 upcast variant (needs the rebind gate: overload rebind + `var`-inference exclusion); redundancy remainder (redundant qualifiers, empty ctor/destructor, redundant initializer/partial — per-pattern IDs per locked decision 4); event-never-invoked / return-value-never-used / out-always-discarded family.
+
+   **Explicit non-goals (standing):** auto-fix (read-only tenet), outdated/vulnerable packages (NuGet Audit owns), IDE squiggles, general lint/bug-risk rules.
+
 ## Per-story working agreement (all waves)
 
 1. Fixture scenarios added to SampleApp in **new files** (never `DeadCode.cs`), using locally-defined framework stand-ins where name-matching applies (the `FactAttribute` pattern).
