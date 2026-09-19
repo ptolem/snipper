@@ -1,7 +1,7 @@
 # Snipper Feature-Parity Roadmap (Waves 1–3)
 
 **Date:** 2026-09-15 · **Baseline:** Snipper 1.1.2 (15 rules, 98 tests) · **Source analysis:** [`competitive-analysis.md`](competitive-analysis.md)
-**Status:** Wave 1 SHIPPED 2026-09-17 as 1.2.0 (16 rules, 127 tests). Wave 2 COMPLETE 2026-09-18 — 2A as 1.3.0, 2B as 1.3.1 (19 rules, 158 tests). Wave 3 SHIPPED 2026-09-18 as 1.4.0 (22 rules, 188 tests) — roadmap complete through the committed waves.
+**Status:** Wave 1 SHIPPED 2026-09-17 as 1.2.0 (16 rules, 127 tests). Wave 2 COMPLETE 2026-09-18 — 2A as 1.3.0, 2B as 1.3.1 (19 rules, 158 tests). Wave 3 SHIPPED 2026-09-18 as 1.4.0 (22 rules, 188 tests) — roadmap complete through the committed waves. 1.4.1 (2026-09-18): hotfix — invocation speculation guarded against conditional access (`?.`), fixing an SNP0022/SNP0025 crash (Roslyn speculative binder NRE on `MemberBindingExpression`). 1.4.2 (2026-09-18, 192 tests): perf wave — shared `SolutionReferenceIndex` (one semantic harvest replacing per-candidate `FindReferencesAsync` storms in SNP0005/0006 incl. both rescue passes, and absorbing SNP0003/0004's usage sweep), `UnreachableCodeGate` syntax pre-filter for flow analysis (SNP0002/0009), SNP0019 single-pass per-project diagnostics. Monorepo validation pending user A/B (doctrine gate: SNP0005/0006 reduction OK, increase blocks; other rules count-identical).
 
 ## Locked decisions
 
@@ -54,6 +54,7 @@ The three features developers see every day in ReSharper/Sonar, all cheap in Sni
 
 ## Tracked candidates (post-1.4.0, not committed)
 
+- **Parallel semantic binding** — spike GO 2026-09-18: per-document parallel `GetSemanticModel`/`GetSymbolInfo` on an MSBuildWorkspace-loaded solution (Snipper.slnx, 91 documents) produced **binding-identical** results to sequential (24,301 bindings, 0 drift) at 12.5× speed (7.5s → 0.6s). The "concurrent binding silently loses symbols" working agreement does not reproduce for pure per-document Roslyn queries. Adoption = parallelize the `SolutionReferenceIndex` harvest (and per-document sweeps) behind a revertible switch, suite + monorepo verified. Pending user approval; single-solution/single-run evidence. S–M.
 - **Duplicate detection** — token-shingle engine (normalised token streams, ~60-token windows), cross-project, separate report section. L.
 - **Coverage evidence import** — `--coverage coverlet.xml` (cobertura); corroborating channel that adjusts certainty, never a standalone finding. M.
 - **Unused `.resx` keys / XAML-Razor evidence** — generalise `AssemblyNameEvidenceScanner`. M–L.

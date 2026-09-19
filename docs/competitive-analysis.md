@@ -1,6 +1,6 @@
 # Competitive Analysis — Snipper vs. the .NET Code-Analysis Ecosystem
 
-**Date:** 2026-09-14 · **Updated:** 2026-09-18 · **Snipper version:** 1.4.0 (22 rules: SNP0001–0013, 0018–0026)
+**Date:** 2026-09-14 · **Updated:** 2026-09-18 · **Snipper version:** 1.4.2 (22 rules: SNP0001–0013, 0018–0026)
 **Scope:** features for *reducing the entropy of a large codebase* — dead code detection, redundancy/hygiene sweeps, dependency bloat, duplication, and the removal workflow (fix automation, gating, suppression).
 
 **Sources & evidence levels:**
