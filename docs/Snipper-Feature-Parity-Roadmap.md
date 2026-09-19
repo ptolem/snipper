@@ -61,6 +61,8 @@ The three features developers see every day in ReSharper/Sonar, all cheap in Sni
 
 ## Next steps (as of 1.4.2, 2026-09-18)
 
+0. **REVERT the perf-wave index (decided 2026-09-18, not yet executed).** The monorepo gate was breached (SNP0005/0006 findings 1,532 → 3,769). Full plan, kept pieces, kept knowledge, and the unsolved root-cause hypotheses: [`perf_wave_retrospective.md`](perf_wave_retrospective.md). Execute its "Immediate next actions" first.
+
 1. **Monorepo A/B validation of 1.4.2** — user re-runs their large monorepo and reports per-analyser timings + finding counts. Gate (user-approved): SNP0005/0006 reduction acceptable (over-approximation doctrine — each delta needs a defensible "used" explanation); **any SNP0005/0006 increase blocks**; all other rules count-identical. Baseline from the user's 1.4.1 run (total 224.7s):
 
    | Analyser | Time | Findings | 1.4.2 expectation |
