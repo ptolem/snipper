@@ -19,7 +19,11 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 /// towards "used" can only suppress a finding — the safe direction for
 /// dead-code claims. Constructor bindings also record their containing type
 /// (object creation and attribute application reference the type, matching
-/// FindReferencesAsync behaviour).
+/// FindReferencesAsync behaviour). Names that fail to bind entirely (broken
+/// code in a partially-loaded workspace, dynamic receivers) contribute their
+/// identifier text as unconfirmed evidence — the exact equivalent of
+/// FindReferencesAsync's candidate locations, which the pre-index analysers
+/// counted as references (monorepo false-positive flood 2026-09-18).
 ///
 /// ALL documents are harvested — generated and external ones included —
 /// because they are legitimate usage evidence; findings still anchor only on
@@ -35,13 +39,16 @@ internal sealed class SolutionReferenceIndex
         FrozenSet.ToFrozenSet([], (IEqualityComparer<IAssemblySymbol>)SymbolEqualityComparer.Default);
 
     private readonly FrozenSet<ISymbol> _referencedSymbols;
+    private readonly FrozenSet<string> _unconfirmedNameEvidence;
     private readonly FrozenDictionary<ProjectId, FrozenSet<IAssemblySymbol>> _usedAssembliesByProject;
 
     private SolutionReferenceIndex(
         FrozenSet<ISymbol> referencedSymbols,
+        FrozenSet<string> unconfirmedNameEvidence,
         FrozenDictionary<ProjectId, FrozenSet<IAssemblySymbol>> usedAssembliesByProject)
     {
         _referencedSymbols = referencedSymbols;
+        _unconfirmedNameEvidence = unconfirmedNameEvidence;
         _usedAssembliesByProject = usedAssembliesByProject;
     }
 
@@ -87,7 +94,11 @@ internal sealed class SolutionReferenceIndex
             }
         }
 
-        return false;
+        // Candidate-location doctrine: a name occurrence that could not be
+        // confirmed (unbindable code, dynamic receivers) counts as evidence —
+        // the same over-approximation FindReferencesAsync made, with the
+        // certainty tier absorbing the uncertainty.
+        return _unconfirmedNameEvidence.Contains(symbol.Name);
     }
 
     /// <summary>
@@ -103,6 +114,7 @@ internal sealed class SolutionReferenceIndex
     private static SolutionReferenceIndex Build(Solution solution)
     {
         var symbols = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        var unconfirmedNames = new HashSet<string>(StringComparer.Ordinal);
         var assembliesByProject = new Dictionary<ProjectId, HashSet<IAssemblySymbol>>();
 
         // Inherited-contract walks are memoized per distinct member definition —
@@ -152,6 +164,15 @@ internal sealed class SolutionReferenceIndex
                             RecordSymbol(candidate, symbols, assemblies, inheritedContractsCache);
                         }
 
+                        // Unconfirmed name evidence: the node matches no symbol at
+                        // all (broken binding, dynamic receiver). FindReferencesAsync
+                        // surfaced such sites as candidate locations; the old
+                        // reference check counted them as references.
+                        if (symbolInfo.CandidateSymbols.Length == 0 && node is SimpleNameSyntax simpleName)
+                        {
+                            unconfirmedNames.Add(simpleName.Identifier.Text);
+                        }
+
                         if (node is ExpressionSyntax expression)
                         {
                             RecordSymbol(semanticModel.GetTypeInfo(expression).Type, symbols, assemblies, inheritedContractsCache);
@@ -163,6 +184,7 @@ internal sealed class SolutionReferenceIndex
 
         return new SolutionReferenceIndex(
             symbols.ToFrozenSet(SymbolEqualityComparer.Default),
+            unconfirmedNames.ToFrozenSet(StringComparer.Ordinal),
             assembliesByProject.ToFrozenDictionary(
                 static pair => pair.Key,
                 static pair => pair.Value.ToFrozenSet((IEqualityComparer<IAssemblySymbol>)SymbolEqualityComparer.Default)));

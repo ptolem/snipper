@@ -80,4 +80,127 @@ public sealed class SolutionReferenceIndexShould
         // yet the fellow implementation counts as referenced too.
         SolutionReferenceIndex.Get(solution).IsReferenced(secondImplRuleIds).Should().BeTrue();
     }
+
+    [Fact]
+    public async Task Treat_Dynamic_Dispatch_As_Evidence_For_IsReferenced()
+    {
+        // The FindReferencesAsync candidate-location doctrine: a name occurrence
+        // that cannot be confirmed (here: a dynamic receiver) counts as evidence.
+        using var workspace = new AdhocWorkspace();
+        var (solution, projectId) = CreateSolution(
+            ("UnderTest.cs", """
+                namespace App;
+                public sealed class UnderTest
+                {
+                    public void UpdateFirstName(string firstName) { }
+                }
+                """),
+            ("Caller.cs", """
+                namespace App;
+                public static class Caller
+                {
+                    public static void Use(dynamic dyn) => dyn.UpdateFirstName("x");
+                }
+                """));
+
+        var member = await GetNamedMemberAsync(solution, projectId, "UnderTest.cs", "UnderTest", "UpdateFirstName");
+
+        SolutionReferenceIndex.Get(solution).IsReferenced(member).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Treat_Unbindable_Name_Occurrences_As_Evidence_For_IsReferenced()
+    {
+        // The broken-compilation shape: monorepo-scale workspaces inevitably
+        // contain code that does not bind — FindReferencesAsync returned those
+        // name matches as candidate locations, and they counted as references.
+        using var workspace = new AdhocWorkspace();
+        var (solution, projectId) = CreateSolution(
+            ("UnderTest.cs", """
+                namespace App;
+                public sealed class UnderTest
+                {
+                    public void UpdateFirstName(string firstName) { }
+                }
+                """),
+            ("Broken.cs", """
+                namespace App;
+                public static class BrokenCaller
+                {
+                    public static void Use() => Ghost.UpdateFirstName("x");
+                }
+                """));
+
+        var member = await GetNamedMemberAsync(solution, projectId, "UnderTest.cs", "UnderTest", "UpdateFirstName");
+
+        SolutionReferenceIndex.Get(solution).IsReferenced(member).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Not_Treat_Confirmed_Non_References_As_Evidence_For_IsReferenced()
+    {
+        // The doctrine's other side: a name whose every occurrence binds cleanly
+        // to something ELSE is a confirmed non-reference — the member stays
+        // unreferenced (old and new semantics agree).
+        using var workspace = new AdhocWorkspace();
+        var (solution, projectId) = CreateSolution(
+            ("UnderTest.cs", """
+                namespace App;
+                public sealed class UnderTest
+                {
+                    public void UpdateFirstName(string firstName) { }
+                }
+                public sealed class Other
+                {
+                    public void UpdateFirstName(string firstName) { }
+                }
+                """),
+            ("Caller.cs", """
+                namespace App;
+                public static class Caller
+                {
+                    public static void Use() => new Other().UpdateFirstName("x");
+                }
+                """));
+
+        var member = await GetNamedMemberAsync(solution, projectId, "UnderTest.cs", "UnderTest", "UpdateFirstName");
+
+        SolutionReferenceIndex.Get(solution).IsReferenced(member).Should().BeFalse();
+    }
+
+    private static (Solution Solution, ProjectId ProjectId) CreateSolution(params (string Name, string Source)[] documents)
+    {
+        var workspace = new AdhocWorkspace();
+        var corlib = MetadataReference.CreateFromFile(typeof(object).Assembly.Location);
+        var projectId = ProjectId.CreateNewId("App");
+
+        var solution = workspace.CurrentSolution
+            .AddProject(ProjectInfo.Create(projectId, VersionStamp.Create(), "App", "App", LanguageNames.CSharp,
+                filePath: @"C:\repo\App\App.csproj"))
+            .AddMetadataReference(projectId, corlib);
+
+        foreach (var (name, source) in documents)
+        {
+            solution = solution.AddDocument(DocumentId.CreateNewId(projectId), name, SourceText.From(source),
+                filePath: $@"C:\repo\App\{name}");
+        }
+
+        return (solution, projectId);
+    }
+
+    private static async Task<ISymbol> GetNamedMemberAsync(
+        Solution solution,
+        ProjectId projectId,
+        string documentName,
+        string typeName,
+        string memberName)
+    {
+        var document = solution.GetProject(projectId)!.Documents.Single(d => d.Name == documentName);
+        var model = await document.GetSemanticModelAsync();
+        var root = await document.GetSyntaxRootAsync();
+        var typeDeclaration = root!.DescendantNodes()
+            .First(n => n is Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax c && c.Identifier.Text == typeName);
+        var type = (INamedTypeSymbol)model!.GetDeclaredSymbol(typeDeclaration)!;
+        return type.GetMembers(memberName).Single();
+    }
 }
