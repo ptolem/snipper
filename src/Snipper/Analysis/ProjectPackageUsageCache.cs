@@ -76,7 +76,7 @@ internal sealed class ProjectPackageUsageCache
                 continue;
             }
 
-            var usedAssemblies = await SymbolUsageCollector.CollectUsedAssembliesAsync(project, cancellationToken).ConfigureAwait(false);
+            var usedAssemblies = SolutionReferenceIndex.Get(solution).GetUsedAssemblies(project);
             foreach (var usedAssembly in usedAssemblies)
             {
                 usedAssemblyNames.Add(usedAssembly.Name);
