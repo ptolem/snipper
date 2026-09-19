@@ -9,6 +9,62 @@ using Xunit;
 public sealed class RedundancyAnalyserShould(SampleSolutionFixture fixture)
 {
     [Fact]
+    public async Task Flag_This_Qualifier_When_No_Shadow_Exists_For_AnalyzeAsync()
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        // Two positives inside QualifierScenarios.Positive; the shadowed
+        // accesses in Negative never flag.
+        findings
+            .Where(f => f.RuleId == "SNP0028" && f.Message.Contains("'this.'", StringComparison.Ordinal))
+            .Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Flag_Qualified_Type_Name_When_Bare_Name_Binds_Identically_For_AnalyzeAsync()
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        // Declaration type + object-creation type — both redundant given the using.
+        findings
+            .Where(f => f.RuleId == "SNP0028" && f.Message.Contains("'StringBuilder'", StringComparison.Ordinal))
+            .Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Flag_Empty_Public_Constructor_And_Empty_Destructor_As_High_For_AnalyzeAsync()
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0029"
+            && f.Certainty == CertaintyTier.High
+            && f.Message.Contains("'EmptyCtorScenario()'", StringComparison.Ordinal));
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0029"
+            && f.Message.Contains("'~EmptyDtorScenario()'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("LoadBearingCtorScenario")]
+    [InlineData("NonEmptyCtorScenario")]
+    [InlineData("StaticCtorScenario")]
+    public async Task Not_Flag_LoadBearing_Or_NonEmpty_Constructors_For_AnalyzeAsync(string typeName)
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => f.RuleId == "SNP0029" && f.Message.Contains(typeName, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Flag_Literal_Matching_Parameter_Default_As_High_For_AnalyzeAsync()
     {
         var analyser = new RedundancyAnalyser();

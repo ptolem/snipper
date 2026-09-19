@@ -52,6 +52,14 @@ public static class Worker
         _ = RedundantCastScenarios.Exercise();
         _ = UpcastScenarios.Exercise();
         _ = UpcastScenarios.ReturnUpcast();
+        _ = new QualifierScenarios().Positive(1);
+        _ = new QualifierScenarios().Negative(2);
+        _ = QualifiedTypeScenarios.Exercise();
+        _ = new EmptyCtorScenario();
+        _ = new EmptyDtorScenario(1);
+        _ = LoadBearingCtorScenario.Create();
+        _ = new NonEmptyCtorScenario();
+        _ = typeof(StaticCtorScenario);
         _ = ConditionalAccessScenarios.Exercise(new ConditionalReceiver());
 
         // Plugin host loads this assembly by name at runtime — name evidence for SNP0011.

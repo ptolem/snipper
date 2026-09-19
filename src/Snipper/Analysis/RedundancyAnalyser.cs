@@ -15,7 +15,7 @@ using Snipper.Models;
 /// </summary>
 public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
-    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0022", "SNP0025", "SNP0026"];
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0022", "SNP0025", "SNP0026", "SNP0028", "SNP0029"];
 
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
@@ -90,6 +90,67 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
                     else if (RedundantUpcastEvaluator.TryEvaluate(cast, semanticModel, cancellationToken) is { } upcastFinding)
                     {
                         findings.Add(upcastFinding);
+                    }
+                }
+
+                foreach (var access in root.DescendantNodes().OfType<MemberAccessExpressionSyntax>())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // Syntax pre-filter: only 'this.'-qualified accesses are
+                    // candidates — speculation never runs for anything else.
+                    if (access.Expression is not ThisExpressionSyntax
+                        || ExclusionEngine.IsNamespaceExcluded(access, semanticModel, _exclusions, cancellationToken))
+                    {
+                        continue;
+                    }
+
+                    if (RedundantQualifierEvaluator.TryEvaluateThisQualifier(access, semanticModel, cancellationToken) is { } qualifierFinding)
+                    {
+                        findings.Add(qualifierFinding);
+                    }
+                }
+
+                foreach (var qualifiedName in root.DescendantNodes().OfType<QualifiedNameSyntax>())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (ExclusionEngine.IsNamespaceExcluded(qualifiedName, semanticModel, _exclusions, cancellationToken))
+                    {
+                        continue;
+                    }
+
+                    if (RedundantQualifierEvaluator.TryEvaluateQualifiedName(qualifiedName, semanticModel, cancellationToken) is { } qualifiedNameFinding)
+                    {
+                        findings.Add(qualifiedNameFinding);
+                    }
+                }
+
+                foreach (var typeDeclaration in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    foreach (var member in typeDeclaration.Members)
+                    {
+                        switch (member)
+                        {
+                            case ConstructorDeclarationSyntax constructor
+                                when !ExclusionEngine.IsNamespaceExcluded(constructor, semanticModel, _exclusions, cancellationToken):
+                                if (EmptyTypeMemberEvaluator.TryEvaluateConstructor(constructor, semanticModel, cancellationToken) is { } constructorFinding)
+                                {
+                                    findings.Add(constructorFinding);
+                                }
+
+                                break;
+                            case DestructorDeclarationSyntax destructor
+                                when !ExclusionEngine.IsNamespaceExcluded(destructor, semanticModel, _exclusions, cancellationToken):
+                                if (EmptyTypeMemberEvaluator.TryEvaluateDestructor(destructor, semanticModel, cancellationToken) is { } destructorFinding)
+                                {
+                                    findings.Add(destructorFinding);
+                                }
+
+                                break;
+                        }
                     }
                 }
             }
