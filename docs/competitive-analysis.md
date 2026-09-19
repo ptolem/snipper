@@ -25,14 +25,14 @@
 | Field written, never read / unassigned | ✓ SNP0021 (write-only; unassigned stays SNP0001/CS0649) | ✓ `NotAccessedField`, `UnassignedField` | ✓ IDE0052, CS0649 | — | ✓ S4487 |
 | Event never invoked | — | ✓ `EventNeverInvoked` | ~ | — | ~ |
 | Return value never used / param-only-precondition / out always discarded / nameof-only | ~ (SNP0021 covers the nameof-only and out-only field slices) | ✓ `UnusedMethodReturnValue`, `ParameterOnlyUsedForPreconditionCheck`, `OutParameterValueIsAlwaysDiscarded`, `EntityNameCapturedOnly` | — | ~ (CQLinq) | — |
-| Hierarchy dead code (virtual never overridden, class never inherited, member only via overrides/base) | ~ SNP0023 (virtual chain roots never overridden + classes with virtuals never inherited; member-only-via-overrides/base not covered) | ✓ `VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`, `UnusedMemberHierarchy`, `UnusedMemberInSuper` | — | ~ | — |
+ | Hierarchy dead code (virtual never overridden, class never inherited, member only via overrides/base) | ✅ SNP0023 + SNP0027 (1.6.0 adds override families with no external caller) | ✓ `VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`, `UnusedMemberHierarchy`, `UnusedMemberInSuper` | — | ~ | — |
 | **Redundancy sweeps** | | | | | |
 | Unused usings | ✓ SNP0019 (CS8019 + CS8933, incl. global usings) | ✓ `RedundantUsingDirective` (+global) | ✓ IDE0005 | — | ✓ S1128 |
-| Redundant casts / qualifiers / type args / default args / etc. | ~ SNP0022/0025/0026 (default args, type args, identity casts — all soundness-gated; qualifiers and the rest not covered) | ✓ 103 inspections | ~ IDE00xx subset | — | ~ |
-| Empty ctor/destructor/namespace, redundant overload/override/initializer/partial | — | ✓ | ~ | — | ~ |
+| Redundant casts / qualifiers / type args / default args / etc. | ~ SNP0022/0025/0026/0028 (default args, type args, identity + rebind-gated upcasts, this./type-name qualifiers — all soundness-gated; the rest not covered) | ✓ 103 inspections | ~ IDE00xx subset | — | ~ |
+| Empty ctor/destructor/namespace, redundant overload/override/initializer/partial | ~ SNP0029 (1.6.0: empty ctor/dtor; the rest not covered) | ✓ | ~ | — | ~ |
 | Commented-out code | ✓ SNP0020 | — | — | — | ✓ S125 |
 | **Tightening (entropy prevention)** | | | | | |
-| can-be-static / readonly / sealed / private / internal / const / init-only / file-local | ~ SNP0024 (static / readonly / sealed, Advisory tier) | ✓ `MemberCanBeMadeStatic`, `FieldCanBeMadeReadOnly`, `ClassCanBeSealed`, `MemberCanBePrivate/Internal/FileLocal`… | ~ CA1822, CA1852, IDE0044 | ~ | ~ |
+ | can-be-static / readonly / sealed / private / internal / const / init-only / file-local | ~ SNP0024 (static / readonly / sealed / private as of 1.6.0, Advisory tier) | ✓ `MemberCanBeMadeStatic`, `FieldCanBeMadeReadOnly`, `ClassCanBeSealed`, `MemberCanBePrivate/Internal/FileLocal`… | ~ CA1822, CA1852, IDE0044 | ~ | ~ |
 | **Dependency hygiene** | | | | | |
 | Unreferenced `PackageReference` | ✓ SNP0003 | ✓ Rider 2023.1+ (NuGet-aware); ReSharper: project/assembly refs | ✓ "Remove Unused References" | ~ | — |
 | Unreferenced `ProjectReference` | ✓ SNP0004 | ✓ | ✓ | ✓ | — |
@@ -73,8 +73,8 @@
 
 ### Tier 3 — differentiating but harder
 
-7. **Hierarchy dead code** (`VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`). ✅ **Shipped 1.4.0 as SNP0023** — solution-wide `InheritanceGraph` index; Moderate, demoted to Advisory on exported surfaces/friend assemblies; type-name string/JSON evidence (plugin loading) suppresses.
-8. **Tightening rules** (can-be-static/readonly/sealed/private). ✅ **Shipped 1.4.0 as SNP0024** — CA1822/IDE0044/CA1852 parity at flat Advisory; dogfood-proven (caught two genuine tightenings in Snipper itself on first run).
+7. **Hierarchy dead code** (`VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`). ✅ **Shipped 1.4.0 as SNP0023** — solution-wide `InheritanceGraph` index; Moderate, demoted to Advisory on exported surfaces/friend assemblies; type-name string/JSON evidence (plugin loading) suppresses. **1.6.0 adds SNP0027** (`UnusedMemberHierarchy` parity): override families whose references never leave the chain.
+8. **Tightening rules** (can-be-static/readonly/sealed/private). ✅ **Shipped 1.4.0 as SNP0024** — CA1822/IDE0044/CA1852 parity at flat Advisory; dogfood-proven (caught two genuine tightenings in Snipper itself on first run). **1.6.0 adds can-be-private** (locality proof over containing-type spans; caught two more own findings on first dogfood).
 9. **Duplicate detection.** dupFinder-style token hashing; a separate engine but monorepo gold.
 10. **Runtime/coverage evidence.** Import coverlet output as a certainty channel (coverage ≠ usage, but strong corroborating evidence — NDepend's model).
 11. **Cross-language reach.** Unused `.resx` keys; XAML/Razor name evidence (the `AssemblyNameEvidenceScanner` pattern generalises here).
@@ -102,7 +102,7 @@ Evidence-weighted; qualitative items marked.
 - **SNP0018** — obsolete-member dead code. Unique.
 - **CI-first shape** — read-only, fast (no mandatory build; InspectCode builds by default), SARIF + JSON + baseline in a zero-dependency global tool. InspectCode only matched SARIF in 2024.1 and still has no baseline concept.
 
-**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.4.0, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), read/write flow analysis (SNP0021), the redundancy sweep (SNP0022/0025/0026), hierarchy dead code (SNP0023 — formerly ReSharper-exclusive), and tightening (SNP0024). The remaining deltas are deliberate or unscheduled: auto-fix is rejected (read-only tenet); duplicates, coverage import, and .resx/XAML evidence are tracked but not committed.
+**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.4.0, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), read/write flow analysis (SNP0021), the redundancy sweep (SNP0022/0025/0026), hierarchy dead code (SNP0023 — formerly ReSharper-exclusive), and tightening (SNP0024). **Update 2026-09-19 (1.5.x–1.6.0):** framework evidence closed the data-contract FP flood (SNP0006 −28% on the monorepo, contract-based after the 1.5.1 course-correction); parallelism adoption (0-drift gate) cut the monorepo bottleneck 165s → 58s; the 1.6.0 gap-filler sweep added the upcast cast variant, can-be-private, redundant qualifiers (SNP0028), empty ctor/dtor (SNP0029), override-family dead code (SNP0027), and never-raised events (SNP0030) — 26 rule IDs. The remaining deltas are deliberate or unscheduled: auto-fix is rejected (read-only tenet); duplicates, coverage import, and .resx/XAML evidence are tracked but not committed.
 
 ---
 

@@ -1,0 +1,24 @@
+# Phase 3 — Wave 5 Spec: Gap-filler sweep (SNP0026-variant/0027/0028/0029/0030 + SNP0024 can-be-private)
+
+**Target release:** 1.6.0 · **Roadmap:** [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md) · **Baseline:** 1.5.2 (26 rule IDs after this wave, 238 tests)
+**Status:** ✅ **SHIPPED 2026-09-19 as 1.6.0** — 238/238 tests (21 new), fixture2 pins 23/25 (verified), dogfood 0 (five own findings triaged and fixed during the wave: two redundant upcasts, two can-be-private, one SNP0020 doc-comment). **Monorepo A/B vs 1.5.2:** every pre-existing rule count-identical; new rules add +73 net findings — SNP0026 16 → 17 (+1 upcast), SNP0024 670 → 691 (+21 can-be-private), SNP0028 49 (8 `this.` + 41 qualified names), SNP0029 2 (empty test-fixture ctors), SNP0027/0030 0 on this codebase (both fixture-pinned; the codebase's event surface is tiny and its override families all have external callers). All sampled findings individually explainable. One wave-time bug found by the monorepo A/B itself: SNP0027's family root initially walked override chains *past source into metadata* (SDK base classes), producing an empty finding path and a wrong verdict — fixed by stopping at the topmost source link (`FamilyRootOf`); with the correct root the family proved to have external callers and the finding correctly disappeared.
+
+Scope decided 2026-09-19 (all four plan recommendations user-approved): the roadmap's gap-filler inventory, packaged as 1.5.2 (correctness/perf patch, shipped separately) + 1.6.0 (this wave). Verified OUT during planning with monorepo evidence: MediatR contracts (handlers are test-called, zero findings), options binding (SNP0007/0008 covers), controllers (none exist), can-be-const/init-only/file-local (niche), return-value-never-used (FP-prone), out-always-discarded (niche).
+
+## Rules shipped
+
+| Rule | ID / Tier | Design (soundness mechanism) |
+|---|---|---|
+| Redundant cast — upcast variant | SNP0026, High | Implicit-reference upcasts flag only where stripping cannot re-bind: (1) the cast IS a whole argument — speculative re-bind of the enclosing invocation/creation must yield the identical method symbol (constructed forms compared, so generic re-inference fails safe); (2) fixed-target context with exact type match (explicitly typed declaration/assignment, matching return target). `var`, nested-expression casts, lambdas, typeless operands, and `?.` contexts excluded. |
+| Can-be-private | SNP0024 sub-check, Advisory | Public/internal member on a non-exported type; locality proof — every confirmed reference lands inside the containing type's declaration span(s) (partial included). Usage gate ≥1 reference (else SNP0001/0005/0006); virtuals, attributed members, indexers, contract implementations, framework evidence excluded; unconfirmed locations suppress. |
+| Redundant qualifier | SNP0028, High | `this.X` with no shadow in scope + qualified type names whose bare form binds identically — both speculation-gated (re-bind simplified form, require identical symbol). Outermost-qualified-name only; using directives and alias-qualified names excluded; `?.` guard shared with SNP0022/0025/0026. |
+| Empty ctor/dtor | SNP0029, High | Public parameterless empty ctor as the class's sole constructor on a non-abstract class (synthesized twin exists); empty destructor (finalizer-queue overhead). Private/static ctors (load-bearing: instantiation gating, beforefieldinit), structs/records, initializers, attributes excluded. |
+| Unused member hierarchy | SNP0027, Moderate | Override family (root + all overrides via `InheritanceGraph` closure) whose confirmed references all land inside family declaration spans. Root stops at the topmost *source* link; abstract links, interface implementations, candidate locations, zero-reference families suppress. One finding per family at the root. |
+| Event never invoked | SNP0030, Advisory | Field-like events only: subscriptions (`+=`/`-=`) never count as usage; any other confirmed reference (invocation, `?.Invoke` receiver, delegate read) is raise-shaped evidence. Custom accessors, interface events/implementations, virtual/override, attributed events excluded. |
+
+## Working-agreement compliance
+
+- Red-green fixture-first per rule; all fixture scenarios in new files (`RedundantUpcasts.cs`, `CanBePrivatePatterns.cs`, `RedundantQualifiers.cs`, `EmptyTypeMembers.cs`, `HierarchyFamilies.cs`, `EventPatterns.cs`), never `DeadCode.cs`.
+- Per-pattern rule IDs honoured (locked decision 4): SNP0028/0029 are independently toggleable; can-be-private extended SNP0024 per user decision.
+- SNP0030 registered in `CliRunner`; README rules table + `competitive-analysis.md` §1/§5 cross-checked; roadmap status updated.
+- Dogfood gate: 0 findings on `Snipper.slnx` at ship (five own findings triaged and fixed during the wave — the entropy-prevention family keeps paying for itself).

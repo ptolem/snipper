@@ -12,7 +12,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>snipper</ToolCommandName>
     <PackageId>Snipper</PackageId>
-    <Version>1.5.2</Version>
+    <Version>1.6.0</Version>
     <Authors>Snipper Contributors</Authors>
     <Description>Roslyn-based dead-code and unreferenced-dependency analyser for .NET solutions. Flags unused members, unreachable code, unreferenced packages/project references, and stale appsettings keys with certainty-tiered findings, JSON/SARIF reports, and CI baselines.</Description>
     <PackageTags>roslyn;static-analysis;dead-code;cleanup;msbuild;monorepo</PackageTags>
