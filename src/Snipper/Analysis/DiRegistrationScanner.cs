@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -29,41 +30,57 @@ internal static class DiRegistrationScanner
     {
         ArgumentNullException.ThrowIfNull(solution);
 
-        var registeredTypes = new HashSet<INamedTypeSymbol>((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default);
+        // Pass 1 (syntax only, parallel): collect registration-shaped invocations.
+        // Registration calls cluster in a handful of startup/extension files —
+        // documents without one never pay for a semantic model (syntax-first;
+        // previously every document in the solution bound a model here).
+        var candidateInvocations = new ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation)>();
+        var documents = solution.Projects
+            .SelectMany(static p => p.Documents)
+            .Where(static d => d.SupportsSyntaxTree);
 
-        // Sequential binding: workspace compilations are built with
-        // ConcurrentBuild=false; concurrent GetTypeInfo is unsupported.
         // ALL documents are scanned: registrations are evidence (extra evidence only
         // ever demotes certainty), and source-generated registration code is common.
-        foreach (var project in solution.Projects)
-        {
-            foreach (var document in project.Documents)
+        Parallel.ForEach(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            document =>
             {
-                if (!document.SupportsSyntaxTree)
+                var root = document.GetSyntaxRootAsync(cancellationToken).GetAwaiter().GetResult();
+                if (root is null)
                 {
-                    continue;
-                }
-
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                if (semanticModel is null || root is null)
-                {
-                    continue;
+                    return;
                 }
 
                 foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
-                    if (!IsRegistrationInvocation(invocation))
+                    if (IsRegistrationInvocation(invocation))
                     {
-                        continue;
+                        candidateInvocations.Add((document, invocation));
                     }
+                }
+            });
 
-                    foreach (var typeSyntax in invocation.DescendantNodes().OfType<TypeSyntax>())
+        // Pass 2: resolve the type syntaxes — one semantic model per
+        // candidate-bearing document, sequential binding per the workspace's
+        // ConcurrentBuild=false contract (parallelising per-document binding is
+        // AnalysisParallelism-gated elsewhere; this pass is a handful of files).
+        var registeredTypes = new HashSet<INamedTypeSymbol>((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default);
+        foreach (var group in candidateInvocations.GroupBy(static candidate => candidate.Document))
+        {
+            var semanticModel = await group.Key.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+            if (semanticModel is null)
+            {
+                continue;
+            }
+
+            foreach (var (_, invocation) in group)
+            {
+                foreach (var typeSyntax in invocation.DescendantNodes().OfType<TypeSyntax>())
+                {
+                    if (semanticModel.GetTypeInfo(typeSyntax, cancellationToken).Type is INamedTypeSymbol namedType)
                     {
-                        if (semanticModel.GetTypeInfo(typeSyntax, cancellationToken).Type is INamedTypeSymbol namedType)
-                        {
-                            registeredTypes.Add(namedType.OriginalDefinition);
-                        }
+                        registeredTypes.Add(namedType.OriginalDefinition);
                     }
                 }
             }

@@ -182,6 +182,17 @@ internal static class AssemblyNameEvidenceScanner
         return filtered ?? sought;
     }
 
+    /// <summary>
+    /// A snipper JSON report carries <c>"ruleId"</c> fields near the top of the
+    /// file; ordinary configuration JSON (appsettings, manifests) does not.
+    /// </summary>
+    private static bool LooksLikeSnipperReport(string content)
+    {
+        const string marker = "\"ruleId\"";
+        var probeLength = Math.Min(content.Length, 4096);
+        return content.IndexOf(marker, 0, probeLength, StringComparison.Ordinal) >= 0;
+    }
+
     private static void ScanDirectory(string directory, List<string> sought, HashSet<string> found)
     {
         IReadOnlyList<string> entries;
@@ -224,6 +235,16 @@ internal static class AssemblyNameEvidenceScanner
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // Unreadable file carries no evidence either way — keep scanning.
+                continue;
+            }
+
+            // Snipper's own JSON reports spell candidate names in their findings.
+            // A stale report in the analysis root must not feed name evidence —
+            // twice-confirmed self-suppression (the 1.4.4 and 1.5.1 monorepo runs
+            // each lost real SNP0023 findings to a previous report file). Reports
+            // are identified by content, not name: output filenames are user-chosen.
+            if (LooksLikeSnipperReport(content))
+            {
                 continue;
             }
 

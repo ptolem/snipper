@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
@@ -117,10 +118,13 @@ internal sealed class FrameworkEvidenceIndex
     }
 
     /// <summary>
-    /// True when the member is reachable through a framework channel and must not
-    /// be flagged, even with zero C# references.
+    /// True when the member carries a serialization attribute — including
+    /// <c>[JsonInclude]</c>, which lets STJ read and write <em>non-public</em>
+    /// members. Used by SNP0001 for private candidates; the broader
+    /// <see cref="IsUsed"/> query (DTO closure, dispatched contracts,
+    /// conventions) stays with SNP0005/0006.
     /// </summary>
-    public bool IsUsed(ISymbol member)
+    public static bool HasMemberSerializationAttribute(ISymbol member)
     {
         ArgumentNullException.ThrowIfNull(member);
 
@@ -131,6 +135,22 @@ internal sealed class FrameworkEvidenceIndex
             {
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when the member is reachable through a framework channel and must not
+    /// be flagged, even with zero C# references.
+    /// </summary>
+    public bool IsUsed(ISymbol member)
+    {
+        ArgumentNullException.ThrowIfNull(member);
+
+        if (HasMemberSerializationAttribute(member))
+        {
+            return true;
         }
 
         // Type candidates query on themselves; member candidates on their container.
@@ -165,30 +185,31 @@ internal sealed class FrameworkEvidenceIndex
 
     private static FrameworkEvidenceIndex Build(Solution solution)
     {
-        var serializationSeeds = new List<(Document Document, TypeSyntax Type)>();
+        var serializationSeeds = new ConcurrentBag<(Document Document, TypeSyntax Type)>();
 
-        // Pass 1: syntax seeds. No semantic calls — safe to read every document.
-        foreach (var project in solution.Projects)
-        {
-            foreach (var document in project.Documents)
+        // Pass 1: syntax seeds. No semantic calls — safe to read every document,
+        // and safe to parallelise (order is irrelevant: seeds feed sets).
+        var documents = solution.Projects
+            .SelectMany(static p => p.Documents)
+            .Where(static d => d.SupportsSyntaxTree);
+        Parallel.ForEach(
+            documents,
+            AnalysisParallelism.CreateOptions(CancellationToken.None),
+            document =>
             {
-                if (!document.SupportsSyntaxTree)
-                {
-                    continue;
-                }
-
                 var root = document.GetSyntaxRootAsync().GetAwaiter().GetResult();
                 if (root is null)
                 {
-                    continue;
+                    return;
                 }
 
                 CollectSeeds(document, root, serializationSeeds);
-            }
-        }
+            });
 
-        // Pass 2: resolve seed types. Sequential binding: workspace compilations are
-        // built with ConcurrentBuild=false. Only seed-bearing documents need a model.
+        // Pass 2: resolve seed types. Per-document semantic binding parallelised
+        // behind the revertible switch (spike-proven drift-free, 2026-09-18);
+        // SNIPPER_MAX_DOP=1 restores the sequential path. Only seed-bearing
+        // documents need a model.
         var seedTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         ResolveSeeds(serializationSeeds, seedTypes, normalizeToDefinition: false);
 
@@ -238,7 +259,7 @@ internal sealed class FrameworkEvidenceIndex
     private static void CollectSeeds(
         Document document,
         SyntaxNode root,
-        List<(Document, TypeSyntax)> serializationSeeds)
+        ConcurrentBag<(Document, TypeSyntax)> serializationSeeds)
     {
         foreach (var node in root.DescendantNodes())
         {
@@ -279,7 +300,7 @@ internal sealed class FrameworkEvidenceIndex
     private static void CollectInvocationSeeds(
         Document document,
         InvocationExpressionSyntax invocation,
-        List<(Document, TypeSyntax)> serializationSeeds)
+        ConcurrentBag<(Document, TypeSyntax)> serializationSeeds)
     {
         var (name, receiverText, genericName) = invocation.Expression switch
         {
@@ -314,7 +335,7 @@ internal sealed class FrameworkEvidenceIndex
     private static void CollectRefitSeeds(
         Document document,
         InterfaceDeclarationSyntax interfaceDeclaration,
-        List<(Document, TypeSyntax)> serializationSeeds)
+        ConcurrentBag<(Document, TypeSyntax)> serializationSeeds)
     {
         foreach (var method in interfaceDeclaration.Members.OfType<MethodDeclarationSyntax>())
         {
@@ -341,7 +362,7 @@ internal sealed class FrameworkEvidenceIndex
     private static void CollectGraphContractSeeds(
         Document document,
         TypeDeclarationSyntax typeDeclaration,
-        List<(Document, TypeSyntax)> serializationSeeds)
+        ConcurrentBag<(Document, TypeSyntax)> serializationSeeds)
     {
         foreach (var genericName in typeDeclaration.BaseList!.DescendantNodes().OfType<GenericNameSyntax>())
         {
@@ -358,26 +379,34 @@ internal sealed class FrameworkEvidenceIndex
     }
 
     private static void ResolveSeeds(
-        List<(Document Document, TypeSyntax Type)> seeds,
+        ConcurrentBag<(Document Document, TypeSyntax Type)> seeds,
         HashSet<INamedTypeSymbol> resolved,
         bool normalizeToDefinition)
     {
-        foreach (var group in seeds.GroupBy(static seed => seed.Document))
-        {
-            var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
-            if (semanticModel is null)
+        var sync = new object();
+        Parallel.ForEach(
+            seeds.GroupBy(static seed => seed.Document),
+            AnalysisParallelism.CreateOptions(CancellationToken.None),
+            group =>
             {
-                continue;
-            }
-
-            foreach (var (_, typeSyntax) in group)
-            {
-                if (semanticModel.GetTypeInfo(typeSyntax).Type is INamedTypeSymbol namedType)
+                var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
+                if (semanticModel is null)
                 {
-                    resolved.Add(normalizeToDefinition ? namedType.OriginalDefinition : namedType);
+                    return;
                 }
-            }
-        }
+
+                foreach (var (_, typeSyntax) in group)
+                {
+                    if (semanticModel.GetTypeInfo(typeSyntax).Type is INamedTypeSymbol namedType)
+                    {
+                        var resolvedType = normalizeToDefinition ? namedType.OriginalDefinition : namedType;
+                        lock (sync)
+                        {
+                            resolved.Add(resolvedType);
+                        }
+                    }
+                }
+            });
     }
 
     private static bool ImplementsFrameworkContractMember(ISymbol member)

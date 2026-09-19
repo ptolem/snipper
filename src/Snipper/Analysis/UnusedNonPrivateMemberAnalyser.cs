@@ -1,6 +1,8 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using System.Collections.Frozen;
+using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -24,19 +26,16 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
-
         progress?.Invoke("UnusedNonPrivateMemberAnalyser: scanning DI registrations");
         var diRegisteredTypes = await DiRegistrationScanner.ScanAsync(solution, cancellationToken).ConfigureAwait(false);
         var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
         var usageIndex = SolutionUsageIndex.Get(solution);
         var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
 
-        // Binding is deliberately sequential: workspace compilations are built with
-        // ConcurrentBuild=false, so concurrent semantic binding is unsupported and
-        // silently loses symbol information. Parallelism lives in the syntax-only
-        // SolutionUsageIndex; reference searches stay sequential but are restricted
-        // to the handful of documents that textually contain the symbol name.
+        // Phase A: enumerate candidates. Cheap semantic work (declared symbols,
+        // evidence filters, usage-index search-document pre-computation),
+        // sequential per the workspace's ConcurrentBuild=false contract.
+        var candidates = new List<Candidate>();
         foreach (var project in solution.Projects)
         {
             if (!project.SupportsCompilation)
@@ -112,35 +111,57 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                         ? usageIndex.GetDocumentsUsingName(project, symbol.Name)
                         : usageIndex.GetDocumentsUsingName(symbol.Name);
 
-                    var hasReference = candidateDocuments.Count > 0
-                        && await SymbolReferenceQuery.HasAnyReferenceAsync(symbol, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
-
-                    // Rescue passes run only when the symbol has no direct references of
-                    // its own — each costs its own FindReferencesAsync scan.
-                    if (!hasReference
-                        && symbol is IMethodSymbol method
-                        && await HasUsedInterfaceContractAsync(method, solution, usageIndex, cancellationToken).ConfigureAwait(false))
-                    {
-                        continue;
-                    }
-
-                    if (!hasReference
-                        && symbol is INamedTypeSymbol { IsStatic: true } staticType
-                        && await HasAnyUsedExtensionMethodAsync(staticType, solution, usageIndex, cancellationToken).ConfigureAwait(false))
-                    {
-                        hasReference = true;
-                    }
-
-                    if (!hasReference)
-                    {
-                        findings.Add(CreateFinding(symbol, hasFriendAssemblies, diRegisteredTypes));
-                    }
+                    candidates.Add(new Candidate(symbol, candidateDocuments, hasFriendAssemblies));
                 }
             }
         }
 
-        return findings;
+        // Phase B: reference searches — the expensive FindReferencesAsync scans,
+        // parallelised behind the revertible switch (SNIPPER_MAX_DOP=1 reverts to
+        // sequential). Adoption gate, spike 2026-09-19: zero finding drift vs
+        // sequential on Snipper.slnx + fixture2 + the monorepo. Findings are
+        // sorted on exit, so scheduling cannot affect output.
+        var findings = new ConcurrentBag<SnipperFinding>();
+        await Parallel.ForEachAsync(
+            candidates,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (candidate, searchToken) =>
+            {
+                var hasReference = candidate.CandidateDocuments.Count > 0
+                    && await SymbolReferenceQuery.HasAnyReferenceAsync(candidate.Symbol, solution, candidate.CandidateDocuments, searchToken).ConfigureAwait(false);
+
+                // Rescue passes run only when the symbol has no direct references of
+                // its own — each costs its own FindReferencesAsync scan.
+                if (!hasReference
+                    && candidate.Symbol is IMethodSymbol method
+                    && await HasUsedInterfaceContractAsync(method, solution, usageIndex, searchToken).ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                if (!hasReference
+                    && candidate.Symbol is INamedTypeSymbol { IsStatic: true } staticType
+                    && await HasAnyUsedExtensionMethodAsync(staticType, solution, usageIndex, searchToken).ConfigureAwait(false))
+                {
+                    hasReference = true;
+                }
+
+                if (!hasReference)
+                {
+                    findings.Add(CreateFinding(candidate.Symbol, candidate.HasFriendAssemblies, diRegisteredTypes));
+                }
+            }).ConfigureAwait(false);
+
+        return findings
+            .OrderBy(static f => f.FilePath, StringComparer.Ordinal)
+            .ThenBy(static f => f.LineNumber)
+            .ThenBy(static f => f.CharacterOffset)
+            .ThenBy(static f => f.RuleId, StringComparer.Ordinal)
+            .ThenBy(static f => f.Message, StringComparer.Ordinal)
+            .ToList();
     }
+
+    private sealed record Candidate(ISymbol Symbol, IImmutableSet<Document> CandidateDocuments, bool HasFriendAssemblies);
 
     private static bool IsPotentiallyNonPrivateDeclaration(SyntaxNode node)
     {

@@ -100,6 +100,14 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
                         continue;
                     }
 
+                    // Private members carrying serialization attributes ([JsonInclude]
+                    // private setters, [JsonConstructor], …) are framework-invoked —
+                    // skip the reference search.
+                    if (FrameworkEvidenceIndex.HasMemberSerializationAttribute(declaredSymbol))
+                    {
+                        continue;
+                    }
+
                     // The usage index restricts the search to documents that textually
                     // contain the member name; an empty set proves the member is unused
                     // with no semantic search at all. Indexers have no usable source

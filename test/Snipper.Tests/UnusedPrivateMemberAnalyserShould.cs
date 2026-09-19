@@ -22,6 +22,20 @@ public sealed class UnusedPrivateMemberAnalyserShould(SampleSolutionFixture fixt
         findings.Should().Contain(f =>
             f.RuleId == "SNP0001"
             && f.Message.Contains("MultiplyUnused", StringComparison.Ordinal));
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0001"
+            && f.Message.Contains("'FwPrivateUnreferencedValue'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Private_Member_With_Serialization_Attribute_For_AnalyzeAsync()
+    {
+        // STJ [JsonInclude] reads and writes non-public members — framework-invoked.
+        var analyser = new UnusedPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => f.RuleId == "SNP0001" && f.Message.Contains("'FwPrivateIncludedValue'", StringComparison.Ordinal));
     }
 
     [Fact]

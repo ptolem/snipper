@@ -49,14 +49,13 @@ Findings still rose 2.4×. **Diagnostic path for the next attempt:** diff the 1.
 - **Extension invocations bind the reduced method** — record/query `ReducedFrom`.
 - **CS8019 (unused using) needs method-body binding** (a using is "unused" only if no body touches the namespace); CS8933 (duplicate-of-global) is declaration-phase. SNP0019's correct shape is one `compilation.GetDiagnostics` per project (14.2s → 6.4s, count-identical on the monorepo).
 - **`UnreachableCodeGate`**: a statement's start is provably reachable unless an earlier sibling in an enclosing block or switch section can break fall-through (an exit statement, a branch whose every arm exits, or a possibly-infinite loop; `while/for/do` treated as possibly-infinite unless the condition is a literal `false`). Parity-exact with unconditional flow analysis; monorepo SNP0002 47.1s → 24.2s.
-- **Parallel-binding spike: GO** — per-document parallel `GetSymbolInfo` on an MSBuildWorkspace-loaded solution: 24,301 bindings, 0 drift vs sequential, 12.5× (7.5s → 0.6s on Snipper.slnx). Adoption (1.4.4+ candidate) = parallelize per-document sweeps and/or a corrected harvest behind a revertible switch. Note: `FindReferencesAsync` is workspace-level — its thread-safety story differs from per-document queries and needs its own spike before parallelizing.
+- **Parallel-binding spike: GO** — per-document parallel `GetSymbolInfo` on an MSBuildWorkspace-loaded solution: 24,301 bindings, 0 drift vs sequential, 12.5× (7.5s → 0.6s on Snipper.slnx). ~~Note: `FindReferencesAsync` is workspace-level — its thread-safety story differs from per-document queries and needs its own spike before parallelizing.~~ **RESOLVED 2026-09-19 (1.5.2):** the FindReferencesAsync spike ran with the same 0-drift methodology — fixture2 both modes (23/25 pins) and the monorepo (2,323 findings) sequential vs parallel, **0 drift**; SNP0005/0006 164.4s → 57.8s, total 309.9s → 211.3s (same-build back-to-back Debug runs). Parallelism is adopted behind `SNIPPER_MAX_DOP` (default on; `=1` reverts).
 - **Honest small-solution tradeoff learned:** a shared one-pass harvest costs small solutions ~+3–4s while saving monorepos ~100s. If a corrected index ever returns, consider size-gating it.
 
 ## Pending decisions (unchanged)
 
-- **Wave 4 direction** — options and gap-filler inventory in `Snipper-Feature-Parity-Roadmap.md` → *Next steps*.
-- **Parallel-binding adoption** (spike GO, above).
-- **SNP0026 upcast variant** (needs the rebind gate).
+- ~~Wave 4 direction~~ / ~~Parallel-binding adoption~~ — both decided 2026-09-19 (gap-filler sweep + parallelism adopted as 1.5.2; see `Snipper-Feature-Parity-Roadmap.md` → *Next steps*).
+- **SNP0026 upcast variant** (needs the rebind gate) — committed for 1.6.0.
 
 ## Commits of the reverted wave (for archaeology)
 

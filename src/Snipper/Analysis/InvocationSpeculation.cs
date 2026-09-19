@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -19,6 +20,12 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 /// </summary>
 internal static class InvocationSpeculation
 {
+    // Per-tree memo: does the document contain any conditional access at all?
+    // Most trees don't — their candidate invocations skip the subtree scan
+    // entirely (the 1.4.1 guard cost SNP0022/25/26 ~7s on the monorepo). The
+    // accept/reject set is unchanged: the tree-level answer is a pure superset
+    // gate in front of the exact subtree scan.
+    private static readonly ConditionalWeakTable<SyntaxTree, StrongBox<bool>> ConditionalAccessPresence = new();
     /// <summary>
     /// Re-binds <paramref name="invocation"/> as if the argument at
     /// <paramref name="argumentIndex"/> were absent. Null when the rewritten
@@ -77,9 +84,20 @@ internal static class InvocationSpeculation
     /// invocation subtree contains a conditional access or member binding —
     /// either as the invoked expression (<c>receiver?.Foo(args)</c>,
     /// <c>receiver?.Helper.Foo&lt;T&gt;(args)</c>) or nested inside an argument.
+    /// Trees with no conditional access anywhere are pre-cleared by a memoized
+    /// tree-level probe, so clean invocations pay O(1) instead of O(subtree).
     /// </summary>
     private static bool ContainsConditionalAccess(SyntaxNode node)
     {
-        return node.DescendantNodesAndSelf().Any(static n => n is ConditionalAccessExpressionSyntax or MemberBindingExpressionSyntax);
+        return TreeMayContainConditionalAccess(node.SyntaxTree)
+            && node.DescendantNodesAndSelf().Any(static n => n is ConditionalAccessExpressionSyntax or MemberBindingExpressionSyntax);
+    }
+
+    private static bool TreeMayContainConditionalAccess(SyntaxTree tree)
+    {
+        return ConditionalAccessPresence.GetValue(
+            tree,
+            static t => new StrongBox<bool>(
+                t.GetRoot().DescendantNodes().Any(static n => n is ConditionalAccessExpressionSyntax or MemberBindingExpressionSyntax))).Value;
     }
 }
