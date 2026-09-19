@@ -392,9 +392,16 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
 
     private static ISymbol? FamilyRootOf(ISymbol member)
     {
+        // The topmost SOURCE link: override chains can end in metadata (an SDK
+        // base class), and findings never land outside source code.
         var root = member;
         for (var link = OverriddenLink(root); link is not null; link = OverriddenLink(root))
         {
+            if (link.DeclaringSyntaxReferences.Length == 0)
+            {
+                break;
+            }
+
             root = link;
         }
 
