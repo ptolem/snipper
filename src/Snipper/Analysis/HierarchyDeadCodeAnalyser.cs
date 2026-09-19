@@ -3,6 +3,8 @@ namespace Snipper.Analysis;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using Snipper.Models;
 
 /// <summary>
@@ -20,10 +22,17 @@ using Snipper.Models;
 /// code can inherit); a type whose name is spelled in a string literal or
 /// solution JSON is plugin-loading evidence and suppresses the finding
 /// entirely (batched via <see cref="AssemblyNameEvidenceScanner"/>).
+///
+/// SNP0027 — Unused member hierarchy: an override family (root + every
+/// override reaching it) whose confirmed references all land inside the
+/// family's own declaration spans keeps itself alive with no external caller
+/// (ReSharper's UnusedMemberHierarchy). One finding per family, at the root;
+/// never-overridden virtuals stay with SNP0023, zero-reference families with
+/// SNP0005/0006, abstract links and unconfirmed locations suppress.
 /// </summary>
 public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
-    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0023"];
+    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0023", "SNP0027"];
 
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
@@ -40,6 +49,7 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
 
         // Phase 1: gather candidate classes (syntax pre-filtered, symbol-confirmed).
         var candidates = new List<CandidateClass>();
+        var familyCandidates = new List<ISymbol>();
         foreach (var project in solution.Projects)
         {
             if (!project.SupportsCompilation)
@@ -75,6 +85,16 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
                 foreach (var classDeclaration in root.DescendantNodes().OfType<ClassDeclarationSyntax>())
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    // SNP0027 gate: any member declared virtual or override —
+                    // a different gate than SNP0023's (which needs the class-level
+                    // modifiers below). Symbol resolved once for both.
+                    var declaresFamilyMember = DeclaresVirtualOrOverrideMember(classDeclaration);
+                    if (declaresFamilyMember
+                        && semanticModel.GetDeclaredSymbol(classDeclaration, cancellationToken) is { } familyClassSymbol)
+                    {
+                        CollectFamilyCandidates(familyClassSymbol, familyCandidates);
+                    }
 
                     // Syntax gate: no static/abstract/sealed modifiers, at least one
                     // direct member declared with the virtual modifier.
@@ -140,6 +160,15 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
         foreach (var candidate in candidates)
         {
             candidateNames.Add(candidate.Symbol.Name);
+        }
+
+        foreach (var member in familyCandidates)
+        {
+            candidateNames.Add(member.Name);
+            if (member.ContainingType is not null)
+            {
+                candidateNames.Add(member.ContainingType.Name);
+            }
         }
 
         var nameEvidence = AssemblyNameEvidenceScanner.FindSpelledNames(solution, candidateNames);
@@ -214,7 +243,205 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
             }
         }
 
+        // Phase 4 (SNP0027): override families with no external caller.
+        var processedRoots = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        foreach (var member in familyCandidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var familyRoot = FamilyRootOf(member);
+            if (familyRoot is null
+                || familyRoot.IsAbstract
+                || familyRoot.ContainingType is null
+                || !processedRoots.Add(familyRoot))
+            {
+                continue;
+            }
+
+            // Family = root + every override in the root's derived closure whose
+            // override chain reaches it. An abstract link anywhere in the chain
+            // excludes the family (v1: abstract dispatch has no safe root finding).
+            var family = new List<ISymbol> { familyRoot };
+            var familyHasAbstractLink = false;
+            foreach (var derivedClass in graph.GetTransitivelyDerivedClasses(familyRoot.ContainingType))
+            {
+                foreach (var candidate in derivedClass.GetMembers(familyRoot.Name))
+                {
+                    for (var link = candidate; link is not null; link = OverriddenLink(link))
+                    {
+                        if (link.IsAbstract)
+                        {
+                            familyHasAbstractLink = true;
+                        }
+
+                        if (SymbolEqualityComparer.Default.Equals(link.OriginalDefinition, familyRoot.OriginalDefinition))
+                        {
+                            family.Add(candidate);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Never-overridden virtuals stay with SNP0023; entirely unreferenced
+            // families stay with SNP0005/0006.
+            if (familyHasAbstractLink || family.Count < 2)
+            {
+                continue;
+            }
+
+            if (nameEvidence.Contains(familyRoot.Name) || nameEvidence.Contains(familyRoot.ContainingType.Name))
+            {
+                continue;
+            }
+
+            var candidateDocuments = usageIndex.GetDocumentsUsingName(familyRoot.Name);
+            if (candidateDocuments.Count == 0)
+            {
+                continue;
+            }
+
+            // External-caller proof: every confirmed reference to every family
+            // member must land inside a family member's own declaration span
+            // (base. and sibling-chain calls). Unconfirmed locations suppress —
+            // unknown evidence is never a finding.
+            var familySpans = GetFamilySpans(family, cancellationToken);
+            var sawReference = false;
+            var sawExternalOrUnknown = false;
+
+            foreach (var familyMember in family)
+            {
+                var references = await SymbolFinder.FindReferencesAsync(familyMember, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+                foreach (var referencedSymbol in references)
+                {
+                    foreach (var location in referencedSymbol.Locations)
+                    {
+                        if (location.IsCandidateLocation)
+                        {
+                            sawExternalOrUnknown = true;
+                            break;
+                        }
+
+                        sawReference = true;
+                        if (!IsInsideAnySpan(location.Location, familySpans))
+                        {
+                            sawExternalOrUnknown = true;
+                            break;
+                        }
+                    }
+
+                    if (sawExternalOrUnknown)
+                    {
+                        break;
+                    }
+                }
+
+                if (sawExternalOrUnknown)
+                {
+                    break;
+                }
+            }
+
+            if (!sawReference || sawExternalOrUnknown)
+            {
+                continue;
+            }
+
+            var hasFriendAssemblies = familyRoot.ContainingAssembly.GetAttributes()
+                .Any(static a => a.AttributeClass?.Name is "InternalsVisibleTo" or "InternalsVisibleToAttribute");
+            var rootLineSpan = familyRoot.Locations[0].GetLineSpan();
+            findings.Add(new SnipperFinding(
+                RuleId: "SNP0027",
+                Title: "Unused Member Hierarchy",
+                Message: $"Virtual member '{familyRoot.Name}' and its {family.Count - 1} override(s) reference only each other — the chain has no external callers.",
+                Certainty: TierFor(familyRoot, hasFriendAssemblies),
+                Category: FindingCategory.HierarchyDeadCode,
+                FilePath: rootLineSpan.Path ?? string.Empty,
+                LineNumber: rootLineSpan.StartLinePosition.Line + 1,
+                CharacterOffset: rootLineSpan.StartLinePosition.Character + 1,
+                Symbol: familyRoot));
+        }
+
         return findings;
+    }
+
+    private void CollectFamilyCandidates(INamedTypeSymbol classSymbol, List<ISymbol> familyCandidates)
+    {
+        foreach (var member in classSymbol.GetMembers())
+        {
+            var isCandidate = member switch
+            {
+                IMethodSymbol method => method is { MethodKind: MethodKind.Ordinary, IsAbstract: false, IsImplicitlyDeclared: false }
+                    && (method.IsVirtual || method.IsOverride),
+                IPropertySymbol property => property is { IsIndexer: false, IsAbstract: false, IsImplicitlyDeclared: false }
+                    && (property.IsVirtual || property.IsOverride),
+                _ => false,
+            };
+
+            if (!isCandidate
+                || ExclusionEngine.ShouldExclude(member)
+                || ExclusionEngine.IsNamespaceExcluded(member, _exclusions)
+                || InterfaceImplementationQuery.IsInterfaceImplementation(member))
+            {
+                continue;
+            }
+
+            familyCandidates.Add(member);
+        }
+    }
+
+    private static ISymbol? FamilyRootOf(ISymbol member)
+    {
+        var root = member;
+        for (var link = OverriddenLink(root); link is not null; link = OverriddenLink(root))
+        {
+            root = link;
+        }
+
+        return root;
+    }
+
+    private static List<(SyntaxTree Tree, TextSpan Span)> GetFamilySpans(
+        IReadOnlyList<ISymbol> family,
+        CancellationToken cancellationToken)
+    {
+        var spans = new List<(SyntaxTree, TextSpan)>();
+        foreach (var member in family)
+        {
+            foreach (var reference in member.DeclaringSyntaxReferences)
+            {
+                spans.Add((reference.SyntaxTree, reference.GetSyntax(cancellationToken).Span));
+            }
+        }
+
+        return spans;
+    }
+
+    private static bool IsInsideAnySpan(Location location, List<(SyntaxTree Tree, TextSpan Span)> spans)
+    {
+        foreach (var (tree, span) in spans)
+        {
+            if (location.SourceTree == tree && span.Contains(location.SourceSpan))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool DeclaresVirtualOrOverrideMember(ClassDeclarationSyntax classDeclaration)
+    {
+        foreach (var member in classDeclaration.Members)
+        {
+            if (member is MethodDeclarationSyntax or PropertyDeclarationSyntax
+                && member.Modifiers.Any(static m => m.IsKind(SyntaxKind.VirtualKeyword) || m.IsKind(SyntaxKind.OverrideKeyword)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool DeclaresVirtualMember(ClassDeclarationSyntax classDeclaration)

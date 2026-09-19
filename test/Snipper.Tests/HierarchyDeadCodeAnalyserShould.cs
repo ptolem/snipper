@@ -9,6 +9,30 @@ using Xunit;
 public sealed class HierarchyDeadCodeAnalyserShould(SampleSolutionFixture fixture)
 {
     [Fact]
+    public async Task Flag_Override_Family_With_No_External_Caller_As_Moderate_For_AnalyzeAsync()
+    {
+        var analyser = new HierarchyDeadCodeAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        // One finding at the family root — the override itself does not double-report.
+        findings.Should().ContainSingle(f =>
+            f.RuleId == "SNP0027"
+            && f.Certainty == CertaintyTier.Moderate
+            && f.Message.Contains("'DeadFamilyMethod'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Override_Family_With_An_External_Caller_For_AnalyzeAsync()
+    {
+        var analyser = new HierarchyDeadCodeAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => f.RuleId == "SNP0027" && f.Message.Contains("UsedFamilyMethod", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Flag_Never_Inherited_Class_With_Virtuals_As_Moderate_For_AnalyzeAsync()
     {
         var analyser = new HierarchyDeadCodeAnalyser();

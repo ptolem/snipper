@@ -60,6 +60,8 @@ public static class Worker
         _ = LoadBearingCtorScenario.Create();
         _ = new NonEmptyCtorScenario();
         _ = typeof(StaticCtorScenario);
+        _ = new FamilyRoot().UsedFamilyMethod();
+        _ = new FamilyDerived().UsedFamilyMethod();
         _ = ConditionalAccessScenarios.Exercise(new ConditionalReceiver());
 
         // Plugin host loads this assembly by name at runtime — name evidence for SNP0011.
