@@ -8,6 +8,40 @@ using Xunit;
 [Collection("SampleSolution")]
 public sealed class TighteningAnalyserShould(SampleSolutionFixture fixture)
 {
+    [Theory]
+    [InlineData("PublicButSelfUsed")]
+    [InlineData("InternalButSelfUsed")]
+    [InlineData("InternalStaticSelfUsed")]
+    [InlineData("PublicSelfUsedProperty")]
+    public async Task Flag_Member_Referenced_Only_Within_Containing_Type_As_Can_Be_Private_For_AnalyzeAsync(string memberName)
+    {
+        var analyser = new TighteningAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0024"
+            && f.Message.Contains("can be private", StringComparison.Ordinal)
+            && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("PublicAndExternallyUsed")]
+    [InlineData("PublicButUnused")]
+    [InlineData("PublicVirtualSelfUsed")]
+    [InlineData("WireValue")]
+    public async Task Not_Flag_Can_Be_Private_When_External_Framework_Virtual_Or_Unused_For_AnalyzeAsync(string memberName)
+    {
+        var analyser = new TighteningAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f =>
+            f.RuleId == "SNP0024"
+            && f.Message.Contains("can be private", StringComparison.Ordinal)
+            && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task Flag_Params_Only_Method_As_Advisory_For_AnalyzeAsync()
     {

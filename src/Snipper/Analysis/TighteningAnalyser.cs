@@ -3,11 +3,13 @@ namespace Snipper.Analysis;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using Snipper.Models;
 
 /// <summary>
 /// SNP0024 — Tightening invitations (CA1822 / IDE0044 / CA1852 parity): one
-/// analyser, three sub-checks, flat Advisory — these are refactor invitations,
+/// analyser, four sub-checks, flat Advisory — these are refactor invitations,
 /// not dead code, and snipper.json can promote the severity per rule. (1) An
 /// instance method that binds to no instance state of its containing hierarchy
 /// can be static; any attribute on the method excludes it (fixed-signature
@@ -17,7 +19,11 @@ using Snipper.Models;
 /// readonly; the read requirement keeps zero-read fields with
 /// SNP0001/SNP0021. (3) An internal class with no derived types in the
 /// <see cref="InheritanceGraph"/> can be sealed; zero-reference classes stay
-/// with SNP0005.
+/// with SNP0005. (4) A public/internal member on a non-exported type whose
+/// every confirmed reference lands inside its containing type's declaration
+/// span(s) can be private; virtuals, attributed members, contract
+/// implementations, and framework-evidence members are excluded, and the
+/// ≥1-reference usage gate keeps unused members with SNP0001/0005/0006.
 /// </summary>
 public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
 {
@@ -35,6 +41,7 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
         var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
         var usageIndex = SolutionUsageIndex.Get(solution);
         var graph = InheritanceGraph.Get(solution);
+        var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
 
         // Sequential binding per the workspace's ConcurrentBuild=false contract.
         // Syntax gates run first everywhere: modifier/attribute checks and the
@@ -89,6 +96,33 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
                                 findings.Add(staticFinding);
                             }
 
+                            if (HasPublicOrInternalModifier(methodDeclaration.Modifiers)
+                                && semanticModel.GetDeclaredSymbol(methodDeclaration, cancellationToken) is { } methodSymbol
+                                && await TryEvaluateCanBePrivateAsync(
+                                    methodSymbol,
+                                    solution,
+                                    usageIndex,
+                                    frameworkEvidence,
+                                    cancellationToken).ConfigureAwait(false) is { } methodPrivateFinding)
+                            {
+                                findings.Add(methodPrivateFinding);
+                            }
+
+                            break;
+
+                        case PropertyDeclarationSyntax propertyDeclaration:
+                            if (HasPublicOrInternalModifier(propertyDeclaration.Modifiers)
+                                && semanticModel.GetDeclaredSymbol(propertyDeclaration, cancellationToken) is { } propertySymbol
+                                && await TryEvaluateCanBePrivateAsync(
+                                    propertySymbol,
+                                    solution,
+                                    usageIndex,
+                                    frameworkEvidence,
+                                    cancellationToken).ConfigureAwait(false) is { } propertyPrivateFinding)
+                            {
+                                findings.Add(propertyPrivateFinding);
+                            }
+
                             break;
 
                         case ClassDeclarationSyntax classDeclaration:
@@ -121,6 +155,18 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
                                     cancellationToken).ConfigureAwait(false) is { } readonlyFinding)
                             {
                                 findings.Add(readonlyFinding);
+                            }
+
+                            if (HasPublicOrInternalModifier(fieldDeclaration.Modifiers)
+                                && semanticModel.GetDeclaredSymbol(node, cancellationToken) is IFieldSymbol fieldSymbol
+                                && await TryEvaluateCanBePrivateAsync(
+                                    fieldSymbol,
+                                    solution,
+                                    usageIndex,
+                                    frameworkEvidence,
+                                    cancellationToken).ConfigureAwait(false) is { } fieldPrivateFinding)
+                            {
+                                findings.Add(fieldPrivateFinding);
                             }
 
                             break;
@@ -394,6 +440,122 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
         for (var current = containingType; current is not null; current = current.BaseType)
         {
             if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, memberContainingType?.OriginalDefinition))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private async Task<SnipperFinding?> TryEvaluateCanBePrivateAsync(
+        ISymbol member,
+        Solution solution,
+        SolutionUsageIndex usageIndex,
+        FrameworkEvidenceIndex frameworkEvidence,
+        CancellationToken cancellationToken)
+    {
+        // Symbol gates: public/internal members on non-exported types only.
+        // Virtuals (extensibility contract), attributed members (hooks),
+        // indexers, non-ordinary methods, and implicit declarations are out;
+        // a public containing type is exported API surface (same boundary as
+        // can-be-sealed).
+        if (member.DeclaredAccessibility is not (Accessibility.Public or Accessibility.Internal)
+            || member.IsOverride
+            || member.IsImplicitlyDeclared
+            || member is IMethodSymbol { MethodKind: not MethodKind.Ordinary }
+            || member is IPropertySymbol { IsIndexer: true }
+            || member.GetAttributes().Length > 0
+            || member.ContainingType is not { } containingType
+            || containingType.TypeKind is not (TypeKind.Class or TypeKind.Struct)
+            || containingType.DeclaredAccessibility is Accessibility.Public)
+        {
+            return null;
+        }
+
+        if (member is IMethodSymbol { IsVirtual: true } or IPropertySymbol { IsVirtual: true })
+        {
+            return null;
+        }
+
+        if (ExclusionEngine.ShouldExclude(member)
+            || ExclusionEngine.IsNamespaceExcluded(member, _exclusions)
+            || InterfaceImplementationQuery.IsInterfaceImplementation(member)
+            || frameworkEvidence.IsUsed(member))
+        {
+            return null;
+        }
+
+        // Usage gate: a member nothing references belongs to SNP0001/0005/0006.
+        var candidateDocuments = usageIndex.GetDocumentsUsingName(member.Name);
+        if (candidateDocuments.Count == 0)
+        {
+            return null;
+        }
+
+        // Locality proof: every confirmed reference must land inside the
+        // containing type's declaration span(s) (partial types included).
+        // Candidate (unconfirmed) locations suppress — unknown evidence is
+        // never a tightening invitation. Nested types are conservative:
+        // references from an enclosing type read as external and suppress,
+        // even though private would remain legal there.
+        var containingSpans = GetContainingTypeSpans(containingType, cancellationToken);
+        var references = await SymbolFinder.FindReferencesAsync(member, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+        var sawReference = false;
+
+        foreach (var referencedSymbol in references)
+        {
+            foreach (var location in referencedSymbol.Locations)
+            {
+                // Unconfirmed (candidate) locations are unknown evidence —
+                // never a tightening invitation.
+                if (location.IsCandidateLocation)
+                {
+                    return null;
+                }
+
+                sawReference = true;
+                if (!IsInsideAnySpan(location.Location, containingSpans))
+                {
+                    return null;
+                }
+            }
+        }
+
+        if (!sawReference)
+        {
+            return null;
+        }
+
+        return CreateFinding(
+            member,
+            "Member Can Be Private",
+            $"Member '{member.Name}' is referenced only within its containing type and can be private.");
+    }
+
+    private static bool HasPublicOrInternalModifier(SyntaxTokenList modifiers)
+    {
+        return modifiers.Any(static m => m.IsKind(SyntaxKind.PublicKeyword) || m.IsKind(SyntaxKind.InternalKeyword));
+    }
+
+    private static List<(SyntaxTree Tree, TextSpan Span)> GetContainingTypeSpans(
+        INamedTypeSymbol containingType,
+        CancellationToken cancellationToken)
+    {
+        var spans = new List<(SyntaxTree, TextSpan)>();
+        foreach (var reference in containingType.DeclaringSyntaxReferences)
+        {
+            spans.Add((reference.SyntaxTree, reference.GetSyntax(cancellationToken).Span));
+        }
+
+        return spans;
+    }
+
+    private static bool IsInsideAnySpan(Location location, List<(SyntaxTree Tree, TextSpan Span)> spans)
+    {
+        foreach (var (tree, span) in spans)
+        {
+            if (location.SourceTree == tree && span.Contains(location.SourceSpan))
             {
                 return true;
             }

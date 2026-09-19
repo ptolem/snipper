@@ -12,7 +12,7 @@ using Snipper.Models;
 /// </summary>
 internal static class SnipperConfigLoader
 {
-    public const string FileName = "snipper.json";
+    private const string FileName = "snipper.json";
 
     public static SnipperConfig Load(string targetPath, out string? configPath, List<string> warnings)
     {

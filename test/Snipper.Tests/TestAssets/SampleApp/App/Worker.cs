@@ -47,6 +47,8 @@ public static class Worker
         _ = RedundantTypeArgScenarios.ExerciseTypeArgs();
         _ = HierarchyScenarios.Exercise();
         _ = TighteningExercise.Run(3);
+        _ = CanBePrivateConsumer.Consume();
+        new CanBePrivateScenarios().Exercise();
         _ = RedundantCastScenarios.Exercise();
         _ = UpcastScenarios.Exercise();
         _ = UpcastScenarios.ReturnUpcast();

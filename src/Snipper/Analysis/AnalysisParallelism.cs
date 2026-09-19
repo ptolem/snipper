@@ -12,7 +12,7 @@ namespace Snipper.Analysis;
 /// </summary>
 internal static class AnalysisParallelism
 {
-    public static int MaxDegreeOfParallelism
+    private static int MaxDegreeOfParallelism
     {
         get
         {
