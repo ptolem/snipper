@@ -96,6 +96,13 @@ public sealed class UnreachableCodeAnalyser(AnalysisExclusions? exclusions = nul
                     continue;
                 }
 
+                // Syntax gate: a statement provably reachable by fall-through
+                // needs no flow analysis — the answer is already known.
+                if (!UnreachableCodeGate.MayStartUnreachable(statement))
+                {
+                    continue;
+                }
+
                 var flow = semanticModel.AnalyzeControlFlow(statement);
                 if (flow is null || flow.StartPointIsReachable)
                 {

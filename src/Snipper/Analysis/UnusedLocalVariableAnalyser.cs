@@ -1,6 +1,5 @@
 namespace Snipper.Analysis;
 
-using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -78,8 +77,11 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
 
                     // A declaration in unreachable code belongs to SNP0002, which
                     // reports the root cause — don't double-report the variable.
+                    // The syntax gate answers "provably reachable" for nearly all
+                    // declarations; flow analysis runs only when it might not be.
                     var enclosingStatement = node.FirstAncestorOrSelf<StatementSyntax>();
                     if (enclosingStatement is not null
+                        && UnreachableCodeGate.MayStartUnreachable(enclosingStatement)
                         && semanticModel.AnalyzeControlFlow(enclosingStatement) is { StartPointIsReachable: false })
                     {
                         continue;
@@ -100,16 +102,14 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
 
                     // Slow path: the name appears in the document (possibly on another
                     // symbol sharing it) — confirm semantically. A local's references
-                    // can only live in this document.
+                    // can only live in this document, and the harvest binds them all.
                     var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
                     if (symbol is not ILocalSymbol local)
                     {
                         continue;
                     }
 
-                    var referenced = await SymbolReferenceQuery.HasAnyReferenceAsync(
-                        local, solution, ImmutableHashSet.Create(document), cancellationToken).ConfigureAwait(false);
-                    if (!referenced)
+                    if (!SolutionReferenceIndex.Get(solution).IsReferenced(local))
                     {
                         findings.Add(CreateFinding(name, node.GetLocation().GetLineSpan()));
                     }
