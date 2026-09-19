@@ -24,5 +24,6 @@ public enum FindingCategory : byte
     Tightening = 20,
     RedundantCast = 21,
     RedundantQualifier = 22,
-    EmptyTypeMember = 23
+    EmptyTypeMember = 23,
+    UnusedEvent = 24
 }

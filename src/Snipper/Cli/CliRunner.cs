@@ -213,6 +213,7 @@ public static class CliRunner
             new RedundancyAnalyser(exclusions),
             new HierarchyDeadCodeAnalyser(exclusions),
             new TighteningAnalyser(exclusions),
+            new EventNeverInvokedAnalyser(exclusions),
         };
 
         if (includeConfigAnalysis)
