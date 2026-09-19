@@ -130,4 +130,118 @@ public sealed class UnusedNonPrivateMemberAnalyserShould(SampleSolutionFixture f
 
         findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'Program'", StringComparison.Ordinal));
     }
+
+    [Theory]
+    [InlineData("FwSerializedNote")]
+    [InlineData("FwChild")]
+    [InlineData("FwNestedCount")]
+    public async Task Not_Flag_JsonSerializable_Registered_Dto_Members_For_AnalyzeAsync(string memberName)
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("FwDraftKind")]
+    [InlineData("FwDraftUnits")]
+    [InlineData("FwReceiptCode")]
+    public async Task Not_Flag_Refit_Signature_Dto_Members_For_AnalyzeAsync(string memberName)
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_FromBody_Bound_Model_Members_For_AnalyzeAsync()
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'FwEnvelopeTag'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Serializer_Call_Site_Dto_Members_For_AnalyzeAsync()
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'FwProjectionTicks'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Member_With_Serialization_Attribute_For_AnalyzeAsync()
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'FwRenamedValue'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Interface_Members_Of_Framework_Registered_Type_But_Flag_Plain_Members_For_AnalyzeAsync()
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'ProbeFwStatus'", StringComparison.Ordinal));
+        findings.Should().Contain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains("'FwAuxiliaryHelper'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Record_Synthesized_Members_For_AnalyzeAsync()
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        // The unused record type itself is a real finding; its synthesized members are not.
+        findings.Should().Contain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains("'FwAuditStamp'", StringComparison.Ordinal));
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'FwAuditKey'", StringComparison.Ordinal));
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'FwAuditVersion'", StringComparison.Ordinal));
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'Deconstruct'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("InvokeAsync")]
+    [InlineData("FwOrderRequestValidator")]
+    [InlineData("FwValidateRuleSet")]
+    public async Task Not_Flag_Middleware_And_Validator_Conventions_For_AnalyzeAsync(string memberName)
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("FwOrphanedDto")]
+    [InlineData("FwOrphanedNote")]
+    [InlineData("FwPlainHelper")]
+    [InlineData("FwNeverCalledLogic")]
+    public async Task Flag_Types_And_Members_Without_Framework_Evidence_For_AnalyzeAsync(string memberName)
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
+    }
 }

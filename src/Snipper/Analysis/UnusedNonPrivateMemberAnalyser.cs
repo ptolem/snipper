@@ -30,6 +30,7 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         var diRegisteredTypes = await DiRegistrationScanner.ScanAsync(solution, cancellationToken).ConfigureAwait(false);
         var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
         var usageIndex = SolutionUsageIndex.Get(solution);
+        var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
 
         // Binding is deliberately sequential: workspace compilations are built with
         // ConcurrentBuild=false, so concurrent semantic binding is unsupported and
@@ -91,6 +92,14 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                     }
 
                     if (ExclusionEngine.IsNamespaceExcluded(symbol, _exclusions))
+                    {
+                        continue;
+                    }
+
+                    // Framework evidence (Wave 4): serializers, model binders, and
+                    // DI-activated contracts invoke members without any C# reference.
+                    // Checking here also skips the reference search entirely.
+                    if (frameworkEvidence.IsUsed(symbol))
                     {
                         continue;
                     }
@@ -174,8 +183,10 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         {
             IMethodSymbol method => method.MethodKind is MethodKind.Ordinary
                 && !method.IsOverride
-                && method.Name is not ("Main" or "<Main>$"),
-            IPropertySymbol property => !property.IsIndexer && !property.IsOverride,
+                && !method.IsImplicitlyDeclared
+                && method.Name is not ("Main" or "<Main>$")
+                && !(method.Name == "Deconstruct" && method.ContainingType?.IsRecord == true),
+            IPropertySymbol property => !property.IsIndexer && !property.IsOverride && !property.IsImplicitlyDeclared,
             INamedTypeSymbol type => type.TypeKind is TypeKind.Class or TypeKind.Struct && !type.IsImplicitlyDeclared,
             _ => false,
         };
