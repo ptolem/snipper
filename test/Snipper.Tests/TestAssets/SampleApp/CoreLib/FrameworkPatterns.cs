@@ -40,13 +40,6 @@ internal static class JsonSerializer
     public static T? Deserialize<T>(string json) => default;
 }
 
-internal static class HealthCheckRegistration
-{
-    public static void AddCheck<T>()
-    {
-    }
-}
-
 internal abstract class AbstractValidator<T>;
 
 // ---- F1a: [JsonSerializable]-registered DTO graph ----
@@ -113,20 +106,59 @@ internal class FwAttributedContract
     public string? FwRenamedValue { get; init; }
 }
 
-// ---- F2: framework-registered contract implementation ----
+// ---- F2: framework-dispatched contract implementations (no C# call exists) ----
 
-internal interface IFwLifecycleProbe
+// Stand-in for Microsoft.Extensions.Diagnostics.HealthChecks.IHealthCheck: the
+// framework dispatches the contract invisibly. Matched by simple name.
+internal interface IHealthCheck
 {
-    string ProbeFwStatus();
+    string CheckFwStatus();
 }
 
-internal sealed class FwLifecycleProbe : IFwLifecycleProbe
+internal sealed class FwHealthCheck : IHealthCheck
 {
-    // Interface-implementing member of a registered type — framework-called.
-    public string ProbeFwStatus() => "green";
+    // Contract member — framework-called, never flagged.
+    public string CheckFwStatus() => "green";
 
-    // Not on the interface — nothing calls this. Must STILL be flagged.
+    // Not on the contract — nothing calls this. Must STILL be flagged.
     public string FwAuxiliaryHelper() => "aux";
+}
+
+// Stand-in for ZiggyCreatures FusionCache's IFusionCacheSerializer.
+internal interface IFusionCacheSerializer
+{
+    string SerializeFwEntry();
+
+    string DeserializeFwEntry();
+}
+
+internal sealed class FwCacheSerializer : IFusionCacheSerializer
+{
+    public string SerializeFwEntry() => "{}";
+
+    public string DeserializeFwEntry() => "{}";
+}
+
+// ---- F2-negative: plain DI registration is NOT evidence — calls through the
+// registered contract are ordinary C# references, so an uncalled contract
+// member must STILL be flagged even when an AddScoped-shaped call exists ----
+
+internal static class DiContainer
+{
+    public static void AddScoped<TContract, TImplementation>()
+    {
+    }
+}
+
+internal interface IFwCartRepository
+{
+    string GetFwActiveCart();
+}
+
+internal sealed class FwCartRepository : IFwCartRepository
+{
+    // On the contract and registered below, yet never called anywhere — dead.
+    public string GetFwActiveCart() => "cart";
 }
 
 // ---- Evidence seeds (deliberately never called: the syntax pass scans all
@@ -136,7 +168,7 @@ internal static class FwEvidenceSeeds
 {
     internal static void SeedFwEvidence()
     {
-        HealthCheckRegistration.AddCheck<FwLifecycleProbe>();
+        DiContainer.AddScoped<IFwCartRepository, FwCartRepository>();
         _ = JsonSerializer.Deserialize<FwCachedProjection>("{}");
     }
 }

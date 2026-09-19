@@ -10,11 +10,15 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 /// Wave 4 framework evidence: identifies members that frameworks invoke without
 /// any C# reference — serialization DTO graphs (STJ source-gen contexts, Refit
 /// signatures, [FromBody] binding, serializer call sites, GraphQL response
-/// contracts), DI/framework-registered contract implementations (health checks,
-/// exception handlers, Refit clients), ASP.NET middleware conventions, and
-/// FluentValidation validators. Doctrine: err toward "used" — this evidence only
-/// ever suppresses findings, never creates them. Evidence is gathered from ALL
-/// documents (generated/external code included): it is never a finding location.
+/// contracts), framework-dispatched contract implementations (health checks,
+/// FusionCache serializers, hosted services, exception handlers, OpenAPI
+/// filters/transformers), ASP.NET middleware conventions, and FluentValidation
+/// validators. Plain DI registration is NOT evidence: calls through a registered
+/// contract are ordinary C# references the reference graph already sees, so an
+/// uncalled contract member on a registered type is still dead code. Doctrine:
+/// err toward "used" — this evidence only ever suppresses findings, never
+/// creates them. Evidence is gathered from ALL documents (generated/external
+/// code included): it is never a finding location.
 /// </summary>
 internal sealed class FrameworkEvidenceIndex
 {
@@ -61,25 +65,23 @@ internal sealed class FrameworkEvidenceIndex
         "IGraphQLRequest",
     }.ToFrozenSet(StringComparer.Ordinal);
 
-    // DI/framework registration shapes whose type argument is instantiated and
-    // called through its contracts by the framework itself.
-    private static readonly FrozenSet<string> RegistrationMethodNames = new HashSet<string>(StringComparer.Ordinal)
+    // Contracts the framework itself dispatches, invisibly to the reference
+    // graph: health checks, FusionCache serializers, hosted services, ASP.NET
+    // exception handlers, and Swashbuckle/OpenAPI filters/transformers. Matched
+    // by simple name, the same convention as AbstractValidator below. Note what
+    // is deliberately absent: ordinary application contracts. A type registered
+    // via AddScoped/AddSingleton/etc. is called through its contract by consumer
+    // C# — those calls are visible, so the reference graph stays the arbiter.
+    private static readonly FrozenSet<string> FrameworkDispatchedContracts = new HashSet<string>(StringComparer.Ordinal)
     {
-        "AddScoped",
-        "AddTransient",
-        "AddSingleton",
-        "AddHostedService",
-        "TryAddScoped",
-        "TryAddTransient",
-        "TryAddSingleton",
-        "AddCheck",
-        "AddTypeActivatedCheck",
-        "AddRefitClient",
-        "AddExceptionHandler",
-        "AddSchemaFilter",
-        "AddDocumentTransformer",
-        "AddOperationTransformer",
-        "AddSchemaTransformer",
+        "IHealthCheck",
+        "IFusionCacheSerializer",
+        "IHostedService",
+        "IExceptionHandler",
+        "ISchemaFilter",
+        "IDocumentTransformer",
+        "IOperationTransformer",
+        "ISchemaTransformer",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     private static readonly FrozenSet<string> MemberSerializationAttributes = new HashSet<string>(StringComparer.Ordinal)
@@ -99,14 +101,10 @@ internal sealed class FrameworkEvidenceIndex
     }.ToFrozenSet(StringComparer.Ordinal);
 
     private readonly FrozenSet<INamedTypeSymbol> _serializationUsedTypes;
-    private readonly FrozenSet<INamedTypeSymbol> _frameworkRegisteredTypes;
 
-    private FrameworkEvidenceIndex(
-        FrozenSet<INamedTypeSymbol> serializationUsedTypes,
-        FrozenSet<INamedTypeSymbol> frameworkRegisteredTypes)
+    private FrameworkEvidenceIndex(FrozenSet<INamedTypeSymbol> serializationUsedTypes)
     {
         _serializationUsedTypes = serializationUsedTypes;
-        _frameworkRegisteredTypes = frameworkRegisteredTypes;
     }
 
     public static FrameworkEvidenceIndex Get(Solution solution)
@@ -147,10 +145,11 @@ internal sealed class FrameworkEvidenceIndex
             return true;
         }
 
-        // A framework-registered type is constructed by the container; its members
-        // are framework-called only when they implement a contract.
-        if (_frameworkRegisteredTypes.Contains(type)
-            && (member is INamedTypeSymbol || ImplementsAnyInterfaceMember(member)))
+        // A member implementing a framework-dispatched contract is invoked by
+        // the framework itself — no C# reference can exist for it. (Type
+        // candidates need no suppression here: the contract on the type's base
+        // list is an ordinary reference the graph already sees.)
+        if (ImplementsFrameworkContractMember(member))
         {
             return true;
         }
@@ -167,7 +166,6 @@ internal sealed class FrameworkEvidenceIndex
     private static FrameworkEvidenceIndex Build(Solution solution)
     {
         var serializationSeeds = new List<(Document Document, TypeSyntax Type)>();
-        var registrationSeeds = new List<(Document Document, TypeSyntax Type)>();
 
         // Pass 1: syntax seeds. No semantic calls — safe to read every document.
         foreach (var project in solution.Projects)
@@ -185,16 +183,14 @@ internal sealed class FrameworkEvidenceIndex
                     continue;
                 }
 
-                CollectSeeds(document, root, serializationSeeds, registrationSeeds);
+                CollectSeeds(document, root, serializationSeeds);
             }
         }
 
         // Pass 2: resolve seed types. Sequential binding: workspace compilations are
         // built with ConcurrentBuild=false. Only seed-bearing documents need a model.
         var seedTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
-        var registeredTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         ResolveSeeds(serializationSeeds, seedTypes, normalizeToDefinition: false);
-        ResolveSeeds(registrationSeeds, registeredTypes, normalizeToDefinition: true);
 
         // Pass 3: DTO closure — public instance property/field types and generic
         // type arguments, transitively (handles Task<Dto>, IApiResponse<Dto>, and
@@ -236,15 +232,13 @@ internal sealed class FrameworkEvidenceIndex
         }
 
         return new FrameworkEvidenceIndex(
-            closure.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default),
-            registeredTypes.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default));
+            closure.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default));
     }
 
     private static void CollectSeeds(
         Document document,
         SyntaxNode root,
-        List<(Document, TypeSyntax)> serializationSeeds,
-        List<(Document, TypeSyntax)> registrationSeeds)
+        List<(Document, TypeSyntax)> serializationSeeds)
     {
         foreach (var node in root.DescendantNodes())
         {
@@ -264,7 +258,7 @@ internal sealed class FrameworkEvidenceIndex
                 }
 
                 case InvocationExpressionSyntax invocation:
-                    CollectInvocationSeeds(document, invocation, serializationSeeds, registrationSeeds);
+                    CollectInvocationSeeds(document, invocation, serializationSeeds);
                     break;
 
                 case ParameterSyntax { AttributeLists.Count: > 0 } parameter when HasBindingAttribute(parameter) && parameter.Type is not null:
@@ -285,8 +279,7 @@ internal sealed class FrameworkEvidenceIndex
     private static void CollectInvocationSeeds(
         Document document,
         InvocationExpressionSyntax invocation,
-        List<(Document, TypeSyntax)> serializationSeeds,
-        List<(Document, TypeSyntax)> registrationSeeds)
+        List<(Document, TypeSyntax)> serializationSeeds)
     {
         var (name, receiverText, genericName) = invocation.Expression switch
         {
@@ -307,33 +300,14 @@ internal sealed class FrameworkEvidenceIndex
             || JsonExtensionMethods.Contains(identifier)
             || (identifier == "RegisterClassMap" && receiverText.EndsWith("BsonClassMap", StringComparison.Ordinal));
 
-        if (isSerializerCall && genericName is not null)
-        {
-            foreach (var typeArgument in genericName.TypeArgumentList.Arguments)
-            {
-                serializationSeeds.Add((document, typeArgument));
-            }
-        }
-
-        if (!RegistrationMethodNames.Contains(identifier))
+        if (!isSerializerCall || genericName is null)
         {
             return;
         }
 
-        if (genericName is not null)
+        foreach (var typeArgument in genericName.TypeArgumentList.Arguments)
         {
-            foreach (var typeArgument in genericName.TypeArgumentList.Arguments)
-            {
-                registrationSeeds.Add((document, typeArgument));
-            }
-        }
-
-        foreach (var argument in invocation.ArgumentList.Arguments)
-        {
-            if (argument.Expression is TypeOfExpressionSyntax typeOfExpression)
-            {
-                registrationSeeds.Add((document, typeOfExpression.Type));
-            }
+            serializationSeeds.Add((document, typeArgument));
         }
     }
 
@@ -406,10 +380,16 @@ internal sealed class FrameworkEvidenceIndex
         }
     }
 
-    private static bool ImplementsAnyInterfaceMember(ISymbol member)
+    private static bool ImplementsFrameworkContractMember(ISymbol member)
     {
-        if (member is IMethodSymbol { ExplicitInterfaceImplementations.Length: > 0 }
-            || member is IPropertySymbol { ExplicitInterfaceImplementations.Length: > 0 })
+        if (member is IMethodSymbol { ExplicitInterfaceImplementations.Length: > 0 } explicitMethod
+            && explicitMethod.ExplicitInterfaceImplementations.Any(static impl => FrameworkDispatchedContracts.Contains(impl.ContainingType.Name)))
+        {
+            return true;
+        }
+
+        if (member is IPropertySymbol { ExplicitInterfaceImplementations.Length: > 0 } explicitProperty
+            && explicitProperty.ExplicitInterfaceImplementations.Any(static impl => FrameworkDispatchedContracts.Contains(impl.ContainingType.Name)))
         {
             return true;
         }
@@ -422,6 +402,11 @@ internal sealed class FrameworkEvidenceIndex
 
         foreach (var contract in containingType.AllInterfaces)
         {
+            if (!FrameworkDispatchedContracts.Contains(contract.Name))
+            {
+                continue;
+            }
+
             foreach (var contractMember in contract.GetMembers())
             {
                 if (SymbolEqualityComparer.Default.Equals(

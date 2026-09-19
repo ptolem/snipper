@@ -187,17 +187,44 @@ public sealed class UnusedNonPrivateMemberAnalyserShould(SampleSolutionFixture f
         findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'FwRenamedValue'", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public async Task Not_Flag_Interface_Members_Of_Framework_Registered_Type_But_Flag_Plain_Members_For_AnalyzeAsync()
+    [Theory]
+    [InlineData("CheckFwStatus")]
+    [InlineData("SerializeFwEntry")]
+    [InlineData("DeserializeFwEntry")]
+    public async Task Not_Flag_Framework_Dispatched_Contract_Members_For_AnalyzeAsync(string memberName)
     {
         var analyser = new UnusedNonPrivateMemberAnalyser();
 
         var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
 
-        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains("'ProbeFwStatus'", StringComparison.Ordinal));
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Flag_Non_Contract_Member_On_Framework_Dispatched_Type_For_AnalyzeAsync()
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
         findings.Should().Contain(f =>
             (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
             && f.Message.Contains("'FwAuxiliaryHelper'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Flag_Uncalled_Contract_Member_On_Plain_Di_Registered_Type_For_AnalyzeAsync()
+    {
+        // Regression pin (1.5.0 → 1.5.1): plain DI registration is not evidence —
+        // consumer calls through the contract are ordinary C# references, so an
+        // uncalled contract member is dead even when an AddScoped-shaped call exists.
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains("'GetFwActiveCart'", StringComparison.Ordinal));
     }
 
     [Fact]
