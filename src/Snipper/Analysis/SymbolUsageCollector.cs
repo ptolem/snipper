@@ -22,7 +22,7 @@ internal static class SymbolUsageCollector
     {
         ArgumentNullException.ThrowIfNull(project);
 
-        var usedAssemblies = new HashSet<IAssemblySymbol>((IEqualityComparer<IAssemblySymbol>)SymbolEqualityComparer.Default);
+        var usedAssemblies = new HashSet<IAssemblySymbol>(SymbolEqualityComparer.Default);
 
         // Sequential binding: workspace compilations are built with
         // ConcurrentBuild=false; concurrent GetSymbolInfo is unsupported.

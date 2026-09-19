@@ -48,6 +48,8 @@ public static class Worker
         _ = HierarchyScenarios.Exercise();
         _ = TighteningExercise.Run(3);
         _ = RedundantCastScenarios.Exercise();
+        _ = UpcastScenarios.Exercise();
+        _ = UpcastScenarios.ReturnUpcast();
         _ = ConditionalAccessScenarios.Exercise(new ConditionalReceiver());
 
         // Plugin host loads this assembly by name at runtime — name evidence for SNP0011.

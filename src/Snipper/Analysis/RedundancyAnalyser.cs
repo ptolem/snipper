@@ -87,6 +87,10 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
                     {
                         findings.Add(castFinding);
                     }
+                    else if (RedundantUpcastEvaluator.TryEvaluate(cast, semanticModel, cancellationToken) is { } upcastFinding)
+                    {
+                        findings.Add(upcastFinding);
+                    }
                 }
             }
         }

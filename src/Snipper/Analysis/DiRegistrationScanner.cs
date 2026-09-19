@@ -65,7 +65,7 @@ internal static class DiRegistrationScanner
         // candidate-bearing document, sequential binding per the workspace's
         // ConcurrentBuild=false contract (parallelising per-document binding is
         // AnalysisParallelism-gated elsewhere; this pass is a handful of files).
-        var registeredTypes = new HashSet<INamedTypeSymbol>((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default);
+        var registeredTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         foreach (var group in candidateInvocations.GroupBy(static candidate => candidate.Document))
         {
             var semanticModel = await group.Key.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);

@@ -86,6 +86,21 @@ public sealed class RedundantCastAnalyserShould(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Flag_Upcasts_Only_Where_Stripping_Cannot_Rebind_For_AnalyzeAsync()
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        // Exactly four: explicitly typed declaration, typed assignment, gated
+        // single-overload whole argument, expression-bodied return. The var,
+        // overload-rebind, and nested-expression casts never flag.
+        findings
+            .Where(f => f.RuleId == "SNP0026" && f.FilePath.EndsWith("RedundantUpcasts.cs", StringComparison.Ordinal))
+            .Should().HaveCount(4);
+    }
+
+    [Fact]
     public async Task Not_Flag_Anything_When_File_Has_No_Casts_For_AnalyzeAsync()
     {
         var analyser = new RedundancyAnalyser();

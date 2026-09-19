@@ -80,6 +80,17 @@ internal static class InvocationSpeculation
     }
 
     /// <summary>
+    /// The 1.4.1 crash guard, shared with any speculation over a rewritten tree
+    /// (the SNP0026 upcast rebind gate): never speculate a tree that touches a
+    /// conditional access or member binding.
+    /// </summary>
+    public static bool TouchesConditionalAccess(SyntaxNode node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        return ContainsConditionalAccess(node);
+    }
+
+    /// <summary>
     /// Syntax-only guard, checked before any speculative call: true when the
     /// invocation subtree contains a conditional access or member binding —
     /// either as the invoked expression (<c>receiver?.Foo(args)</c>,
