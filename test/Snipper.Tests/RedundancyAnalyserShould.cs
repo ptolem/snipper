@@ -36,6 +36,33 @@ public sealed class RedundancyAnalyserShould(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Flag_Sibling_Qualification_When_A_Global_Using_Imports_The_Sibling_Namespace_For_AnalyzeAsync()
+    {
+        // 1.6.2 addendum (milkrun "FP-6"): with a global using of the sibling
+        // namespace in scope, the bare name binds identically — the finding is
+        // correct and must keep firing (strip-compile verified on the monorepo).
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0028"
+            && f.Message.Contains("Qualification in 'Algolia.FwShadowHandler'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Sibling_Qualification_When_Bare_Name_Would_Rebind_To_A_Different_Sibling_For_AnalyzeAsync()
+    {
+        // The Topsort sibling is not imported by any using: bare FwShadowHandler
+        // rebinds to the Algolia type, so the qualification is load-bearing.
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => f.RuleId == "SNP0028" && f.Message.Contains("Topsort.FwShadowHandler", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Flag_Empty_Public_Constructor_And_Empty_Destructor_As_High_For_AnalyzeAsync()
     {
         var analyser = new RedundancyAnalyser();
