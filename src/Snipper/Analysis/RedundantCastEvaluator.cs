@@ -34,6 +34,23 @@ internal static class RedundantCastEvaluator
             return null;
         }
 
+        // A cast whose operand has no natural type is structural, not cosmetic:
+        // it supplies the target type itself (collection expressions — stripping
+        // makes them untargetable, CS9176; target-typed new/conditionals;
+        // lambdas; method groups; null/default literals). Parentheses inherit
+        // the converted type, so the natural-type probe must unwrap them —
+        // that hole produced the monorepo collection-expression FP (1.6.1).
+        var operand = cast.Expression;
+        while (operand is ParenthesizedExpressionSyntax parenthesized)
+        {
+            operand = parenthesized.Expression;
+        }
+
+        if (semanticModel.GetTypeInfo(operand, cancellationToken).Type is null)
+        {
+            return null;
+        }
+
         var conversion = semanticModel.ClassifyConversion(cast.Expression, targetType);
         if (!conversion.Exists || !conversion.IsIdentity)
         {

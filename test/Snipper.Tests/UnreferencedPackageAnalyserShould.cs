@@ -52,4 +52,54 @@ public sealed class UnreferencedPackageAnalyserShould(SampleSolutionFixture fixt
 
         findings.Should().NotContain(f => f.RuleId == "SNP0003" && f.Message.Contains("Microsoft.Extensions.Logging.Console", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task Not_Flag_Package_When_A_Consumer_Project_Uses_It_Transitively_For_AnalyzeAsync()
+    {
+        // CoreLib declares Serilog but never uses it; App (which references CoreLib)
+        // uses Serilog through the transitive package flow. Hub references flow to
+        // consumers by default — removal would break App (milkrun FP, 1.6.1).
+        var findings = await new UnreferencedPackageAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f =>
+            f.RuleId == "SNP0003"
+            && f.Message.Contains("'Serilog'", StringComparison.Ordinal)
+            && f.Message.Contains("CoreLib", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Flag_Package_When_PrivateAssets_Blocks_The_Consumer_Flow_For_AnalyzeAsync()
+    {
+        // Same hub shape as Serilog, but PrivateAssets=all stops the package from
+        // flowing to consumers — App's usage must not save CoreLib's reference.
+        var findings = await new UnreferencedPackageAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0003"
+            && f.Message.Contains("Serilog.Sinks.Console", StringComparison.Ordinal)
+            && f.Message.Contains("CoreLib", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_ProjectReference_When_Its_Transitive_Flow_Is_Used_For_AnalyzeAsync()
+    {
+        // App → FacadeLib: FacadeLib's own assembly is empty, but the reference
+        // carries TransitiveLib onward and App uses TransitCatalog — removal
+        // would evict the flow and break App (milkrun FP, 1.6.1).
+        var findings = await new UnreferencedPackageAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f =>
+            f.RuleId == "SNP0004" && f.Message.Contains("FacadeLib", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_ProjectReference_When_A_Consumer_Uses_Its_Flow_For_AnalyzeAsync()
+    {
+        // FacadeLib → TransitiveLib: FacadeLib itself uses nothing, but its
+        // consumer App uses TransitiveLib's symbols through the chain.
+        var findings = await new UnreferencedPackageAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f =>
+            f.RuleId == "SNP0004" && f.Message.Contains("TransitiveLib", StringComparison.Ordinal));
+    }
 }

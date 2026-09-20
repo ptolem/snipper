@@ -207,6 +207,32 @@ public sealed class RedundancyAnalyserShould(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Flag_Di_Factory_Lambda_When_Output_Inference_Infers_Identically_For_AnalyzeAsync()
+    {
+        // Milkrun FP-review shape (verified TRUE positive 1.6.1): output type
+        // inference flows from a block-bodied lambda's return expression.
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0025" && f.Message.Contains("'RegisterViaFactory'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Flag_When_Unique_Interface_Inference_Infers_Identically_For_AnalyzeAsync()
+    {
+        // Milkrun FP-review shape (verified TRUE positive 1.6.1): lower-bound
+        // inference through a concrete class's unique matching interface.
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0025" && f.Message.Contains("'CreateViaUniqueInterface'", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Not_Flag_Type_Arguments_When_Stripping_Would_Rebind_To_Non_Generic_Overload_For_AnalyzeAsync()
     {
         var analyser = new RedundancyAnalyser();

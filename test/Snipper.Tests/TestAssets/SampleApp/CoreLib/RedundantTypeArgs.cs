@@ -1,5 +1,25 @@
 namespace CoreLib;
 
+public interface IRegistryClient
+{
+}
+
+public sealed class RegistryClient : IRegistryClient
+{
+}
+
+public interface IShapeFilter<T>
+{
+}
+
+public sealed class ShapeMessage
+{
+}
+
+public sealed class ShapeMessageFilter : IShapeFilter<ShapeMessage>
+{
+}
+
 // SNP0025 scenarios: explicit method type arguments that type inference would
 // infer identically. Kept alive through ExerciseTypeArgs, called from
 // App/Worker.cs. Method names are deliberately distinctive — FluentAssertions
@@ -12,12 +32,37 @@ public static class RedundantTypeArgScenarios
         _ = EchoExplicit<int>(5);
         _ = RedundantTypeArgScenarios.EchoViaClass<string>("s");
 
+        // Positives — the milkrun FP-review canonical shapes, verified TRUE
+        // positives 1.6.1 against the real Microsoft DI overload set in an
+        // isolated repro: output type inference from a block-bodied lambda's
+        // return expression, and lower-bound inference through a concrete
+        // class's unique matching interface. Both strip cleanly; the gate
+        // must keep flagging them.
+        RegisterViaFactory<IRegistryClient>(sp =>
+        {
+            IRegistryClient client = new RegistryClient();
+            return client;
+        });
+        _ = CreateViaUniqueInterface<ShapeMessage>(new object(), new ShapeMessageFilter());
+
         // Negatives.
         _ = EchoAmbiguous<int>(5);
         _ = EchoAmbiguous(7);
         _ = EchoNoArgs<int>();
         _ = EchoAnnotated<string?>("s");
         return IdentityUninferrable<long>(5);
+    }
+
+    private static void RegisterViaFactory<TService>(Func<IServiceProvider, TService> factory)
+    {
+        _ = factory;
+    }
+
+    private static T CreateViaUniqueInterface<T>(object options, IShapeFilter<T> filter)
+    {
+        _ = options;
+        _ = filter;
+        return default!;
     }
 
     private static T EchoExplicit<T>(T value) => value;

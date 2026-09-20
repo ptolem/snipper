@@ -321,18 +321,24 @@ public static class CliRunner
 
         if (outputPath is not null)
         {
-            return WriteReport(reportableFindings, outputPath, format);
+            return WriteReport(reportableFindings, outputPath, format, Path.GetDirectoryName(targetPath));
         }
 
         return 0;
     }
 
-    private static int WriteReport(IReadOnlyList<SnipperFinding> findings, string outputPath, ReportFormat format)
+    private static int WriteReport(IReadOnlyList<SnipperFinding> findings, string outputPath, ReportFormat format, string? targetDirectory)
     {
+        var commitSha = GitMetadata.TryResolveCommitSha(targetDirectory, out var workingTreeDirty);
+        if (workingTreeDirty)
+        {
+            AnsiConsole.MarkupLine("[yellow]Warning: the analysed working tree has uncommitted changes — finding locations may already have drifted.[/]");
+        }
+
         var json = format switch
         {
             ReportFormat.Sarif => BuildSarifJson(findings),
-            _ => BuildJson(findings),
+            _ => BuildJson(findings, commitSha),
         };
 
         try
@@ -354,23 +360,29 @@ public static class CliRunner
         }
     }
 
-    private static string BuildJson(IReadOnlyList<SnipperFinding> findings)
+    internal static string BuildJson(IReadOnlyList<SnipperFinding> findings, string? commitSha)
     {
-        var report = findings
-            .OrderBy(static f => f.Certainty)
-            .ThenBy(static f => f.FilePath)
-            .Select(static f => new FindingReportEntry(
-                RuleId: f.RuleId,
-                Title: f.Title,
-                Message: f.Message,
-                Certainty: f.Certainty.ToString(),
-                Category: f.Category.ToString(),
-                FilePath: f.FilePath,
-                LineNumber: f.LineNumber,
-                CharacterOffset: f.CharacterOffset))
-            .ToArray();
+        var lineCache = new SourceLineCache();
+        var report = new SnipperReport(
+            ToolVersion: ToolVersion,
+            CommitSha: commitSha,
+            GeneratedAtUtc: DateTimeOffset.UtcNow,
+            Findings: findings
+                .OrderBy(static f => f.Certainty)
+                .ThenBy(static f => f.FilePath)
+                .Select(f => new FindingReportEntry(
+                    RuleId: f.RuleId,
+                    Title: f.Title,
+                    Message: f.Message,
+                    Certainty: f.Certainty.ToString(),
+                    Category: f.Category.ToString(),
+                    FilePath: f.FilePath,
+                    LineNumber: f.LineNumber,
+                    CharacterOffset: f.CharacterOffset,
+                    LineText: lineCache.GetLine(f.FilePath, f.LineNumber)))
+                .ToArray());
 
-        return JsonSerializer.Serialize(report, JsonReportSerializerContext.Default.FindingReportEntryArray);
+        return JsonSerializer.Serialize(report, JsonReportSerializerContext.Default.SnipperReport);
     }
 
     private static bool IsValidNamespace(string value)
@@ -409,9 +421,10 @@ public static class CliRunner
         return version is null ? "0.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
     }
 
-    private static string BuildSarifJson(IReadOnlyList<SnipperFinding> findings)
+    internal static string BuildSarifJson(IReadOnlyList<SnipperFinding> findings)
     {
         var toolVersion = ToolVersion;
+        var lineCache = new SourceLineCache();
 
         var rules = findings
             .GroupBy(static f => f.RuleId, StringComparer.Ordinal)
@@ -422,7 +435,7 @@ public static class CliRunner
             .ToArray();
 
         var results = findings
-            .Select(static f => new SarifResult(
+            .Select(f => new SarifResult(
                 RuleId: f.RuleId,
                 Level: f.Certainty switch
                 {
@@ -436,7 +449,10 @@ public static class CliRunner
                 [
                     new SarifLocation(new SarifPhysicalLocation(
                         ArtifactLocation: new SarifArtifactLocation(new Uri(Path.GetFullPath(f.FilePath)).AbsoluteUri),
-                        Region: new SarifRegion(f.LineNumber, f.CharacterOffset)))
+                        Region: new SarifRegion(
+                            f.LineNumber,
+                            f.CharacterOffset,
+                            lineCache.GetLine(f.FilePath, f.LineNumber) is { } lineText ? new SarifArtifactContent(lineText) : null)))
                 ],
                 Properties: new Dictionary<string, string>(StringComparer.Ordinal)
                 {
@@ -468,6 +484,12 @@ public static class CliRunner
         Sarif,
     }
 
+    internal sealed record SnipperReport(
+        string ToolVersion,
+        string? CommitSha,
+        DateTimeOffset GeneratedAtUtc,
+        FindingReportEntry[] Findings);
+
     internal sealed record FindingReportEntry(
         string RuleId,
         string Title,
@@ -476,7 +498,8 @@ public static class CliRunner
         string Category,
         string FilePath,
         int LineNumber,
-        int CharacterOffset);
+        int CharacterOffset,
+        string? LineText);
 
     private static void RenderReport(IReadOnlyList<SnipperFinding> findings)
     {

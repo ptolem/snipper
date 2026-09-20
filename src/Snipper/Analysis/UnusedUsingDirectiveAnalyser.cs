@@ -78,9 +78,7 @@ public sealed class UnusedUsingDirectiveAnalyser(AnalysisExclusions? exclusions 
                 findings.Add(new SnipperFinding(
                     RuleId: "SNP0019",
                     Title: "Unused Using Directive",
-                    Message: diagnostic.Id == "CS8933"
-                        ? $"Using directive '{UsingName(node)}' duplicates a global using directive."
-                        : $"Using directive '{UsingName(node)}' is unnecessary.",
+                    Message: BuildMessage(diagnostic.Id, node),
                     Certainty: CertaintyTier.Guaranteed,
                     Category: FindingCategory.UnusedUsingDirective,
                     FilePath: lineSpan.Path ?? string.Empty,
@@ -91,6 +89,66 @@ public sealed class UnusedUsingDirectiveAnalyser(AnalysisExclusions? exclusions 
         }
 
         return findings;
+    }
+
+    /// <summary>
+    /// CS8933 always means "ordinary using duplicating a global one". For CS8019
+    /// the compiler gives no reason — but when an identical directive (same name,
+    /// global/static/alias shape) appears earlier in the same file, the flagged
+    /// occurrence is a verbatim duplicate and the message must say so: consumers
+    /// deduplicating by namespace would otherwise remove BOTH copies and break
+    /// the build (monorepo FP-4, 1.6.1). Exactly the flagged occurrence goes.
+    /// </summary>
+    private static string BuildMessage(string diagnosticId, SyntaxNode node)
+    {
+        if (diagnosticId == "CS8933")
+        {
+            return $"Using directive '{UsingName(node)}' duplicates a global using directive.";
+        }
+
+        if (IsVerbatimDuplicateEarlierInFile(node))
+        {
+            return $"Using directive '{UsingName(node)}' duplicates another using directive in this file — exactly one occurrence must remain.";
+        }
+
+        return $"Using directive '{UsingName(node)}' is unnecessary.";
+    }
+
+    private static bool IsVerbatimDuplicateEarlierInFile(SyntaxNode node)
+    {
+        if (node is not UsingDirectiveSyntax usingDirective || usingDirective.Alias is not null)
+        {
+            return false;
+        }
+
+        var name = usingDirective.Name?.ToString();
+        if (name is null || usingDirective.Parent is null)
+        {
+            return false;
+        }
+
+        var isGlobal = usingDirective.GlobalKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.GlobalKeyword);
+        var isStatic = usingDirective.StaticKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.StaticKeyword);
+
+        foreach (var sibling in usingDirective.Parent.ChildNodes())
+        {
+            // Siblings are ordered; reaching the node itself ends the search.
+            if (sibling.SpanStart >= usingDirective.SpanStart)
+            {
+                break;
+            }
+
+            if (sibling is UsingDirectiveSyntax earlier
+                && earlier.Alias is null
+                && earlier.GlobalKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.GlobalKeyword) == isGlobal
+                && earlier.StaticKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.StaticKeyword) == isStatic
+                && string.Equals(earlier.Name?.ToString(), name, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string UsingName(SyntaxNode node)

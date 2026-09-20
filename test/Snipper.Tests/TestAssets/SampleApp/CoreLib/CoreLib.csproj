@@ -12,5 +12,11 @@
   <ItemGroup>
     <!-- Inbox on net10.0 (override version >= 8.0.5): SNP0013 target. Used by JsonRoundTrip. -->
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <!-- Unused in CoreLib, but consumer App uses Serilog: transitive consumer
+         flow keeps the reference load-bearing - SNP0003 must stay silent. -->
+    <PackageReference Include="Serilog" Version="4.0.0" />
+    <!-- Same shape, but PrivateAssets=all blocks the transitive flow: consumer
+         usage must NOT save this one - SNP0003 target. -->
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" PrivateAssets="all" />
   </ItemGroup>
 </Project>

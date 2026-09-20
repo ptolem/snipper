@@ -25,6 +25,7 @@ public static class RedundantCastScenarios
         // Positives: the operand is already of the target type (identity).
         string alreadyString = "x";
         var sameString = (string)alreadyString;
+        var sameStringViaParen = (string)(alreadyString);
         var sameGeneric = EchoCast<string>(alreadyString);
         object alreadyObject = new object();
         ConsumeObject((object)alreadyObject);
@@ -38,8 +39,16 @@ public static class RedundantCastScenarios
         var unboxed = (int)boxed;
         var userDefined = (long)new CastWrapper();
 
+        // Negatives: collection expressions have no natural type — the cast IS
+        // the target type (stripping makes the expression untargetable, CS9176).
+        // Structural, never cosmetic; the parenthesized form included.
+        var spreadA = new List<string> { "a" };
+        var spreadB = new List<string> { "b" };
+        var combinedCount = ((List<string>)[.. spreadA, .. spreadB]).Count;
+        List<string> typedTarget = (List<string>)[.. spreadA, .. spreadB];
+
         _ = down;
-        return sameString.Length + sameGeneric.Length + numeric + unboxed + (int)userDefined;
+        return sameString.Length + sameStringViaParen.Length + sameGeneric.Length + numeric + unboxed + (int)userDefined + combinedCount + typedTarget.Count;
     }
 
     // (T)value with value already of type T — identity through generics.

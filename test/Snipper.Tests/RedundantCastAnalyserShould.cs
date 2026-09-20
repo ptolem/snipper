@@ -101,6 +101,30 @@ public sealed class RedundantCastAnalyserShould(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Flag_Identity_Cast_Through_Parenthesized_Operand_For_AnalyzeAsync()
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        // (string)(alreadyString) — paren-unwrapping must not lose true positives.
+        findings.Where(f => f.RuleId == "SNP0026" && f.Message.Contains("Cast to 'string'", StringComparison.Ordinal))
+            .Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Not_Flag_Casts_On_Collection_Expressions_For_AnalyzeAsync()
+    {
+        var analyser = new RedundancyAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        // The cast is the collection expression's target type — structural.
+        // (Message displays the qualified name: System.Collections.Generic.List<string>.)
+        findings.Should().NotContain(f => f.RuleId == "SNP0026" && f.Message.Contains("List<string>", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Not_Flag_Anything_When_File_Has_No_Casts_For_AnalyzeAsync()
     {
         var analyser = new RedundancyAnalyser();

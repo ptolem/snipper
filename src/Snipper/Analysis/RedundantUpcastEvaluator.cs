@@ -43,9 +43,17 @@ internal static class RedundantUpcastEvaluator
             return null;
         }
 
-        // Typeless operands (null/default literals) have no static type to fall
-        // back to — stripping changes what the expression even binds as.
-        var operandType = semanticModel.GetTypeInfo(cast.Expression, cancellationToken).Type;
+        // Typeless operands (null/default literals, collection expressions,
+        // target-typed constructs) have no static type to fall back to —
+        // stripping changes what the expression even binds as. Parentheses
+        // inherit the converted type, so unwrap before probing.
+        var operand = cast.Expression;
+        while (operand is ParenthesizedExpressionSyntax parenthesized)
+        {
+            operand = parenthesized.Expression;
+        }
+
+        var operandType = semanticModel.GetTypeInfo(operand, cancellationToken).Type;
         if (operandType is null || operandType.TypeKind is TypeKind.Dynamic or TypeKind.Error)
         {
             return null;

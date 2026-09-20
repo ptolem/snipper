@@ -43,4 +43,6 @@ internal sealed record SarifPhysicalLocation(
 
 internal sealed record SarifArtifactLocation(string Uri);
 
-internal sealed record SarifRegion(int StartLine, int StartColumn);
+internal sealed record SarifRegion(int StartLine, int StartColumn, SarifArtifactContent? Snippet = null);
+
+internal sealed record SarifArtifactContent(string Text);

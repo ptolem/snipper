@@ -8,6 +8,10 @@
   <ItemGroup>
     <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
     <ProjectReference Include="..\OrphanLib\OrphanLib.csproj" />
+    <!-- Hub reference: FacadeLib declares no API; it only carries TransitiveLib
+         onward. Worker.cs uses TransitiveLib.TransitCatalog — the reference is
+         load-bearing through its transitive flow, so SNP0004 must stay silent. -->
+    <ProjectReference Include="..\FacadeLib\FacadeLib.csproj" />
     <PackageReference Include="Humanizer.Core" Version="2.14.1" />
     <!-- Serilog.Sinks.Console requires Serilog >= 4.0.0: the direct Serilog reference
          is transitively supplied at the same version → SNP0012 target. Both are used

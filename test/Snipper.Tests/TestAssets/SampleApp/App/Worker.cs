@@ -73,6 +73,10 @@ public static class Worker
         // Both Serilog packages used: SNP0003 stays silent, SNP0012 flags the direct edge.
         Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Console().CreateLogger();
 
+        // Uses TransitiveLib, which arrives only through the FacadeLib hub
+        // reference — App never references TransitiveLib directly.
+        _ = TransitiveLib.TransitCatalog.Describe();
+
         // Type from Microsoft.Extensions.Logging.Abstractions — pulled in transitively by
         // the direct Microsoft.Extensions.Logging.Console reference. Keeps that package's
         // subtree load-bearing even though its own assembly is never touched.

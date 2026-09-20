@@ -49,6 +49,20 @@ public sealed class UnusedUsingDirectiveAnalyserShould(SampleSolutionFixture fix
     }
 
     [Fact]
+    public async Task Flag_Duplicate_Using_With_Distinct_Message_For_AnalyzeAsync()
+    {
+        // The compiler flags only the second occurrence — the message must make
+        // clear it is a duplicate, so consumers keep exactly one copy (FP-4).
+        var findings = await new UnusedUsingDirectiveAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0019"
+            && f.FilePath.EndsWith("GlobalUsings.cs", StringComparison.Ordinal)
+            && f.LineNumber == 7
+            && f.Message.Contains("duplicates another using directive", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Not_Flag_Used_Using_Directives_For_AnalyzeAsync()
     {
         var findings = await new UnusedUsingDirectiveAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);

@@ -122,10 +122,15 @@ internal static class ProjectFileReader
                 ?? element.Element("ExcludeAssets")?.Value
                 ?? string.Empty;
 
+            var privateAssets = element.Attribute("PrivateAssets")?.Value
+                ?? element.Element("PrivateAssets")?.Value
+                ?? string.Empty;
+
             builder.Add(new PackageReferenceItem(
                 Id: id.Trim(),
                 DeclaredMinVersion: ParseMinimumVersion(rawVersion),
                 CompileAssetsExcluded: excludeAssets.Contains("compile", StringComparison.OrdinalIgnoreCase),
+                PrivateAssetsAll: privateAssets.Trim().Equals("all", StringComparison.OrdinalIgnoreCase),
                 LineNumber: (element as IXmlLineInfo)?.LineNumber ?? 1));
         }
 
@@ -161,12 +166,16 @@ internal static class ProjectFileReader
                 ?? element.Element("ReferenceOutputAssembly")?.Value;
             var outputItemType = element.Attribute("OutputItemType")?.Value
                 ?? element.Element("OutputItemType")?.Value;
+            var privateAssets = element.Attribute("PrivateAssets")?.Value
+                ?? element.Element("PrivateAssets")?.Value
+                ?? string.Empty;
 
             builder.Add(new ProjectReferenceItem(
                 FullPath: fullPath,
                 ReferenceOutputAssemblyDisabled: string.Equals(metadata, "false", StringComparison.OrdinalIgnoreCase),
                 // MSBuild metadata value — defined by the ecosystem, must stay "Analyzer".
                 IsAnalyser: string.Equals(outputItemType, "Analyzer", StringComparison.OrdinalIgnoreCase),
+                PrivateAssetsAll: privateAssets.Trim().Equals("all", StringComparison.OrdinalIgnoreCase),
                 LineNumber: (element as IXmlLineInfo)?.LineNumber ?? 1));
         }
 
@@ -189,10 +198,12 @@ internal sealed record PackageReferenceItem(
     string Id,
     NuGetVersion? DeclaredMinVersion,
     bool CompileAssetsExcluded,
+    bool PrivateAssetsAll,
     int LineNumber);
 
 internal sealed record ProjectReferenceItem(
     string FullPath,
     bool ReferenceOutputAssemblyDisabled,
     bool IsAnalyser,
+    bool PrivateAssetsAll,
     int LineNumber);

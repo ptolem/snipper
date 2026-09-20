@@ -4,8 +4,9 @@ using System.Text.Json.Serialization;
 
 [JsonSourceGenerationOptions(
     WriteIndented = true,
-    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
-[JsonSerializable(typeof(CliRunner.FindingReportEntry[]))]
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(CliRunner.SnipperReport))]
 [JsonSerializable(typeof(SarifLog))]
 [JsonSerializable(typeof(BaselineFile))]
 [JsonSerializable(typeof(JsonConfigModel))]
