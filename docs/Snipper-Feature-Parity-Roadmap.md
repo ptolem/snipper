@@ -55,13 +55,15 @@ The three features developers see every day in ReSharper/Sonar, all cheap in Sni
 ## Tracked candidates (post-1.4.0, not committed)
 
 - **Parallel semantic binding** — ~~spike GO 2026-09-18~~ **ADOPTED 2026-09-19 as 1.5.2** behind the revertible `SNIPPER_MAX_DOP` switch (default on): per-document binding (`FrameworkEvidenceIndex`, `DiRegistrationScanner` pass 1) and per-candidate `FindReferencesAsync` in SNP0005/0006. The workspace-level caveat was retired by a second user-approved spike: **2,323 findings, 0 drift, monorepo sequential vs parallel; SNP0005/0006 164.4s → 57.8s, total −32%**. Suite runs the parallel path by default; `SNIPPER_MAX_DOP=1` suite pass verified.
-- **Duplicate detection** — token-shingle engine (normalised token streams, ~60-token windows), cross-project, separate report section. L.
+- **Duplicate detection** — token-shingle engine (normalised token streams, ~60-token windows), cross-project. L. **COMMITTED as 1.6.3** ([`plan_1_6_3.md`](plan_1_6_3.md)): SNP0031 Advisory, syntax-only Type-2 clone detection, spike-gated thresholds; ships as a normal finding rule (the 2026 "separate report section" note predates `snipper.json`/baseline).
 - **Coverage evidence import** — `--coverage coverlet.xml` (cobertura); corroborating channel that adjusts certainty, never a standalone finding. M.
 - **Unused `.resx` keys / XAML-Razor evidence** — generalise `AssemblyNameEvidenceScanner`. M–L.
 
-## Next steps (as of 1.4.2, 2026-09-18)
+## Next steps
 
-0. ~~REVERT the perf-wave index~~ — **executed 2026-09-18, shipped as 1.4.4** (see [`perf_wave_retrospective.md`](perf_wave_retrospective.md)). Remaining: the retrospective's kept-knowledge section records the reusable findings and the unsolved root-cause hypotheses for any future index retry.
+0. **1.6.3 duplicate detection (CURRENT)** — the last tracked candidate from the original Tier-3 list is now committed: [`plan_1_6_3.md`](plan_1_6_3.md) (token-shingle engine, SNP0031 Advisory, spike-gated). After it ships, the remaining tracked candidates are coverage import and `.resx`/XAML evidence.
+
+0b. ~~REVERT the perf-wave index~~ — **executed 2026-09-18, shipped as 1.4.4** (see [`perf_wave_retrospective.md`](perf_wave_retrospective.md)). Remaining: the retrospective's kept-knowledge section records the reusable findings and the unsolved root-cause hypotheses for any future index retry.
 
 0b. ~~Wave 4 framework evidence~~ — **shipped 2026-09-19 as 1.5.0** ([`phase3_wave4.md`](phase3_wave4.md)). SNP0006 on the monorepo −28% with rule-parity everywhere else. Follow-up candidates from the same trust theme: [JsonInclude] private members (SNP0001 evidence), SNP0023 external-hook evidence, stale report files in the analysis root feeding string-name evidence (consider excluding `output*.json` / snipper report files from `AssemblyNameEvidenceScanner` — mechanism confirmed twice: the 1.4.4 and 1.5.1 runs each suppressed real SNP0023 findings because a previous report JSON containing those names sat in the solution root), and the remaining closed-world items (test builders etc. — true positives, no action).
 

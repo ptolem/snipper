@@ -1,6 +1,6 @@
 # Competitive Analysis — Snipper vs. the .NET Code-Analysis Ecosystem
 
-**Date:** 2026-09-14 · **Updated:** 2026-09-18 · **Snipper version:** 1.4.2 (22 rules: SNP0001–0013, 0018–0026)
+**Date:** 2026-09-14 · **Updated:** 2026-09-21 · **Snipper version:** 1.6.2 (26 rule IDs: SNP0001–0013, 0018–0030)
 **Scope:** features for *reducing the entropy of a large codebase* — dead code detection, redundancy/hygiene sweeps, dependency bloat, duplication, and the removal workflow (fix automation, gating, suppression).
 
 **Sources & evidence levels:**
@@ -23,7 +23,7 @@
 | Unreachable statements | ✓ SNP0002 | ✓ | ✓ CS0162 | — | ✓ |
 | Obsolete zero-usage members | ✓ **SNP0018 (unique)** | — | — | — | — |
 | Field written, never read / unassigned | ✓ SNP0021 (write-only; unassigned stays SNP0001/CS0649) | ✓ `NotAccessedField`, `UnassignedField` | ✓ IDE0052, CS0649 | — | ✓ S4487 |
-| Event never invoked | — | ✓ `EventNeverInvoked` | ~ | — | ~ |
+| Event never invoked | ✓ SNP0030 (1.6.0, Advisory) | ✓ `EventNeverInvoked` | ~ | — | ~ |
 | Return value never used / param-only-precondition / out always discarded / nameof-only | ~ (SNP0021 covers the nameof-only and out-only field slices) | ✓ `UnusedMethodReturnValue`, `ParameterOnlyUsedForPreconditionCheck`, `OutParameterValueIsAlwaysDiscarded`, `EntityNameCapturedOnly` | — | ~ (CQLinq) | — |
  | Hierarchy dead code (virtual never overridden, class never inherited, member only via overrides/base) | ✅ SNP0023 + SNP0027 (1.6.0 adds override families with no external caller) | ✓ `VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`, `UnusedMemberHierarchy`, `UnusedMemberInSuper` | — | ~ | — |
 | **Redundancy sweeps** | | | | | |
@@ -75,7 +75,7 @@
 
 7. **Hierarchy dead code** (`VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`). ✅ **Shipped 1.4.0 as SNP0023** — solution-wide `InheritanceGraph` index; Moderate, demoted to Advisory on exported surfaces/friend assemblies; type-name string/JSON evidence (plugin loading) suppresses. **1.6.0 adds SNP0027** (`UnusedMemberHierarchy` parity): override families whose references never leave the chain.
 8. **Tightening rules** (can-be-static/readonly/sealed/private). ✅ **Shipped 1.4.0 as SNP0024** — CA1822/IDE0044/CA1852 parity at flat Advisory; dogfood-proven (caught two genuine tightenings in Snipper itself on first run). **1.6.0 adds can-be-private** (locality proof over containing-type spans; caught two more own findings on first dogfood).
-9. **Duplicate detection.** dupFinder-style token hashing; a separate engine but monorepo gold.
+9. **Duplicate detection.** dupFinder-style token hashing; a separate engine but monorepo gold. **COMMITTED as 1.6.3** — token-shingle engine, SNP0031 Advisory ([`plan_1_6_3.md`](plan_1_6_3.md)).
 10. **Runtime/coverage evidence.** Import coverlet output as a certainty channel (coverage ≠ usage, but strong corroborating evidence — NDepend's model).
 11. **Cross-language reach.** Unused `.resx` keys; XAML/Razor name evidence (the `AssemblyNameEvidenceScanner` pattern generalises here).
 
@@ -102,7 +102,7 @@ Evidence-weighted; qualitative items marked.
 - **SNP0018** — obsolete-member dead code. Unique.
 - **CI-first shape** — read-only, fast (no mandatory build; InspectCode builds by default), SARIF + JSON + baseline in a zero-dependency global tool. InspectCode only matched SARIF in 2024.1 and still has no baseline concept.
 
-**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.4.0, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), read/write flow analysis (SNP0021), the redundancy sweep (SNP0022/0025/0026), hierarchy dead code (SNP0023 — formerly ReSharper-exclusive), and tightening (SNP0024). **Update 2026-09-19 (1.5.x–1.6.0):** framework evidence closed the data-contract FP flood (SNP0006 −28% on the monorepo, contract-based after the 1.5.1 course-correction); parallelism adoption (0-drift gate) cut the monorepo bottleneck 165s → 58s; the 1.6.0 gap-filler sweep added the upcast cast variant, can-be-private, redundant qualifiers (SNP0028), empty ctor/dtor (SNP0029), override-family dead code (SNP0027), and never-raised events (SNP0030) — 26 rule IDs. The remaining deltas are deliberate or unscheduled: auto-fix is rejected (read-only tenet); duplicates, coverage import, and .resx/XAML evidence are tracked but not committed.
+**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.4.0, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), read/write flow analysis (SNP0021), the redundancy sweep (SNP0022/0025/0026), hierarchy dead code (SNP0023 — formerly ReSharper-exclusive), and tightening (SNP0024). **Update 2026-09-19 (1.5.x–1.6.0):** framework evidence closed the data-contract FP flood (SNP0006 −28% on the monorepo, contract-based after the 1.5.1 course-correction); parallelism adoption (0-drift gate) cut the monorepo bottleneck 165s → 58s; the 1.6.0 gap-filler sweep added the upcast cast variant, can-be-private, redundant qualifiers (SNP0028), empty ctor/dtor (SNP0029), override-family dead code (SNP0027), and never-raised events (SNP0030) — 26 rule IDs. **Update 2026-09-21 (1.6.1–1.6.2):** two FP-review rounds against the live monorepo hardened accuracy end-to-end — transitive consumer/upstream flow for SNP0003/0004, stamped reports (`commitSha` + `lineText`, mechanically verifiable findings — an external agent applied 35/39 with zero breakage), the corrected/expanded framework-dispatched contract evidence (OpenApi/Swashbuckle/xUnit/MVC/MediatR-pipeline), reflection plugin-by-scan evidence, and two root-cause fixes (SNP0020 block locations, attribute-class reference discovery). Both rounds also *upheld* challenged true positives with strip-compile proof (SNP0025 inference shapes, the sibling-namespace SNP0028). The remaining deltas are deliberate or unscheduled: auto-fix is rejected (read-only tenet); **duplicates are committed as 1.6.3** ([`plan_1_6_3.md`](plan_1_6_3.md)); coverage import and .resx/XAML evidence are tracked but not committed.
 
 ---
 
@@ -122,7 +122,7 @@ Gap → candidate rule, in suggested implementation order (Tier 1 first). IDs pr
 | 6 | **SNP0022/0025/0026 Redundant code sweep** ✅ complete 1.4.0 | Tier 2.6 | High | L | Per-pattern rules: SNP0022 (default-value argument) + SNP0025 (method type arguments) verified by speculative re-binding (1.3.1); SNP0026 (identity cast) proven by the type system — spike-confirmed IsIdentity discriminates every non-flag shape (1.4.0). Upcast variant deferred: stripping changes the static type (overload/`var` caveats). |
 | 7 | **SNP0023 Hierarchy dead code** ✅ shipped 1.4.0 | Tier 3.7 | Moderate | M | New shared `InheritanceGraph` index (the SNP0018 "override graph" turned out not to exist — per-symbol checks only). Class-level findings suppress member-level (root cause); usage gates keep zero-reference types/members with SNP0001/0005/0006; name-string/JSON evidence suppresses. |
 | 8 | **SNP0024 Tightening** (can-be-static, can-be-readonly, can-be-sealed) ✅ shipped 1.4.0 | Tier 3.8 | Advisory | M | CA1822/IDE0044/CA1852 parity at flat Advisory. can-be-readonly reuses the SNP0021 reference machinery via the extracted `FieldReferenceMap`. |
-| 9 | **Duplicate detection engine** (token-hash, cross-project) | Tier 3.9 | Advisory | L | Separate engine; dupFinder parity; likely new report section, not a finding rule. |
+| 9 | **Duplicate detection engine** (token-hash, cross-project) | Tier 3.9 | Advisory | L | **Committed as 1.6.3** — SNP0031 token-shingle engine ([`plan_1_6_3.md`](plan_1_6_3.md)); a normal finding rule, not a separate report section (config/baseline/SARIF come free). |
 | 10 | **Coverage evidence import** (`--coverage coverlet.xml` → certainty adjust) | Tier 3.10 | (channel) | M | Downgrade/upgrade certainty; never a standalone finding. |
 | 11 | **Unused `.resx` keys; XAML/Razor evidence** | Tier 3.11 | Moderate | M–L | Generalise `AssemblyNameEvidenceScanner` to resource/view assets. |
 
