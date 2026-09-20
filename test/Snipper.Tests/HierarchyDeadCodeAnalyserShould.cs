@@ -142,4 +142,17 @@ public sealed class HierarchyDeadCodeAnalyserShould(SampleSolutionFixture fixtur
 
         findings.Should().NotContain(f => f.RuleId == "SNP0023" && f.FilePath.Contains("DeadCode.cs", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task Not_Flag_Virtual_Declaring_Attribute_Classes_For_AnalyzeAsync()
+    {
+        // 1.6.2: attribute classes are terminal by convention — a virtual member
+        // on one is not a speculative extension point, so the class- and
+        // member-level findings never apply (milkrun CustomProductType*Attribute).
+        var analyser = new HierarchyDeadCodeAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => f.RuleId == "SNP0023" && f.Message.Contains("FwPrefix", StringComparison.Ordinal));
+    }
 }

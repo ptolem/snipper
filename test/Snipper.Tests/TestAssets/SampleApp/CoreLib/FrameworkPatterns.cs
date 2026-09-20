@@ -203,6 +203,270 @@ internal sealed class FwOrderRequestValidator : AbstractValidator<string>
     public bool FwValidateRuleSet() => true;
 }
 
+// ---- F5: 1.6.2 framework-dispatched contract additions (OpenApi transformers,
+// Swashbuckle filters/examples, xUnit, MVC filters, MediatR pipeline) — matched
+// by simple name like F2. The implementation TYPES are framework-instantiated
+// (generic registration, assembly scan, DI activation), so the type is evidence
+// too; members off the contract still stand on their own. ----
+
+internal interface IOpenApiDocumentTransformer
+{
+    string TransformFwDocument();
+}
+
+internal sealed class FwOpenApiDocumentTransformer : IOpenApiDocumentTransformer
+{
+    public string TransformFwDocument() => "doc";
+}
+
+internal interface IOpenApiOperationTransformer
+{
+    string TransformFwOperation();
+}
+
+internal sealed class FwOpenApiOperationTransformer : IOpenApiOperationTransformer
+{
+    public string TransformFwOperation() => "op";
+}
+
+internal interface IOpenApiSchemaTransformer
+{
+    string TransformFwSchema();
+}
+
+internal sealed class FwOpenApiSchemaTransformer : IOpenApiSchemaTransformer
+{
+    public string TransformFwSchema() => "schema";
+}
+
+internal interface IDocumentFilter
+{
+    string ApplyFwDocument();
+}
+
+internal sealed class FwDocumentFilter : IDocumentFilter
+{
+    public string ApplyFwDocument() => "doc";
+}
+
+internal interface IOperationFilter
+{
+    string ApplyFwOperation();
+}
+
+internal sealed class FwOperationFilter : IOperationFilter
+{
+    public string ApplyFwOperation() => "op";
+}
+
+internal interface IExamplesProvider<T>
+{
+    T GetFwExamples();
+}
+
+internal sealed class FwPriceExample : IExamplesProvider<string>
+{
+    public string GetFwExamples() => "1.00";
+}
+
+internal interface IXunitSerializable
+{
+    string SerializeFwData();
+
+    string DeserializeFwData();
+}
+
+internal sealed class FwXunitSerializer : IXunitSerializable
+{
+    public string SerializeFwData() => "data";
+
+    public string DeserializeFwData() => "data";
+}
+
+internal interface ITestCaseOrderer
+{
+    string OrderFwTestCases();
+}
+
+internal sealed class FwTestCaseOrderer : ITestCaseOrderer
+{
+    public string OrderFwTestCases() => "ordered";
+}
+
+internal interface IXunitTestCaseOrderer
+{
+    string OrderFwXunitCases();
+}
+
+internal sealed class FwXunitTestCaseOrderer : IXunitTestCaseOrderer
+{
+    public string OrderFwXunitCases() => "ordered";
+}
+
+internal interface IActionFilter
+{
+    string OnFwActionExecuting();
+
+    string OnFwActionExecuted();
+}
+
+internal sealed class FwActionFilter : IActionFilter
+{
+    public string OnFwActionExecuting() => "before";
+
+    public string OnFwActionExecuted() => "after";
+}
+
+internal interface IAsyncActionFilter
+{
+    string OnFwActionExecutionAsync();
+}
+
+internal sealed class FwAsyncActionFilter : IAsyncActionFilter
+{
+    public string OnFwActionExecutionAsync() => "around";
+}
+
+internal interface IOrderedFilter
+{
+    int FwFilterOrder { get; }
+}
+
+internal sealed class FwOrderedFilter : IOrderedFilter
+{
+    public int FwFilterOrder => 1;
+}
+
+internal interface IExceptionFilter
+{
+    string OnFwException();
+}
+
+internal sealed class FwExceptionFilter : IExceptionFilter
+{
+    public string OnFwException() => "handled";
+}
+
+internal interface IAsyncExceptionFilter
+{
+    string OnFwExceptionAsync();
+}
+
+internal sealed class FwAsyncExceptionFilter : IAsyncExceptionFilter
+{
+    public string OnFwExceptionAsync() => "handled";
+}
+
+internal interface IResultFilter
+{
+    string OnFwResultExecuting();
+}
+
+internal sealed class FwResultFilter : IResultFilter
+{
+    public string OnFwResultExecuting() => "result";
+}
+
+internal interface IAsyncResultFilter
+{
+    string OnFwResultAsync();
+}
+
+internal sealed class FwAsyncResultFilter : IAsyncResultFilter
+{
+    public string OnFwResultAsync() => "result";
+}
+
+internal interface IResourceFilter
+{
+    string OnFwResourceExecuting();
+}
+
+internal sealed class FwResourceFilter : IResourceFilter
+{
+    public string OnFwResourceExecuting() => "resource";
+}
+
+internal interface IAsyncResourceFilter
+{
+    string OnFwResourceAsync();
+}
+
+internal sealed class FwAsyncResourceFilter : IAsyncResourceFilter
+{
+    public string OnFwResourceAsync() => "resource";
+}
+
+internal interface IAuthorizationFilter
+{
+    string OnFwAuthorization();
+}
+
+internal sealed class FwAuthorizationFilter : IAuthorizationFilter
+{
+    public string OnFwAuthorization() => "allowed";
+}
+
+internal interface IAsyncAuthorizationFilter
+{
+    string OnFwAuthorizationAsync();
+}
+
+internal sealed class FwAsyncAuthorizationFilter : IAsyncAuthorizationFilter
+{
+    public string OnFwAuthorizationAsync() => "allowed";
+}
+
+internal interface IPipelineBehavior<TRequest, TResponse>
+{
+    TResponse HandleFwRequest(TRequest request);
+}
+
+internal sealed class FwPipelineBehavior : IPipelineBehavior<string, string>
+{
+    public string HandleFwRequest(string request) => request;
+}
+
+internal interface IStreamPipelineBehavior<TRequest, TResponse>
+{
+    TResponse HandleFwStream(TRequest request);
+}
+
+internal sealed class FwStreamPipelineBehavior : IStreamPipelineBehavior<string, string>
+{
+    public string HandleFwStream(string request) => request;
+}
+
+internal interface IRequestExceptionHandler<TRequest, TResponse, TException>
+{
+    TResponse HandleFwException(TRequest request);
+}
+
+internal sealed class FwRequestExceptionHandler : IRequestExceptionHandler<string, string, string>
+{
+    public string HandleFwException(string request) => request;
+}
+
+internal interface IRequestPreProcessor<TRequest>
+{
+    string ProcessFwRequest(TRequest request);
+}
+
+internal sealed class FwRequestPreProcessor : IRequestPreProcessor<string>
+{
+    public string ProcessFwRequest(string request) => request;
+}
+
+internal interface IRequestPostProcessor<TRequest, TResponse>
+{
+    string ProcessFwResponse(TRequest request);
+}
+
+internal sealed class FwRequestPostProcessor : IRequestPostProcessor<string, string>
+{
+    public string ProcessFwResponse(string request) => request;
+}
+
 // ---- Negative controls: zero evidence — everything here must be flagged ----
 
 internal class FwOrphanedDto

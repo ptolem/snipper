@@ -110,7 +110,8 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
                         || classSymbol.TypeKind is not TypeKind.Class
                         || classSymbol.IsAbstract
                         || classSymbol.IsSealed
-                        || classSymbol.IsImplicitlyDeclared)
+                        || classSymbol.IsImplicitlyDeclared
+                        || DerivesFromSystemAttribute(classSymbol))
                     {
                         continue;
                     }
@@ -443,6 +444,23 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
         {
             if (member is MethodDeclarationSyntax or PropertyDeclarationSyntax
                 && member.Modifiers.Any(static m => m.IsKind(SyntaxKind.VirtualKeyword) || m.IsKind(SyntaxKind.OverrideKeyword)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool DerivesFromSystemAttribute(INamedTypeSymbol classSymbol)
+    {
+        // Attribute classes are terminal by convention — a virtual member on one
+        // is not a speculative extension point, so SNP0023 never applies
+        // (1.6.2: milkrun CustomProductType*Attribute findings were pure noise).
+        for (var current = classSymbol.BaseType; current is not null; current = current.BaseType)
+        {
+            if (current.Name == "Attribute"
+                && current.ContainingNamespace?.ToDisplayString() == "System")
             {
                 return true;
             }

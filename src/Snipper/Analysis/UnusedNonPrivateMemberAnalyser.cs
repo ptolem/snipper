@@ -107,9 +107,7 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                     // within their own project; public members can be referenced anywhere.
                     // The usage index restricts the search to documents that textually
                     // contain the symbol name; an empty set proves the symbol is unused.
-                    var candidateDocuments = symbol.DeclaredAccessibility == Accessibility.Internal && !hasFriendAssemblies
-                        ? usageIndex.GetDocumentsUsingName(project, symbol.Name)
-                        : usageIndex.GetDocumentsUsingName(symbol.Name);
+                    var candidateDocuments = GetCandidateDocuments(usageIndex, project, symbol, hasFriendAssemblies);
 
                     candidates.Add(new Candidate(symbol, candidateDocuments, hasFriendAssemblies));
                 }
@@ -162,6 +160,35 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
     }
 
     private sealed record Candidate(ISymbol Symbol, IImmutableSet<Document> CandidateDocuments, bool HasFriendAssemblies);
+
+    private static IImmutableSet<Document> GetCandidateDocuments(
+        SolutionUsageIndex usageIndex,
+        Project project,
+        ISymbol symbol,
+        bool hasFriendAssemblies)
+    {
+        var projectScoped = symbol.DeclaredAccessibility == Accessibility.Internal && !hasFriendAssemblies;
+        var documents = projectScoped
+            ? usageIndex.GetDocumentsUsingName(project, symbol.Name)
+            : usageIndex.GetDocumentsUsingName(symbol.Name);
+
+        // Attribute applications omit the "Attribute" suffix, so the textual
+        // usage index only ever sees the short spelling — a full-name lookup
+        // finds nothing and every applied attribute class looks unreferenced
+        // (milkrun 1.6.1: test-priority attributes flagged while in active
+        // use). Union the short spelling's documents; the semantic reference
+        // search still does the real filtering.
+        if (symbol is INamedTypeSymbol { Name: { Length: > 9 } typeName }
+            && typeName.EndsWith("Attribute", StringComparison.Ordinal))
+        {
+            var shortName = typeName[..^"Attribute".Length];
+            documents = documents.Union(projectScoped
+                ? usageIndex.GetDocumentsUsingName(project, shortName)
+                : usageIndex.GetDocumentsUsingName(shortName));
+        }
+
+        return documents;
+    }
 
     private static bool IsPotentiallyNonPrivateDeclaration(SyntaxNode node)
     {

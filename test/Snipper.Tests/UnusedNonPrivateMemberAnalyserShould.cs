@@ -191,6 +191,33 @@ public sealed class UnusedNonPrivateMemberAnalyserShould(SampleSolutionFixture f
     [InlineData("CheckFwStatus")]
     [InlineData("SerializeFwEntry")]
     [InlineData("DeserializeFwEntry")]
+    [InlineData("TransformFwDocument")]
+    [InlineData("TransformFwOperation")]
+    [InlineData("TransformFwSchema")]
+    [InlineData("ApplyFwDocument")]
+    [InlineData("ApplyFwOperation")]
+    [InlineData("GetFwExamples")]
+    [InlineData("SerializeFwData")]
+    [InlineData("DeserializeFwData")]
+    [InlineData("OrderFwTestCases")]
+    [InlineData("OrderFwXunitCases")]
+    [InlineData("OnFwActionExecuting")]
+    [InlineData("OnFwActionExecuted")]
+    [InlineData("OnFwActionExecutionAsync")]
+    [InlineData("FwFilterOrder")]
+    [InlineData("OnFwException")]
+    [InlineData("OnFwExceptionAsync")]
+    [InlineData("OnFwResultExecuting")]
+    [InlineData("OnFwResultAsync")]
+    [InlineData("OnFwResourceExecuting")]
+    [InlineData("OnFwResourceAsync")]
+    [InlineData("OnFwAuthorization")]
+    [InlineData("OnFwAuthorizationAsync")]
+    [InlineData("HandleFwRequest")]
+    [InlineData("HandleFwStream")]
+    [InlineData("HandleFwException")]
+    [InlineData("ProcessFwRequest")]
+    [InlineData("ProcessFwResponse")]
     public async Task Not_Flag_Framework_Dispatched_Contract_Members_For_AnalyzeAsync(string memberName)
     {
         var analyser = new UnusedNonPrivateMemberAnalyser();
@@ -198,6 +225,99 @@ public sealed class UnusedNonPrivateMemberAnalyserShould(SampleSolutionFixture f
         var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
 
         findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("FwHealthCheck")]
+    [InlineData("FwCacheSerializer")]
+    [InlineData("FwPriceExample")]
+    [InlineData("FwPipelineBehavior")]
+    [InlineData("FwActionFilter")]
+    public async Task Not_Flag_Framework_Dispatched_Implementation_Types_For_AnalyzeAsync(string typeName)
+    {
+        // 1.6.2: implementations of framework-dispatched contracts are themselves
+        // framework-instantiated (generic registration, assembly scan, DI
+        // activation) — the type is evidence, not just its contract members.
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains($"'{typeName}'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("FwScannedGroupAlpha")]
+    [InlineData("FwScannedGroupBeta")]
+    [InlineData("FwScannedGroupGamma")]
+    [InlineData("FwScannedPlugin")]
+    public async Task Not_Flag_Reflection_Discovered_Types_For_AnalyzeAsync(string typeName)
+    {
+        // 1.6.2: a base type appearing in an IsSubclassOf call — or as the
+        // receiver of IsAssignableFrom — marks its derived types as
+        // reflection-instantiated evidence (assembly scan + Activator).
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains($"'{typeName}'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Flag_Never_Read_Member_On_Reflection_Discovered_Type_For_AnalyzeAsync()
+    {
+        // The framework only instantiates the type — a member nothing reads
+        // (the milkrun GroupDescription analog) stays a finding.
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains("'FwNeverReadSetting'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Flag_Type_Under_No_Scan_Base_For_AnalyzeAsync()
+    {
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains("'FwUnscannedGroup'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("FwMarkerAttribute")]
+    [InlineData("FwAppliedPublicAttribute")]
+    public async Task Not_Flag_Applied_Attribute_Classes_For_AnalyzeAsync(string typeName)
+    {
+        // 1.6.2: attribute applications omit the "Attribute" suffix, so the
+        // textual usage index only sees the short spelling — an applied
+        // attribute class has references even when its full name never appears.
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => (f.RuleId == "SNP0005" || f.RuleId == "SNP0006") && f.Message.Contains($"'{typeName}'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("FwDecoratedLogic")]
+    [InlineData("FwDecoratedSetting")]
+    [InlineData("FwAttributeAnnotatedType")]
+    public async Task Flag_Unused_Attribute_Carriers_For_AnalyzeAsync(string memberName)
+    {
+        // The attribute short-name union adds documents to the reference search —
+        // it must never suppress findings on the annotated targets themselves.
+        var analyser = new UnusedNonPrivateMemberAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
     }
 
     [Fact]

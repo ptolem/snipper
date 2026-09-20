@@ -38,4 +38,21 @@ public sealed class CommentedCodeAnalyserShould(SampleSolutionFixture fixture)
         findings.Should().NotContain(f => f.RuleId == "SNP0020" && f.FilePath.EndsWith("DeadCode.cs", StringComparison.Ordinal));
         findings.Should().NotContain(f => f.RuleId == "SNP0020" && f.FilePath.EndsWith("Worker.cs", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task Report_Each_Block_At_Its_Own_Start_Line_For_AnalyzeAsync()
+    {
+        // 1.6.2: two blocks attaching to the same token must report their own
+        // start lines — 1.6.1 reported the anchor node's position for both
+        // (two milkrun findings pinned to the enclosing method brace).
+        var findings = await new CommentedCodeAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        var probeFindings = findings
+            .Where(f => f.RuleId == "SNP0020" && f.FilePath.EndsWith("CommentedOutLocations.cs", StringComparison.Ordinal))
+            .ToList();
+
+        probeFindings.Should().HaveCount(2);
+        probeFindings.Select(f => f.LineNumber).Should().BeEquivalentTo([13, 19]);
+        probeFindings.Should().OnlyContain(f => f.CharacterOffset == 9);
+    }
 }

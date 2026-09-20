@@ -13,13 +13,14 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 /// signatures, [FromBody] binding, serializer call sites, GraphQL response
 /// contracts), framework-dispatched contract implementations (health checks,
 /// FusionCache serializers, hosted services, exception handlers, OpenAPI
-/// filters/transformers), ASP.NET middleware conventions, and FluentValidation
-/// validators. Plain DI registration is NOT evidence: calls through a registered
-/// contract are ordinary C# references the reference graph already sees, so an
-/// uncalled contract member on a registered type is still dead code. Doctrine:
-/// err toward "used" — this evidence only ever suppresses findings, never
-/// creates them. Evidence is gathered from ALL documents (generated/external
-/// code included): it is never a finding location.
+/// filters/transformers, xUnit/MVC/MediatR dispatch), reflection plugin-by-scan
+/// types (IsSubclassOf/IsAssignableFrom discovery), ASP.NET middleware
+/// conventions, and FluentValidation validators. Plain DI registration is NOT
+/// evidence: calls through a registered contract are ordinary C# references the
+/// reference graph already sees, so an uncalled contract member on a registered
+/// type is still dead code. Doctrine: err toward "used" — this evidence only
+/// ever suppresses findings, never creates them. Evidence is gathered from ALL
+/// documents (generated/external code included): it is never a finding location.
 /// </summary>
 internal sealed class FrameworkEvidenceIndex
 {
@@ -68,11 +69,16 @@ internal sealed class FrameworkEvidenceIndex
 
     // Contracts the framework itself dispatches, invisibly to the reference
     // graph: health checks, FusionCache serializers, hosted services, ASP.NET
-    // exception handlers, and Swashbuckle/OpenAPI filters/transformers. Matched
-    // by simple name, the same convention as AbstractValidator below. Note what
-    // is deliberately absent: ordinary application contracts. A type registered
-    // via AddScoped/AddSingleton/etc. is called through its contract by consumer
-    // C# — those calls are visible, so the reference graph stays the arbiter.
+    // exception handlers, Swashbuckle/OpenAPI filters/transformers/examples,
+    // xUnit serialization/orderers, the MVC filter family, and MediatR pipeline
+    // middleware. Matched by simple name, the same convention as
+    // AbstractValidator below. Note what is deliberately absent: ordinary
+    // application contracts. A type registered via AddScoped/AddSingleton/etc.
+    // is called through its contract by consumer C# — those calls are visible,
+    // so the reference graph stays the arbiter. (MediatR request/notification
+    // HANDLERS stay out on that rule: they are directly callable, and milkrun
+    // tests call them. Pipeline behaviours are middleware — never directly
+    // callable, always runtime-dispatched.)
     private static readonly FrozenSet<string> FrameworkDispatchedContracts = new HashSet<string>(StringComparer.Ordinal)
     {
         "IHealthCheck",
@@ -83,6 +89,31 @@ internal sealed class FrameworkEvidenceIndex
         "IDocumentTransformer",
         "IOperationTransformer",
         "ISchemaTransformer",
+        "IOpenApiDocumentTransformer",
+        "IOpenApiOperationTransformer",
+        "IOpenApiSchemaTransformer",
+        "IDocumentFilter",
+        "IOperationFilter",
+        "IExamplesProvider",
+        "IXunitSerializable",
+        "ITestCaseOrderer",
+        "IXunitTestCaseOrderer",
+        "IActionFilter",
+        "IAsyncActionFilter",
+        "IOrderedFilter",
+        "IExceptionFilter",
+        "IAsyncExceptionFilter",
+        "IResultFilter",
+        "IAsyncResultFilter",
+        "IResourceFilter",
+        "IAsyncResourceFilter",
+        "IAuthorizationFilter",
+        "IAsyncAuthorizationFilter",
+        "IPipelineBehavior",
+        "IStreamPipelineBehavior",
+        "IRequestExceptionHandler",
+        "IRequestPreProcessor",
+        "IRequestPostProcessor",
     }.ToFrozenSet(StringComparer.Ordinal);
 
     private static readonly FrozenSet<string> MemberSerializationAttributes = new HashSet<string>(StringComparer.Ordinal)
@@ -102,10 +133,14 @@ internal sealed class FrameworkEvidenceIndex
     }.ToFrozenSet(StringComparer.Ordinal);
 
     private readonly FrozenSet<INamedTypeSymbol> _serializationUsedTypes;
+    private readonly FrozenSet<INamedTypeSymbol> _reflectionDiscoveredTypes;
 
-    private FrameworkEvidenceIndex(FrozenSet<INamedTypeSymbol> serializationUsedTypes)
+    private FrameworkEvidenceIndex(
+        FrozenSet<INamedTypeSymbol> serializationUsedTypes,
+        FrozenSet<INamedTypeSymbol> reflectionDiscoveredTypes)
     {
         _serializationUsedTypes = serializationUsedTypes;
+        _reflectionDiscoveredTypes = reflectionDiscoveredTypes;
     }
 
     public static FrameworkEvidenceIndex Get(Solution solution)
@@ -153,6 +188,25 @@ internal sealed class FrameworkEvidenceIndex
             return true;
         }
 
+        // Type-level evidence, type candidates only (members still stand on
+        // their own reference counts — the framework instantiates the type,
+        // nothing more):
+        //  - Reflection plugin-by-scan: a base type spelled in an IsSubclassOf
+        //    call, or as the receiver of IsAssignableFrom, marks its derived
+        //    types as Activator-instantiated (assembly scan discovery).
+        //  - Framework-dispatched contract implementations: the framework
+        //    activates the implementation itself (generic registration,
+        //    assembly scan, DI activation) — 1.5.1 suppressed only the
+        //    contract members; 1.6.2 extends that to the implementation type
+        //    after milkrun showed scan-instantiated example/filter types
+        //    flagged with zero C# references.
+        if (member is INamedTypeSymbol typeCandidate
+            && (_reflectionDiscoveredTypes.Contains(typeCandidate.OriginalDefinition)
+                || ImplementsFrameworkContract(typeCandidate)))
+        {
+            return true;
+        }
+
         // Type candidates query on themselves; member candidates on their container.
         var type = (member as INamedTypeSymbol ?? member.ContainingType)?.OriginalDefinition;
         if (type is null)
@@ -166,9 +220,7 @@ internal sealed class FrameworkEvidenceIndex
         }
 
         // A member implementing a framework-dispatched contract is invoked by
-        // the framework itself — no C# reference can exist for it. (Type
-        // candidates need no suppression here: the contract on the type's base
-        // list is an ordinary reference the graph already sees.)
+        // the framework itself — no C# reference can exist for it.
         if (ImplementsFrameworkContractMember(member))
         {
             return true;
@@ -186,6 +238,8 @@ internal sealed class FrameworkEvidenceIndex
     private static FrameworkEvidenceIndex Build(Solution solution)
     {
         var serializationSeeds = new ConcurrentBag<(Document Document, TypeSyntax Type)>();
+        var scanSeeds = new ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation, string BaseName)>();
+        var classRegistrations = new ConcurrentBag<(Document Document, TypeDeclarationSyntax Declaration, string Name, IReadOnlyList<string> BaseNames)>();
 
         // Pass 1: syntax seeds. No semantic calls — safe to read every document,
         // and safe to parallelise (order is irrelevant: seeds feed sets).
@@ -203,7 +257,7 @@ internal sealed class FrameworkEvidenceIndex
                     return;
                 }
 
-                CollectSeeds(document, root, serializationSeeds);
+                CollectSeeds(document, root, serializationSeeds, scanSeeds, classRegistrations);
             });
 
         // Pass 2: resolve seed types. Per-document semantic binding parallelised
@@ -252,14 +306,25 @@ internal sealed class FrameworkEvidenceIndex
             }
         }
 
+        // Pass 4: reflection plugin-by-scan. Confirm the IsSubclassOf/
+        // IsAssignableFrom call sites semantically, close over the syntax-level
+        // base map by simple name (transitively — a scan discovers subclasses of
+        // subclasses), then resolve only the discovered declarations.
+        var scanBaseNames = ResolveScanBaseNames(scanSeeds);
+        var discoveredNames = CloseDiscoveredNames(scanBaseNames, classRegistrations);
+        var reflectionDiscoveredTypes = ResolveDiscoveredTypes(discoveredNames, classRegistrations);
+
         return new FrameworkEvidenceIndex(
-            closure.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default));
+            closure.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default),
+            reflectionDiscoveredTypes);
     }
 
     private static void CollectSeeds(
         Document document,
         SyntaxNode root,
-        ConcurrentBag<(Document, TypeSyntax)> serializationSeeds)
+        ConcurrentBag<(Document, TypeSyntax)> serializationSeeds,
+        ConcurrentBag<(Document, InvocationExpressionSyntax, string)> scanSeeds,
+        ConcurrentBag<(Document, TypeDeclarationSyntax, string, IReadOnlyList<string>)> classRegistrations)
     {
         foreach (var node in root.DescendantNodes())
         {
@@ -280,6 +345,7 @@ internal sealed class FrameworkEvidenceIndex
 
                 case InvocationExpressionSyntax invocation:
                     CollectInvocationSeeds(document, invocation, serializationSeeds);
+                    CollectScanSeed(document, invocation, scanSeeds);
                     break;
 
                 case ParameterSyntax { AttributeLists.Count: > 0 } parameter when HasBindingAttribute(parameter) && parameter.Type is not null:
@@ -292,6 +358,7 @@ internal sealed class FrameworkEvidenceIndex
 
                 case TypeDeclarationSyntax { BaseList: not null } typeDeclaration:
                     CollectGraphContractSeeds(document, typeDeclaration, serializationSeeds);
+                    CollectClassRegistration(document, typeDeclaration, classRegistrations);
                     break;
             }
         }
@@ -378,6 +445,194 @@ internal sealed class FrameworkEvidenceIndex
         }
     }
 
+    /// <summary>
+    /// Reflection plugin-by-scan seeds: <c>t.IsSubclassOf(typeof(T))</c> and
+    /// <c>typeof(T).IsAssignableFrom(candidate)</c> mark T as a scan base.
+    /// Syntax-first; the invocation is confirmed semantically in
+    /// <see cref="ResolveScanBaseNames"/>.
+    /// </summary>
+    private static void CollectScanSeed(
+        Document document,
+        InvocationExpressionSyntax invocation,
+        ConcurrentBag<(Document, InvocationExpressionSyntax, string)> scanSeeds)
+    {
+        if (invocation.Expression is not MemberAccessExpressionSyntax memberAccess)
+        {
+            return;
+        }
+
+        var scanBase = memberAccess.Name.Identifier.Text switch
+        {
+            "IsSubclassOf" when invocation.ArgumentList.Arguments is [{ Expression: TypeOfExpressionSyntax argumentTypeOf }] => argumentTypeOf.Type,
+            "IsAssignableFrom" when memberAccess.Expression is TypeOfExpressionSyntax receiverTypeOf => receiverTypeOf.Type,
+            _ => null,
+        };
+
+        if (scanBase is not null && SimpleNameOf(scanBase) is { } baseName)
+        {
+            scanSeeds.Add((document, invocation, baseName));
+        }
+    }
+
+    /// <summary>
+    /// Every type declaration with a base list, with its base types reduced to
+    /// simple names — the syntax-level map the scan-base closure runs over.
+    /// </summary>
+    private static void CollectClassRegistration(
+        Document document,
+        TypeDeclarationSyntax typeDeclaration,
+        ConcurrentBag<(Document, TypeDeclarationSyntax, string, IReadOnlyList<string>)> classRegistrations)
+    {
+        var baseNames = new List<string>();
+        foreach (var baseType in typeDeclaration.BaseList!.Types)
+        {
+            if (SimpleNameOf(baseType.Type) is { } baseName)
+            {
+                baseNames.Add(baseName);
+            }
+        }
+
+        if (baseNames.Count > 0)
+        {
+            classRegistrations.Add((document, typeDeclaration, typeDeclaration.Identifier.Text, baseNames));
+        }
+    }
+
+    private static string? SimpleNameOf(TypeSyntax type)
+    {
+        return type switch
+        {
+            IdentifierNameSyntax identifier => identifier.Identifier.Text,
+            GenericNameSyntax generic => generic.Identifier.Text,
+            QualifiedNameSyntax qualified => SimpleNameOf(qualified.Right),
+            AliasQualifiedNameSyntax alias => SimpleNameOf(alias.Name),
+            NullableTypeSyntax nullable => SimpleNameOf(nullable.ElementType),
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Confirms scan call sites bind to <c>System.Type</c> (a same-named
+    /// extension/helper method is not a reflection scan). Over-approximation on
+    /// unresolvable shapes — drifted compilations, missing references: the
+    /// named base still counts, per the err-toward-used doctrine.
+    /// </summary>
+    private static HashSet<string> ResolveScanBaseNames(
+        ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation, string BaseName)> scanSeeds)
+    {
+        var confirmed = new HashSet<string>(StringComparer.Ordinal);
+        if (scanSeeds.IsEmpty)
+        {
+            return confirmed;
+        }
+
+        var sync = new object();
+        Parallel.ForEach(
+            scanSeeds.GroupBy(static seed => seed.Document),
+            AnalysisParallelism.CreateOptions(CancellationToken.None),
+            group =>
+            {
+                var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
+                foreach (var (_, invocation, baseName) in group)
+                {
+                    var method = semanticModel?.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
+                    if (method is not null
+                        && !(method.ContainingType is { Name: "Type" }
+                            && method.ContainingType.ContainingNamespace?.ToDisplayString() == "System"))
+                    {
+                        continue;
+                    }
+
+                    lock (sync)
+                    {
+                        confirmed.Add(baseName);
+                    }
+                }
+            });
+
+        return confirmed;
+    }
+
+    /// <summary>
+    /// Simple-name closure: a type whose base list names a scan base — or names
+    /// an already-discovered type — is discovered too (a scan finds subclasses
+    /// transitively). Simple names, the FrameworkDispatchedContracts convention.
+    /// </summary>
+    private static HashSet<string> CloseDiscoveredNames(
+        HashSet<string> scanBaseNames,
+        ConcurrentBag<(Document Document, TypeDeclarationSyntax Declaration, string Name, IReadOnlyList<string> BaseNames)> classRegistrations)
+    {
+        var discovered = new HashSet<string>(StringComparer.Ordinal);
+        if (scanBaseNames.Count == 0)
+        {
+            return discovered;
+        }
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var (_, _, name, baseNames) in classRegistrations)
+            {
+                if (discovered.Contains(name))
+                {
+                    continue;
+                }
+
+                foreach (var baseName in baseNames)
+                {
+                    if (scanBaseNames.Contains(baseName) || discovered.Contains(baseName))
+                    {
+                        discovered.Add(name);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        return discovered;
+    }
+
+    private static FrozenSet<INamedTypeSymbol> ResolveDiscoveredTypes(
+        HashSet<string> discoveredNames,
+        ConcurrentBag<(Document Document, TypeDeclarationSyntax Declaration, string Name, IReadOnlyList<string> BaseNames)> classRegistrations)
+    {
+        var resolved = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        if (discoveredNames.Count == 0)
+        {
+            return resolved.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default);
+        }
+
+        var sync = new object();
+        Parallel.ForEach(
+            classRegistrations
+                .Where(registration => discoveredNames.Contains(registration.Name))
+                .GroupBy(static registration => registration.Document),
+            AnalysisParallelism.CreateOptions(CancellationToken.None),
+            group =>
+            {
+                var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
+                if (semanticModel is null)
+                {
+                    return;
+                }
+
+                foreach (var (_, declaration, _, _) in group)
+                {
+                    if (semanticModel.GetDeclaredSymbol(declaration) is INamedTypeSymbol type)
+                    {
+                        lock (sync)
+                        {
+                            resolved.Add(type.OriginalDefinition);
+                        }
+                    }
+                }
+            });
+
+        return resolved.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default);
+    }
+
     private static void ResolveSeeds(
         ConcurrentBag<(Document Document, TypeSyntax Type)> seeds,
         HashSet<INamedTypeSymbol> resolved,
@@ -407,6 +662,19 @@ internal sealed class FrameworkEvidenceIndex
                     }
                 }
             });
+    }
+
+    private static bool ImplementsFrameworkContract(INamedTypeSymbol type)
+    {
+        foreach (var contract in type.AllInterfaces)
+        {
+            if (FrameworkDispatchedContracts.Contains(contract.Name))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool ImplementsFrameworkContractMember(ISymbol member)

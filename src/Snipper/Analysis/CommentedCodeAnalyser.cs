@@ -100,7 +100,7 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
                         continue;
                     }
 
-                    var lineSpan = block.Anchor.GetLocation().GetLineSpan();
+                    var lineSpan = block.Location.GetLineSpan();
                     findings.Add(new SnipperFinding(
                         RuleId: "SNP0020",
                         Title: "Commented-Out Code",
@@ -152,7 +152,7 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
                 var lines = StripBlockComment(trivia.ToString());
                 if (lines.Count >= MinimumCommentLines && trivia.Token.Parent is { } anchor)
                 {
-                    blocks.Add(new CommentBlock(lines, anchor, trivia.GetLocation().GetLineSpan().StartLinePosition.Line));
+                    blocks.Add(new CommentBlock(lines, anchor, trivia.GetLocation().GetLineSpan().StartLinePosition.Line, trivia.GetLocation()));
                 }
             }
 
@@ -177,7 +177,7 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
             lines.Add(StripLineComment(trivia.ToString()));
         }
 
-        blocks.Add(new CommentBlock(lines, anchor, run[0].GetLocation().GetLineSpan().StartLinePosition.Line));
+        blocks.Add(new CommentBlock(lines, anchor, run[0].GetLocation().GetLineSpan().StartLinePosition.Line, run[0].GetLocation()));
     }
 
     private static string StripLineComment(string text)
@@ -242,5 +242,5 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
         return false;
     }
 
-    private sealed record CommentBlock(List<string> Lines, SyntaxNode Anchor, int StartLine);
+    private sealed record CommentBlock(List<string> Lines, SyntaxNode Anchor, int StartLine, Location Location);
 }
