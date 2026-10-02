@@ -1,0 +1,86 @@
+namespace Snipper.Analysis;
+
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
+/// <summary>
+/// Document-scoped index of identifier positions, bucketed by identifier text.
+///
+/// Backs the reference test for symbols that cannot escape their declaring file:
+/// locals, parameters, and local functions. Those are unreachable from any other
+/// document by construction, so routing them through solution-wide
+/// <c>SymbolFinder</c> is pure overhead — it assembles cross-project candidate
+/// sets and de-duplicates symbols it will then discard. Measured on the sample
+/// app, SNP0009's reference scans were its dominant cost.
+///
+/// The bucket index is built with one walk per document and then answers each
+/// candidate with a short list walk, instead of one full walk per candidate.
+/// Binding an identifier and comparing symbols is exactly the test
+/// <c>SymbolFinder</c> performs for these symbols: a usage of the local is an
+/// identifier whose symbol <em>is</em> the local. Shadowed names and aliases bind
+/// to different symbols and correctly do not count as reads.
+/// </summary>
+internal sealed class DocumentIdentifierIndex
+{
+    private readonly Dictionary<string, List<SimpleNameSyntax>> _positionsByName;
+
+    private DocumentIdentifierIndex(Dictionary<string, List<SimpleNameSyntax>> positionsByName)
+    {
+        _positionsByName = positionsByName;
+    }
+
+    public static DocumentIdentifierIndex Build(SyntaxNode root)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+
+        Dictionary<string, List<SimpleNameSyntax>>? positionsByName = null;
+        foreach (var node in root.DescendantNodes())
+        {
+            if (node is not SimpleNameSyntax simpleName)
+            {
+                continue;
+            }
+
+            positionsByName ??= new Dictionary<string, List<SimpleNameSyntax>>(StringComparer.Ordinal);
+            var text = simpleName.Identifier.Text;
+            if (!positionsByName.TryGetValue(text, out var positions))
+            {
+                positions = [];
+                positionsByName[text] = positions;
+            }
+
+            positions.Add(simpleName);
+        }
+
+        return new DocumentIdentifierIndex(positionsByName ?? []);
+    }
+
+    /// <summary>
+    /// True when at least one identifier in the document binds to
+    /// <paramref name="symbol"/>.
+    /// </summary>
+    public bool HasReference(SemanticModel semanticModel, ISymbol symbol, string name)
+    {
+        ArgumentNullException.ThrowIfNull(semanticModel);
+        ArgumentNullException.ThrowIfNull(symbol);
+        ArgumentNullException.ThrowIfNull(name);
+
+        if (!_positionsByName.TryGetValue(name, out var positions))
+        {
+            return false;
+        }
+
+        // Bind only the identifiers that spell this name. Each GetSymbolInfo is a
+        // semantic-model call, so the bucket is deliberately short: it holds one
+        // entry per textual occurrence, not one per node in the file.
+        foreach (var position in positions)
+        {
+            if (SymbolEqualityComparer.Default.Equals(semanticModel.GetSymbolInfo(position).Symbol, symbol))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}

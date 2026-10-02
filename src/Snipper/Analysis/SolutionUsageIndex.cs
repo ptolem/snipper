@@ -19,6 +19,14 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 /// generated code can legitimately reference project members; the index records
 /// usage evidence only, never finding locations.
 ///
+/// Held in both directions, built from one syntax walk: name → documents answers
+/// the per-symbol query in O(1), document → names answers the per-declaration
+/// query in O(1). Neither orientation substitutes for the other — callers query
+/// both ways, once per candidate symbol — and the reverse direction is what keeps
+/// a solution-wide lookup from degrading into a fresh scan of every document per
+/// queried name. Result sets are memoized, so a repeated (name) or (project, name)
+/// query allocates nothing.
+///
 /// Built once per solution (parallel, CPU-bound) and shared by the
 /// reference-checking analysers via a solution-keyed cache.
 /// </summary>
@@ -26,13 +34,18 @@ internal sealed class SolutionUsageIndex
 {
     private static readonly ConditionalWeakTable<Solution, Lazy<SolutionUsageIndex>> Cache = new();
 
-    private readonly Solution _solution;
-    private readonly FrozenDictionary<DocumentId, FrozenSet<string>> _namesByDocument;
+    private static readonly IEqualityComparer<Document> DocumentComparer = new DocumentIdComparer();
 
-    private SolutionUsageIndex(Solution solution, FrozenDictionary<DocumentId, FrozenSet<string>> namesByDocument)
+    private readonly FrozenDictionary<DocumentId, FrozenSet<string>> _namesByDocument;
+    private readonly FrozenDictionary<string, ImmutableHashSet<Document>> _documentsByName;
+    private readonly ConcurrentDictionary<(ProjectId Project, string Name), ImmutableHashSet<Document>> _projectScopeMemo = new();
+
+    private SolutionUsageIndex(
+        FrozenDictionary<DocumentId, FrozenSet<string>> namesByDocument,
+        FrozenDictionary<string, ImmutableHashSet<Document>> documentsByName)
     {
-        _solution = solution;
         _namesByDocument = namesByDocument;
+        _documentsByName = documentsByName;
     }
 
     public static SolutionUsageIndex Get(Solution solution)
@@ -53,6 +66,9 @@ internal sealed class SolutionUsageIndex
     /// </summary>
     public bool IsNameUsedInDocument(Document document, string name)
     {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(name);
+
         return _namesByDocument.TryGetValue(document.Id, out var names) && names.Contains(name);
     }
 
@@ -62,16 +78,17 @@ internal sealed class SolutionUsageIndex
     /// </summary>
     public ImmutableHashSet<Document> GetDocumentsUsingName(Project project, string name)
     {
-        var builder = ImmutableHashSet.CreateBuilder<Document>();
-        foreach (var document in project.Documents)
-        {
-            if (_namesByDocument.TryGetValue(document.Id, out var names) && names.Contains(name))
-            {
-                builder.Add(document);
-            }
-        }
+        ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(name);
 
-        return builder.ToImmutable();
+        // The solution-wide set is the superset; narrowing to one project is a
+        // filtered pass over it. Memoized because the same (project, name) pair is
+        // queried once per candidate symbol — several members typically share a name,
+        // so the filter would otherwise repeat verbatim.
+        return _projectScopeMemo.GetOrAdd(
+            (project.Id, name),
+            static (key, self) => self.FilterByProject(key.Project, key.Name),
+            this);
     }
 
     /// <summary>
@@ -80,27 +97,43 @@ internal sealed class SolutionUsageIndex
     /// </summary>
     public ImmutableHashSet<Document> GetDocumentsUsingName(string name)
     {
-        var builder = ImmutableHashSet.CreateBuilder<Document>();
-        foreach (var project in _solution.Projects)
+        ArgumentNullException.ThrowIfNull(name);
+
+        return _documentsByName.TryGetValue(name, out var documents)
+            ? documents
+            : ImmutableHashSet<Document>.Empty.WithComparer(DocumentComparer);
+    }
+
+    private ImmutableHashSet<Document> FilterByProject(ProjectId projectId, string name)
+    {
+        if (!_documentsByName.TryGetValue(name, out var candidates))
         {
-            foreach (var document in project.Documents)
+            return ImmutableHashSet<Document>.Empty.WithComparer(DocumentComparer);
+        }
+
+        ImmutableHashSet<Document>.Builder? builder = null;
+        foreach (var document in candidates)
+        {
+            if (document.Project.Id == projectId)
             {
-                if (_namesByDocument.TryGetValue(document.Id, out var names) && names.Contains(name))
-                {
-                    builder.Add(document);
-                }
+                builder ??= ImmutableHashSet.CreateBuilder(DocumentComparer);
+                builder.Add(document);
             }
         }
 
-        return builder.ToImmutable();
+        return builder is null
+            ? ImmutableHashSet<Document>.Empty.WithComparer(DocumentComparer)
+            : builder.ToImmutable();
     }
 
     private static SolutionUsageIndex Build(Solution solution)
     {
-        // Interning pool: distinct identifier texts are stored once process-wide
-        // per build; per-document sets then hold references, not duplicate strings.
+        // Interning pool: distinct identifier texts are stored once per build;
+        // per-document sets and reverse buckets then hold references, not copies.
         var internPool = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
-        var harvested = new ConcurrentBag<KeyValuePair<DocumentId, FrozenSet<string>>>();
+
+        var namesByDocument = new ConcurrentDictionary<DocumentId, FrozenSet<string>>();
+        var documentsByName = new ConcurrentDictionary<string, ConcurrentDictionary<DocumentId, Document>>(StringComparer.Ordinal);
 
         var documents = solution.Projects
             .SelectMany(static p => p.Documents)
@@ -108,26 +141,108 @@ internal sealed class SolutionUsageIndex
 
         Parallel.ForEach(
             documents,
-            new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+            AnalysisParallelism.CreateOptions(CancellationToken.None),
             document =>
             {
-                var tree = document.GetSyntaxTreeAsync().GetAwaiter().GetResult();
-                var root = tree?.GetRoot();
+                // Trees are loaded before any analyser runs; awaiting the already-
+                // completed task avoids re-entering the async state machine.
+                var root = document.GetSyntaxTreeAsync().GetAwaiter().GetResult()?.GetRoot();
                 if (root is null)
                 {
                     return;
                 }
 
                 var names = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var node in root.DescendantNodes().OfType<SimpleNameSyntax>())
+                foreach (var node in root.DescendantNodes())
                 {
-                    var text = node.Identifier.Text;
-                    names.Add(internPool.GetOrAdd(text, text));
+                    if (node is not SimpleNameSyntax simpleName)
+                    {
+                        continue;
+                    }
+
+                    var text = simpleName.Identifier.Text;
+                    var interned = internPool.GetOrAdd(text, text);
+                    names.Add(interned);
+
+                    var bucket = documentsByName.GetOrAdd(interned, static _ => new ConcurrentDictionary<DocumentId, Document>());
+                    bucket.TryAdd(document.Id, document);
                 }
 
-                harvested.Add(new KeyValuePair<DocumentId, FrozenSet<string>>(document.Id, names.ToFrozenSet(StringComparer.Ordinal)));
+                namesByDocument[document.Id] = names.ToFrozenSet(StringComparer.Ordinal);
             });
 
-        return new SolutionUsageIndex(solution, harvested.ToFrozenDictionary());
+        // Deterministic order: documents sorted by file path so the candidate set
+        // handed to SymbolFinder — and therefore any finding order derived from it —
+        // does not depend on parallel scheduling.
+        var distinctDocuments = new List<KeyValuePair<DocumentId, Document>>(namesByDocument.Count);
+        var seenDocuments = new HashSet<DocumentId>();
+        foreach (var bucket in documentsByName.Values)
+        {
+            foreach (var entry in bucket)
+            {
+                if (seenDocuments.Add(entry.Key))
+                {
+                    distinctDocuments.Add(new KeyValuePair<DocumentId, Document>(entry.Key, entry.Value));
+                }
+            }
+        }
+
+        distinctDocuments.Sort(static (left, right) =>
+        {
+            var byPath = string.CompareOrdinal(left.Value.FilePath ?? string.Empty, right.Value.FilePath ?? string.Empty);
+            return byPath != 0 ? byPath : left.Key.Id.CompareTo(right.Key.Id);
+        });
+
+        var ordinalByDocument = new Dictionary<DocumentId, int>(distinctDocuments.Count);
+        for (var index = 0; index < distinctDocuments.Count; index++)
+        {
+            ordinalByDocument[distinctDocuments[index].Key] = index;
+        }
+
+        var inverted = new Dictionary<string, ImmutableHashSet<Document>>(documentsByName.Count, StringComparer.Ordinal);
+        foreach (var (name, bucket) in documentsByName)
+        {
+            var ordered = new List<Document>(bucket.Count);
+            foreach (var document in bucket.Values)
+            {
+                ordered.Add(document);
+            }
+
+            ordered.Sort((left, right) =>
+            {
+                var leftOrdinal = ordinalByDocument.TryGetValue(left.Id, out var l) ? l : int.MaxValue;
+                var rightOrdinal = ordinalByDocument.TryGetValue(right.Id, out var r) ? r : int.MaxValue;
+                return leftOrdinal.CompareTo(rightOrdinal);
+            });
+
+            inverted[name] = ImmutableHashSet.CreateRange(DocumentComparer, ordered);
+        }
+
+        return new SolutionUsageIndex(namesByDocument.ToFrozenDictionary(), inverted.ToFrozenDictionary(StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// Roslyn's <see cref="Document"/> does not override equality, so reference
+    /// identity would be the default — correct for a single loaded solution, but
+    /// fragile across the same DocumentId rebuilt into a new instance. Keying on
+    /// the stable <see cref="DocumentId"/> makes merged sets behave regardless.
+    /// </summary>
+    private sealed class DocumentIdComparer : IEqualityComparer<Document>
+    {
+        public bool Equals(Document? x, Document? y)
+        {
+            if (ReferenceEquals(x, y))
+            {
+                return true;
+            }
+
+            return x is not null && y is not null && x.Id == y.Id;
+        }
+
+        public int GetHashCode(Document obj)
+        {
+            ArgumentNullException.ThrowIfNull(obj);
+            return obj.Id.GetHashCode();
+        }
     }
 }

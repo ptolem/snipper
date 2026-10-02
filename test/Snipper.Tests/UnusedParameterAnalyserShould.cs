@@ -11,8 +11,7 @@ public sealed class UnusedParameterAnalyserShould(SampleSolutionFixture fixture)
     [Theory]
     [InlineData("unusedParam")]
     [InlineData("anotherUnusedParam")]
-    public async Task Flag_Unused_Parameters_On_Private_Directly_Invoked_Methods_As_Moderate_For_AnalyzeAsync(string parameterName)
-    {
+    public async Task Flag_Unused_Parameters_On_Private_Directly_Invoked_Methods_As_Moderate_For_AnalyzeAsync(string parameterName)    {
         var analyser = new UnusedParameterAnalyser();
 
         var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
@@ -29,6 +28,7 @@ public sealed class UnusedParameterAnalyserShould(SampleSolutionFixture fixture)
     [InlineData("count")]     // method referenced as a method group — signature fixed by the delegate
     [InlineData("value")]     // EntryPoint is public — out of scope for this rule
     [InlineData("name")]      // Greeter.Greet implements an interface contract — out of scope
+    [InlineData("captured")]  // read only inside a nested lambda — still a reference
     public async Task Not_Flag_Used_Or_Contract_Bound_Parameters_For_AnalyzeAsync(string parameterName)
     {
         var analyser = new UnusedParameterAnalyser();

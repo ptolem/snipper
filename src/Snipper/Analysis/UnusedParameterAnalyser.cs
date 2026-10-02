@@ -54,6 +54,10 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
                     continue;
                 }
 
+                // One walk per document buckets every identifier by text; each
+                // parameter below then binds only the positions spelling its name.
+                var identifierIndex = DocumentIdentifierIndex.Build(root);
+
                 foreach (var node in root.DescendantNodes())
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -123,10 +127,9 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
 
                         // Slow path: the name appears (possibly on another symbol) —
                         // confirm semantically. A parameter's references can only live
-                        // in this document.
-                        var referenced = await SymbolReferenceQuery.HasAnyReferenceAsync(
-                            parameter, solution, ImmutableHashSet.Create(document), cancellationToken).ConfigureAwait(false);
-                        if (!referenced)
+                        // in this document, so the document-scoped index answers it
+                        // without a solution-wide candidate-set search.
+                        if (!identifierIndex.HasReference(semanticModel, parameter, parameterName))
                         {
                             findings.Add(CreateFinding(parameterName, method, parameterSyntax.GetLocation().GetLineSpan()));
                         }

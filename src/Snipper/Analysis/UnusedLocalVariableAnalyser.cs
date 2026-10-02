@@ -1,6 +1,5 @@
 namespace Snipper.Analysis;
 
-using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -51,6 +50,10 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
                 {
                     continue;
                 }
+
+                // One walk per document buckets every identifier by text; each
+                // candidate below then binds only the positions spelling its name.
+                var identifierIndex = DocumentIdentifierIndex.Build(root);
 
                 foreach (var node in root.DescendantNodes())
                 {
@@ -103,16 +106,15 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
 
                     // Slow path: the name appears in the document (possibly on another
                     // symbol sharing it) — confirm semantically. A local's references
-                    // can only live in this document.
+                    // can only live in this document, so the document-scoped index
+                    // answers it without a solution-wide candidate-set search.
                     var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
                     if (symbol is not ILocalSymbol local)
                     {
                         continue;
                     }
 
-                    var referenced = await SymbolReferenceQuery.HasAnyReferenceAsync(
-                        local, solution, ImmutableHashSet.Create(document), cancellationToken).ConfigureAwait(false);
-                    if (!referenced)
+                    if (!identifierIndex.HasReference(semanticModel, local, name))
                     {
                         findings.Add(CreateFinding(name, node.GetLocation().GetLineSpan()));
                     }

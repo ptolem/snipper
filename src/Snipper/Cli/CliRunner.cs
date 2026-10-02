@@ -231,32 +231,18 @@ public static class CliRunner
             AnsiConsole.MarkupLine($"[grey]Disabled rules (snipper.json): {Markup.Escape(string.Join(", ", config.DisabledRules.Order(StringComparer.Ordinal)))}[/]");
         }
 
-        var allFindings = new List<SnipperFinding>();
+        var totalStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
+        IReadOnlyList<SnipperFinding> allFindings = [];
         await AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
             .StartAsync("Analyzing solution symbols and references...", async ctx =>
             {
-                var totalStopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-                foreach (var analyser in analysers)
-                {
-                    var analyserName = analyser.GetType().Name;
-                    ctx.Status($"[grey]{analyserName}: starting...[/]");
-
-                    var analyserStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                    var findings = await analyser.AnalyzeAsync(
-                        solution,
-                        CancellationToken.None,
-                        progress: status => ctx.Status($"[grey]{Markup.Escape(status)}[/]")).ConfigureAwait(false);
-                    analyserStopwatch.Stop();
-
-                    allFindings.AddRange(findings);
-                    AnsiConsole.MarkupLine($"[green]✓[/] [grey]{analyserName}: {findings.Count} finding(s) in {analyserStopwatch.Elapsed.TotalSeconds:0.0}s[/]");
-                }
-
-                AnsiConsole.MarkupLine($"[grey]Analysis completed in {totalStopwatch.Elapsed.TotalSeconds:0.0}s.[/]");
+                allFindings = await AnalysisRunner.RunAsync(analysers, solution, ctx, CancellationToken.None)
+                    .ConfigureAwait(false);
             });
+
+        AnsiConsole.MarkupLine($"[grey]Analysis completed in {totalStopwatch.Elapsed.TotalSeconds:0.0}s.[/]");
 
         IReadOnlyList<SnipperFinding> reportableFindings = allFindings;
 
