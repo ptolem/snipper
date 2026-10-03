@@ -32,7 +32,7 @@ public static class CliRunner
         if (args.Length == 0 || string.IsNullOrWhiteSpace(args[0]))
         {
             AnsiConsole.MarkupLine("[red]Error: Missing target path. Provide a .sln, .slnx, or .csproj path.[/]");
-            AnsiConsole.MarkupLine("[yellow]Usage: Snipper <path-to-solution-or-project> [[output-file]] [[--format json|sarif]] [[--baseline <path>]] [[--certainty-tier guaranteed|high|moderate|advisory]] [[--exclude-namespaces <list>]] [[--config-analysis]] [[--version]][/]");
+            AnsiConsole.MarkupLine("[yellow]Usage: Snipper <path-to-solution-or-project> [[output-file]] [[--format json|sarif]] [[--baseline <path>]] [[--certainty-tier guaranteed|high|moderate|advisory]] [[--exclude-namespaces <list>]] [[--config-analysis]] [[--duplicate-detection]] [[--version]][/]");
             return 1;
         }
 
@@ -48,6 +48,7 @@ public static class CliRunner
         CertaintyTier? minimumCertainty = null;
         var format = ReportFormat.Json;
         var includeConfigAnalysis = false;
+var includeDuplicateDetection = false;
         var excludedNamespaces = new List<string>();
 
         for (var i = 1; i < args.Length; i++)
@@ -110,6 +111,10 @@ public static class CliRunner
             else if (string.Equals(args[i], "--config-analysis", StringComparison.OrdinalIgnoreCase))
             {
                 includeConfigAnalysis = true;
+            }
+            else if (string.Equals(args[i], "--duplicate-detection", StringComparison.OrdinalIgnoreCase))
+            {
+                includeDuplicateDetection = true;
             }
             else if (outputPath is null && !string.IsNullOrWhiteSpace(args[i]))
             {
@@ -223,6 +228,26 @@ public static class CliRunner
         else
         {
             AnsiConsole.MarkupLine("[grey]Configuration analysis (SNP0007/SNP0008) is off by default — enable with --config-analysis.[/]");
+        }
+
+        // Duplicate detection (SNP0031) is opt-in for the same reason, and with
+        // a measured result behind it: on Snipper's own solution it produced
+        // 1160 findings across 988 clone sets, because all 17 workspace
+        // analysers share one 200+ token structural skeleton (project loop,
+        // document loop, GetSemanticModelAsync, ShouldSkipDocument,
+        // DescendantNodes) and every identifier normalizes to ID. That is a
+        // true positive about duplication, but it is duplication by design, and
+        // a rule that is red on a clean codebase is not useful on every run.
+        // The analyser also applies a cross-directory/cross-project guard, which
+        // removes the largest same-directory share of that noise (measured: 1160
+        // to 642 findings on Snipper.slnx).
+        if (includeDuplicateDetection)
+        {
+            analysers.Add(new DuplicateFragmentAnalyser(exclusions));
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[grey]Duplicate detection (SNP0031) is off by default — enable with --duplicate-detection.[/]");
         }
 
         if (config.DisabledRules.Count > 0)

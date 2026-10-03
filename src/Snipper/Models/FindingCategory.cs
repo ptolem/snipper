@@ -25,5 +25,6 @@ public enum FindingCategory : byte
     RedundantCast = 21,
     RedundantQualifier = 22,
     EmptyTypeMember = 23,
-    UnusedEvent = 24
+    UnusedEvent = 24,
+    DuplicateFragment = 25
 }

@@ -67,4 +67,42 @@ public sealed class CliRunnerShould
 
         exitCode.Should().Be(1);
     }
+
+    [Fact]
+    public async Task Omit_Duplicate_Findings_By_Default_For_RunAsync()
+    {
+        // SNP0031 is opt-in (--duplicate-detection). On a default run the rule
+        // must not appear at all, which is what keeps every existing gate and
+        // baseline stable for users who did not ask for clone detection.
+        var target = Path.Combine(AppContext.BaseDirectory, "TestAssets", "SampleApp", "App", "App.csproj");
+        var report = Path.Combine(Path.GetTempPath(), $"snipper-default-{Guid.NewGuid():N}.json");
+
+        var exitCode = await CliRunner.RunAsync([target, report]);
+
+        exitCode.Should().Be(0);
+        ReadRuleIds(report).Should().NotContain("SNP0031");
+    }
+
+    [Fact]
+    public async Task Include_Duplicate_Findings_When_Flag_Is_Passed_For_RunAsync()
+    {
+        var target = Path.Combine(AppContext.BaseDirectory, "TestAssets", "SampleApp", "App", "App.csproj");
+        var report = Path.Combine(Path.GetTempPath(), $"snipper-duplicates-{Guid.NewGuid():N}.json");
+
+        var exitCode = await CliRunner.RunAsync([target, report, "--duplicate-detection"]);
+
+        exitCode.Should().Be(0);
+        ReadRuleIds(report).Should().Contain("SNP0031");
+    }
+
+    private static IReadOnlyList<string> ReadRuleIds(string reportPath)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(reportPath));
+
+        return document.RootElement
+            .GetProperty("findings")
+            .EnumerateArray()
+            .Select(element => element.GetProperty("ruleId").GetString() ?? string.Empty)
+            .ToList();
+    }
 }
