@@ -1,129 +1,258 @@
-# Competitive Analysis — Snipper vs. the .NET Code-Analysis Ecosystem
+# Competitive Analysis — Snipper vs. the Codebase-Cleaning Ecosystem
 
-**Date:** 2026-09-14 · **Updated:** 2026-09-21 · **Snipper version:** 1.6.2 (26 rule IDs: SNP0001–0013, 0018–0030)
-**Scope:** features for *reducing the entropy of a large codebase* — dead code detection, redundancy/hygiene sweeps, dependency bloat, duplication, and the removal workflow (fix automation, gating, suppression).
+**Date:** 2026-09-14 · **Updated:** 2026-10-03 · **Snipper version:** 1.6.3 (27 rule IDs: SNP0001–0013, 0018–0031; 353 tests)
+**Scope:** features for *reducing the entropy of a large codebase* — dead code detection, redundancy/hygiene sweeps, dependency bloat, duplication, and the machinery that actually controls entropy: gating, prioritization, architecture, history, suppression, and agent consumption.
+
+The previous revision compared five tools that all perform *single-snapshot static* analysis of one repository. That was the wrong axis. Large-codebase entropy is not primarily a detection problem — it is a **governance** problem. A tool that finds 20,000 issues and cannot say which 200 matter, or cannot prove the next thousand commits will not add another twenty thousand, does not reduce entropy. This revision therefore splits the comparison in two (§2 detection, §3 governance) and adds the vendors that actually compete on the second axis.
 
 **Sources & evidence levels:**
-- *Verified against vendor docs (fetched 2026-09-14):* ReSharper 2026.2 inspection index (1,078 configurable C# inspections + 1,269 error inspections, incl. the full "Redundancies in Code" (103) and "Redundancies in Symbol Declarations" (51) categories), ReSharper "Remove Unused References" docs (project/assembly references, preview dialog, deletes redundant usings alongside), InspectCode CLT docs (SARIF default since 2024.1, builds solution by default, no baseline concept, `--include/--exclude`, `.editorconfig` severity config).
-- *Stable product knowledge:* VS/Roslyn analysers (IDE/CA rules, `dotnet format`), NDepend (dead-code rule family + coverage import), SonarQube (rule IDs, new-code quality gate), Rider 2023.1 NuGet-aware reference removal, dupFinder CLT, dotCover.
-- *Qualitative (community sentiment, YouTrack voting):* marked as such where used.
+- *Verified against vendor docs (fetched 2026-10-03):* CodeScene 7.5.x documentation and product pages (hotspots, change coupling, bus-factor simulation, refactoring recommendations, Goals/X-Ray/Delta Analysis, ACE auto-refactor language support); Qodana 2026.2 `.NET` and feature docs (`qodana-dotnet` vs **`qodana-cdnet` Community license**, baseline, quality gate, fresh/total coverage, CLEANUP/APPLY strategies, vulnerability checker, `.mailmap`, pricing); SonarQube Server/Cloud 2026.x docs (MQR mode, Clean as You Code, new-code definition and trends, automatic per-author issue assignment, AI CodeFix, MCP server, Gitar); jscpd documentation and benchmarks (Type-1/2/3/4 clone kinds, C# in the semantic-embedding language list, `--skipLocal`, `--blame`, clone baseline, MCP server, 159 MB / 3.4 s claim); PMD CPD documentation (including its explicit statement that keeping clones in sync is beyond current tools); ArchUnitNET / NetArchTest.Rules repositories; ReSharper 2026.2 inspection index; InspectCode CLT docs.
+- *Verified 2026-09-14 (prior revision):* ReSharper "Remove Unused References", Rider 2023.1 NuGet-aware reference removal, dupFinder CLT, dotCover, SARIF-as-default in InspectCode since 2024.1.
+- *Stable product knowledge (not re-verified this revision):* NDepend (coverage import, CQLinq, complexity, dependency graph), CodeMaat / ADAM (churn × complexity hotspots, change coupling), Stryker.NET (mutation testing), PoliCheck, Semgrep cross-file analysis, CodeQL, dotCover, SonarQube CPD.
+- *Qualitative:* community sentiment and vendor benchmarking claims are marked as such. Vendor speed and accuracy claims are **theirs, not reproduced here**.
 
 ---
 
-## 1. Capability matrix
+## 0. TL;DR — what changed, stated plainly
 
-✓ = strong/native · ~ = partial · — = absent. Rider shares ReSharper's engine → one column.
+Three findings from this revision are uncomfortable and are recorded here rather than softened.
 
-| Capability | Snipper | ReSharper / Rider | VS + Roslyn | NDepend | SonarQube |
-|---|---|---|---|---|---|
-| **Dead code** | | | | | |
-| Unused private members | ✓ SNP0001 | ✓ `UnusedMember.Local` | ✓ IDE0051/CA1823 | ✓ | ✓ S1144/S1068 |
-| Unused internal/public symbols | ✓ SNP0005/0006 | ✓ `UnusedType/Member.Global` (SWEA) | — | ✓ | ~ (private-focused) |
-| Unused locals / parameters | ✓ SNP0009/0010 | ✓ | ✓ IDE0059/IDE0060 | — | ✓ S1481/S1172 |
-| Unreachable statements | ✓ SNP0002 | ✓ | ✓ CS0162 | — | ✓ |
-| Obsolete zero-usage members | ✓ **SNP0018 (unique)** | — | — | — | — |
-| Field written, never read / unassigned | ✓ SNP0021 (write-only; unassigned stays SNP0001/CS0649) | ✓ `NotAccessedField`, `UnassignedField` | ✓ IDE0052, CS0649 | — | ✓ S4487 |
-| Event never invoked | ✓ SNP0030 (1.6.0, Advisory) | ✓ `EventNeverInvoked` | ~ | — | ~ |
-| Return value never used / param-only-precondition / out always discarded / nameof-only | ~ (SNP0021 covers the nameof-only and out-only field slices) | ✓ `UnusedMethodReturnValue`, `ParameterOnlyUsedForPreconditionCheck`, `OutParameterValueIsAlwaysDiscarded`, `EntityNameCapturedOnly` | — | ~ (CQLinq) | — |
- | Hierarchy dead code (virtual never overridden, class never inherited, member only via overrides/base) | ✅ SNP0023 + SNP0027 (1.6.0 adds override families with no external caller) | ✓ `VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`, `UnusedMemberHierarchy`, `UnusedMemberInSuper` | — | ~ | — |
-| **Redundancy sweeps** | | | | | |
-| Unused usings | ✓ SNP0019 (CS8019 + CS8933, incl. global usings) | ✓ `RedundantUsingDirective` (+global) | ✓ IDE0005 | — | ✓ S1128 |
-| Redundant casts / qualifiers / type args / default args / etc. | ~ SNP0022/0025/0026/0028 (default args, type args, identity + rebind-gated upcasts, this./type-name qualifiers — all soundness-gated; the rest not covered) | ✓ 103 inspections | ~ IDE00xx subset | — | ~ |
-| Empty ctor/destructor/namespace, redundant overload/override/initializer/partial | ~ SNP0029 (1.6.0: empty ctor/dtor; the rest not covered) | ✓ | ~ | — | ~ |
-| Commented-out code | ✓ SNP0020 | — | — | — | ✓ S125 |
-| **Tightening (entropy prevention)** | | | | | |
- | can-be-static / readonly / sealed / private / internal / const / init-only / file-local | ~ SNP0024 (static / readonly / sealed / private as of 1.6.0, Advisory tier) | ✓ `MemberCanBeMadeStatic`, `FieldCanBeMadeReadOnly`, `ClassCanBeSealed`, `MemberCanBePrivate/Internal/FileLocal`… | ~ CA1822, CA1852, IDE0044 | ~ | ~ |
-| **Dependency hygiene** | | | | | |
-| Unreferenced `PackageReference` | ✓ SNP0003 | ✓ Rider 2023.1+ (NuGet-aware); ReSharper: project/assembly refs | ✓ "Remove Unused References" | ~ | — |
-| Unreferenced `ProjectReference` | ✓ SNP0004 | ✓ | ✓ | ✓ | — |
-| Redundant transitive direct package (lock-file graph, version-aware) | ✓ **SNP0012 (unique)** | — | — | — | — |
-| Framework-inbox package (`PackageOverrides.txt`) | ✓ **SNP0013 (unique)** | — | — | — | — |
-| Orphan / detached projects (graph + filesystem sweep) | ✓ **SNP0011 (unique)** | — | — | ~ (unused assemblies) | — |
-| Outdated / vulnerable / deprecated packages | — | ✓ Rider NuGet health | ✓ NuGet Audit | — | — |
-| **Cross-language assets** | | | | | |
-| Unused `.resx` keys; XAML/Razor symbol usage; unused CSS/JS | — | ✓ (XAML, Razor, ASP.NET, Resx in engine) | — | — | ~ |
-| **Duplication** | | | | | |
-| Duplicate code blocks | ✓ SNP0031 (1.6.3, Advisory, opt-in) | ✓ dupFinder CLT (free) + TeamCity | — | ✓ | ✓ (CPD) |
-| **Runtime evidence** | | | | | |
-| Coverage-driven "never executed" code | — | ✓ dotCover | — | ✓ (imports coverage) | ~ |
-| **Workflow** | | | | | |
-| Auto-fix / bulk cleanup | — | ✓ quick-fixes + CleanupCode CLT | ✓ Code Cleanup + `dotnet format` | — | ~ |
-| Safe-delete with usage preview | — | ✓ | ~ | — | — |
-| Severity/suppression config (.editorconfig etc.) | ✓ `snipper.json` (per-rule severity/off, namespace + path/glob exclusions) | ✓ .editorconfig + .DotSettings | ✓ .editorconfig | ✓ | ✓ |
-| CI baseline / new-code gate | ✓ `--baseline` | ~ (severity threshold) | — | ✓ baseline diff | ✓✓ (industry reference) |
-| SARIF output | ✓ | ✓ (CLT default since 2024.1) | ~ | — | ✓ |
-| Design-time squiggles | — | ✓✓ | ✓✓ | ✓ | ✓ (SonarLint) |
-| Free & open-source | ✓ | CLT free (IDE paid) | ✓ | paid | community tier |
+**1. Snipper's duplication engine is now behind a free open-source tool, on both capability and speed.** jscpd ships Type-1, Type-2, **Type-3 near-miss**, and experimental **Type-4 semantic** clone detection (C# is in the embedding language list), plus `--skipLocal` (the same same-directory guard Snipper implemented for 1.6.3), `--blame`, SARIF, an MCP server, and a clone baseline with `--fail-on-new-clones` / `--baseline-from-ref`. Its native Rust engine advertises 159 MB scanned in 3.4 s. Snipper's SNP0031 is Type-1/Type-2 only and cost **52.6 s marginal on a 3,070-file monorepo — 3.5× over its own ≤15 s budget**. On the duplication axis specifically, jscpd is currently ahead of Snipper. SNP0031 remains worth keeping for the Roslyn-native reason (it shares the solution graph, `snipper.json`, baseline, and SARIF pipeline rather than being a second tool in the pipeline), but it should not be described as best-in-class.
+
+**2. ReSharper's dead-code engine is now free in CI.** `qodana-cdnet` (ReSharper-based) runs under a **Community license** — no Ultimate subscription — with baseline, quality gate, coverlet import, and Quick-Fix. The prior revision's "ReSharper: CLT free (IDE paid)" framing understated the threat. `UnusedMember.Global` — the SWEA whole-program dead-code analysis Snipper spent 1.4.0–1.6.2 building toward — is now reachable in a CI pipeline at no licence cost. Snipper's remaining edge on this axis is *dependency-hygiene depth* (SNP0011/0012/0013) and certainty tiers, not dead-code coverage.
+
+**3. Snipper has no governance story at all.** It has `--baseline`, which is a new-findings gate — genuinely useful, and parity with SonarQube's new-code gate is close. Beyond that it has no prioritization (no complexity, no churn), no architecture modelling, no history, no suppression accounting, and no agent surface. Every tool in §3 that competes on entropy *rate* rather than entropy *stock* does so with data Snipper does not collect.
+
+**Where Snipper still leads** is unchanged and real: SNP0011/0012/0013 (orphan projects, redundant transitive packages, framework-inbox packages), SNP0018 (obsolete dead code), the read-only CI-first shape with no mandatory build, and the certainty-tier doctrine. §5.
 
 ---
 
-## 2. Gaps ranked by developer value
+## 1. What this revision is for
 
-### Tier 1 — cheap for Snipper, very high perceived value (fits the syntax-first architecture)
+The doc answers three questions, in order:
 
-1. **Unused usings (IDE0005 parity).** ✅ **Shipped 1.2.0 as SNP0019** — via compiler-diagnostic surfacing (CS8019 incl. global usings, CS8933 duplicates), Guaranteed tier.
-2. **Severity/suppression configuration.** ✅ **Shipped 1.2.0** — `snipper.json` with per-rule severity/off, namespace exclusions, and path globs, applied at report time so baselines never churn.
-3. **Commented-out code (Sonar S125 parity).** ✅ **Shipped 1.2.0 as SNP0020** — comment-trivia code-likeness heuristic, Advisory tier.
-
-### Tier 2 — the biggest functional gaps developers notice
-
-4. **Read-vs-write analysis.** ✅ **Shipped 1.3.0 as SNP0021** — write-only private fields at High tier via syntax-role read/write classification at reference locations; unassigned fields deliberately remain SNP0001/CS0649.
-5. **Auto-fix mode.** ❌ **Rejected 2026-09-15** — read-only is a permanent design tenet; ReSharper/VS own the removal workflow, Snipper owns CI-grade detection.
-6. **Redundancy sweep.** ✅ **Complete 1.4.0 as SNP0022 + SNP0025 + SNP0026** — per-pattern rules, each soundness-gated: default-value argument and method type arguments verified by speculative re-binding (1.3.1), redundant cast proven by the type system itself (identity conversions only — removal cannot change the static type).
-
-### Tier 3 — differentiating but harder
-
-7. **Hierarchy dead code** (`VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`). ✅ **Shipped 1.4.0 as SNP0023** — solution-wide `InheritanceGraph` index; Moderate, demoted to Advisory on exported surfaces/friend assemblies; type-name string/JSON evidence (plugin loading) suppresses. **1.6.0 adds SNP0027** (`UnusedMemberHierarchy` parity): override families whose references never leave the chain.
-8. **Tightening rules** (can-be-static/readonly/sealed/private). ✅ **Shipped 1.4.0 as SNP0024** — CA1822/IDE0044/CA1852 parity at flat Advisory; dogfood-proven (caught two genuine tightenings in Snipper itself on first run). **1.6.0 adds can-be-private** (locality proof over containing-type spans; caught two more own findings on first dogfood).
-9. **Duplicate detection.** dupFinder-style token hashing; a separate engine but monorepo gold. **Shipped 1.6.3 as SNP0031, opt-in** — token-shingle engine, syntax-only (no semantic model bound), Advisory, behind `--duplicate-detection`. Ships opt-in rather than by default because on Snipper's own solution it reported 1,160 findings across ~988 clone sets before guards: all 17 workspace analysers share one 200+ token structural skeleton (project loop, document loop, `GetSemanticModelAsync`, `ShouldSkipDocument`, `DescendantNodes`), and token normalization makes every identifier identical. A cross-directory guard plus collapsing nested extension matches reduces that to 2 — both the `--version` short-circuit, triaged as load-bearing (Program.cs must answer before MSBuildLocator binds). Monorepo A/B: 5,439 findings / 1,659 clone sets in 52.6s, with the EcfMessages twins caught as a 129-token fragment. Constant tables and entry-point preambles dominate the output by nature — every `const` declaration normalizes to the same shape. ([`plan_1_6_3.md`](plan_1_6_3.md))
-10. **Runtime/coverage evidence.** Import coverlet output as a certainty channel (coverage ≠ usage, but strong corroborating evidence — NDepend's model).
-11. **Cross-language reach.** Unused `.resx` keys; XAML/Razor name evidence (the `AssemblyNameEvidenceScanner` pattern generalises here).
+1. **§2 — Detection parity.** For each class of finding, who finds it? (Snipper's home turf; mostly closed.)
+2. **§3 — Entropy governance.** Who can tell a maintainer *where* to spend effort, *prove* debt is not growing, and *stop* it growing? (Snipper is largely absent. This is where the opportunity is.)
+3. **§6 — What nobody offers.** The features a large-codebase maintainer needs that no tool in either matrix provides, ranked, with each one's nearest neighbour named honestly so the novelty claim can be audited.
 
 ---
 
-## 3. What developers value most
+## 2. Matrix A — detection parity (findings)
 
-Evidence-weighted; qualitative items marked.
+✓ = strong/native · ~ = partial · — = absent. Rider shares ReSharper's engine → one column, now including Qodana's CI packaging of it.
 
-1. **Design-time "unused symbol" detection with solution-wide scope.** JetBrains ships solution-wide analysis *on by default* in Rider despite its cost — unused-symbol greying is the feature users most associate with "the IDE keeps my codebase clean." *(Qualitative)* community threads on "why keep ReSharper" consistently name dead-code detection a top reason.
-2. **Fix-in-place and bulk cleanup.** Detection without a one-click fix is considered table stakes; JetBrains investing in a free `CleanupCode` CLT signals CI-side demand for *automated* removal, not just reports.
-3. **Remove unused usings.** IDE0005 + "on save" cleanup is among the most-used hygiene features in VS; universally enabled in `.editorconfig` cleanup profiles.
-4. **Remove unused references.** *(Qualitative)* the Rider YouTrack request for NuGet-aware unused-reference removal was among its most-voted issues for years before shipping as a headline 2023.1 feature. This validates Snipper's dependency-hygiene axis — and note **no one has caught up to SNP0012/0013 yet**.
-5. **New-code gating.** SonarQube's flagship value proposition: teams don't want 4,000 legacy findings, they want "no *new* entropy." Snipper's `--baseline` is the right primitive; parity here is already good.
-6. **Confidence signalling.** ReSharper's `.Global`/`.Local` inspection split and per-rule severities solve the same trust problem as Snipper's certainty tiers — the market has validated tiered-confidence design.
+| Capability | Snipper | ReSharper / Rider + Qodana | VS + Roslyn | NDepend | SonarQube | jscpd / PMD CPD |
+|---|---|---|---|---|---|---|
+| **Dead code** | | | | | | |
+| Unused private members | ✓ SNP0001 | ✓ `UnusedMember.Local` | ✓ IDE0051/CA1823 | ✓ | ✓ S1144/S1068 | — |
+| Unused internal/public symbols | ✓ SNP0005/0006 | ✓ `UnusedMember.Global` (SWEA) | — | ✓ | ~ (private-focused) | — |
+| Unused locals / parameters | ✓ SNP0009/0010 | ✓ | ✓ IDE0059/IDE0060 | — | ✓ S1481/S1172 | — |
+| Unreachable statements | ✓ SNP0002 | ✓ | ✓ CS0162 | — | ✓ | — |
+| Obsolete zero-usage members | ✓ **SNP0018 (unique)** | — | — | — | — | — |
+| Field written, never read / unassigned | ✓ SNP0021 (unassigned stays SNP0001/CS0649) | ✓ `NotAccessedField`, `UnassignedField` | ✓ IDE0052, CS0649 | — | ✓ S4487 | — |
+| Event never invoked | ✓ SNP0030 | ✓ `EventNeverInvoked` | ~ | — | ~ | — |
+| Return value never used / param-only-precondition / out discarded / nameof-only | ~ (SNP0021 covers two slices) | ✓ 4 inspections | — | ~ (CQLinq) | — | — |
+| Hierarchy dead code | ✓ SNP0023 + SNP0027 | ✓ `VirtualMemberNeverOverridden`, `ClassWithVirtualMembersNeverInherited`, `UnusedMemberHierarchy`, `UnusedMemberInSuper` | — | ~ | ~ | — |
+| **Redundancy sweeps** | | | | | | |
+| Unused usings | ✓ SNP0019 (CS8019 + CS8933, incl. globals) | ✓ `RedundantUsingDirective` (+global) | ✓ IDE0005 | — | ✓ S1128 | — |
+| Redundant casts / qualifiers / type args / default args | ~ SNP0022/0025/0026/0028 (all soundness-gated; rest not covered) | ✓ 103 "Redundancies in Code" | ~ IDE00xx subset | — | ~ | — |
+| Empty ctor/dtor/namespace, redundant overload/override/initializer/partial | ~ SNP0029 (two slices) | ✓ | ~ | — | ~ | — |
+| Commented-out code | ✓ SNP0020 | — | — | — | ✓ S125 | — |
+| **Tightening (entropy prevention)** | | | | | | |
+| can-be-static / readonly / sealed / private / internal / const / init-only / file-local | ~ SNP0024 (static, readonly, sealed, private) | ✓ `MemberCanBeMadeStatic`, `FieldCanBeMadeReadOnly`, `ClassCanBeSealed`, `MemberCanBePrivate/Internal/FileLocal`… | ~ CA1822, CA1852, IDE0044 | ~ | ~ | — |
+| **Dependency hygiene** | | | | | | |
+| Unreferenced `PackageReference` | ✓ SNP0003 | ✓ Rider (NuGet-aware); Qodana license audit | ✓ "Remove Unused References" | ~ | — | — |
+| Unreferenced `ProjectReference` | ✓ SNP0004 | ✓ | ✓ | ✓ | — | — |
+| Redundant transitive direct package (lock-file graph, version-aware) | ✓ **SNP0012 (unique)** | — | — | — | — | — |
+| Framework-inbox package (`PackageOverrides.txt`) | ✓ **SNP0013 (unique)** | — | — | — | — | — |
+| Orphan / detached projects (graph + filesystem sweep) | ✓ **SNP0011 (unique)** | — | — | ~ (unused assemblies) | — | — |
+| Outdated / vulnerable / deprecated packages | — | ✓ Rider NuGet health; Qodana vulnerability checker | ✓ NuGet Audit | — | — | — |
+| License compliance | — | ~ (Qodana, paid tiers) | — | — | ~ | — |
+| **Cross-language assets** | | | | | | |
+| Unused `.resx` keys; XAML/Razor symbol usage | — (tracked) | ✓ (XAML, Razor, ASP.NET, Resx in engine) | — | — | ~ | ~ (224 langs) |
+| **Duplication** | | | | | | |
+| Exact clones (Type-1) | ✓ SNP0031 | ✓ dupFinder CLT | — | ✓ | ✓ CPD | ✓ (default) |
+| Renamed clones (Type-2) | ✓ SNP0031 | ✓ | — | ~ | ~ | ✓ `--ignore-identifiers` |
+| Near-miss clones (Type-3) | — | ~ | — | ~ | — | ✓ `--max-gap-lines`, `--similarity` (AST, JS/TS) |
+| Semantic clones (Type-4) | — | — | — | — | — | ~ experimental, `--semantic`; **C# in language list** |
+| Same-directory clone suppression | ✓ SNP0031 (measured 1160→2) | — | — | — | — | ✓ `--skipLocal` |
+| Clone **drift** (copies that should have been fixed together) | — | — | — | — | — | — (see §6.1; CPD docs concede it is unsolved) |
+| **Runtime evidence** | | | | | | |
+| Coverage-driven "never executed" code | — (tracked) | ✓ dotCover; Qodana fresh/total coverage | — | ✓ (imports coverage) | ~ | — |
+| Dead code kept alive *only* by tests | — | — | — | ~ (derivable) | ~ | ~ (`--dead-code` confidence, JS/TS/Py/Rust) |
+| **Complexity / size** | | | | | | |
+| Cyclomatic / cognitive complexity, nesting | — | ✓ | ~ | ✓ | ✓ | ~ (`--complexity` ranking) |
+| **Workflow** | | | | | | |
+| Auto-fix / bulk cleanup | — (read-only tenet) | ✓ CleanupCode; Qodana CLEANUP/APPLY; Quick-Fix | ✓ Code Cleanup + `dotnet format` | — | ~ (AI CodeFix) | — |
+| Safe-delete with usage preview | — | ~ | ~ | — | — | — |
+| Severity/suppression config | ✓ `snipper.json` | ✓ `.editorconfig` + `.DotSettings` + `qodana.yaml` | ✓ `.editorconfig` | ✓ | ✓ quality profiles | ✓ `.jscpd.json` |
+| CI baseline / new-code gate | ✓ `--baseline` | ✓ Qodana baseline + `--fail-threshold` | — | ✓ | ✓✓ (industry reference) | ✓ clone baseline, `--fail-on-new-clones` |
+| Baseline without a committed file (`--baseline-from-ref`) | — (generate from a checkout) | ~ | — | — | ✓ reference branch | ✓ |
+| SARIF output | ✓ | ✓ (default since 2024.1) | ~ | — | ✓ | ✓ |
+| Design-time squiggles | — | ✓✓ | ✓✓ | ✓ | ✓ (SonarLint) | — |
+| Git blame / authorship attribution | — | ~ | ~ | — | ✓ (auto-assigns new issues to author) | ✓ `--blame` |
+| Agent / MCP surface | — | ~ (VS Code, Qodana Cloud API) | ~ (Copilot) | — | ✓ **MCP server**, Gitar, AC/DC | ✓ **MCP server**, agent skills, `ai` reporter |
+| Free & open-source | ✓ | **✓ via `qodana-cdnet` Community** | ✓ | paid | community tier | ✓ |
+
+**Matrix A verdict.** Detection parity on Snipper's home turf is genuinely good — competitive on dead code, ahead on redundancy, unique on dependency hygiene. Two concrete parity gaps remain: **clone kinds** (Type-3 absent; Type-4 experimental in jscpd) and **attribution** (`--blame`-style authorship, cheap). Both are in §7.
 
 ---
 
-## 4. Where Snipper already leads
+## 3. Matrix B — entropy governance (the axis Snipper never competed on)
 
-- **SNP0012** — redundant transitive packages via real lock-file graphs with version-range awareness. Nothing in the ecosystem does this; ReSharper/Rider/VS only flag *wholly unused* references.
+✓ = strong/native · ~ = partial · — = absent.
+
+| Capability | Snipper | ReSharper / Qodana | SonarQube | CodeScene | NDepend | ArchUnitNET / jQAssistant | jscpd |
+|---|---|---|---|---|---|---|---|
+| **Prioritization** | | | | | | | |
+| Complexity metrics | — | ✓ | ✓ | ✓ Code Health™ | ✓ | — | ~ |
+| Churn / hotspot (change frequency) | — | — | ~ (SCM analysis) | ✓✓ core product | — | — | ~ (`--blame` dates) |
+| Hotspot = churn × health, ranked | — | — | — | ✓✓ | ~ | — | — |
+| Change coupling (files that change together) | — | — | — | ✓ | — | — | — |
+| Bus-factor / offboarding risk | — | ~ (Qodana `.mailmap` counts contributors) | ~ | ✓ simulation | — | — | ~ (`--blame`) |
+| **Gating / trend** | | | | | | | |
+| New-findings gate | ✓ `--baseline` | ✓ baseline + fail-threshold | ✓✓ new-code quality gate | ✓ Delta Analysis / PR review | ✓ | ✓ (tests) | ✓ clone baseline |
+| Per-author attribution of new issues | — | ~ | ✓ | ✓ | — | — | — |
+| New-code trend over time | — (needs history) | ✓ Insights | ✓ "Tracking new code trends" | ✓ | ~ | — | ~ |
+| **Entropy as a rate, normalized by churn, with a budget** | — | — | — | ~ Goals (degradation alerting, complexity-based) | — | — | — |
+| **Suppression / baseline integrity** | | | | | | | |
+| User false-positive / won't-fix workflow | — | — (baseline only) | ✓ | ~ | — | — | — |
+| Audit suppressions themselves (count, age, rule mix, what they hide) | — | — | — | — | — | — | — |
+| **Architecture** | | | | | | | |
+| Dependency-direction / layering rules | — | ~ (inspections + Rider diagrams) | ~ (dependency rules, cycles) | ✓ change-coupling map | ✓ dependency graph | ✓✓ **purpose-built** | — |
+| Rules hand-authored by the maintainer | — | — | ~ | — | ~ | ✓✓ | — |
+| Architecture **inferred** from history, then erosion reported | — | — | — | ~ (adjacent) | — | — | — |
+| **Dead-code-specific governance** | | | | | | | |
+| Dead code vs live coverage cross-check | — (tracked) | ✓ | ~ | — | ✓ | — | ~ |
+| **Structural self-consistency** | | | | | | | |
+| Analysed-region accounting (what the tool *cannot* see: `#if`, generated, excluded) | — | — | ~ (exclusions visible in UI) | — | — | — | — |
+| **Agent consumption** | | | | | | | |
+| MCP server / agent skills / token-efficient report | — | ~ | ✓ | ✓ (VS Code ext, CLI hooks, skills) | — | — | ✓ |
+
+**Matrix B verdict.** Snipper has exactly one cell in this matrix: the new-findings gate. CodeScene's *Goals* feature (mark a hotspot **Supervise** — "shouldn't grow worse" — and it fails the goal when the code degrades) is the single closest thing in the market to entropy governance, and it is commercial, complexity-metric-based, and closed. SonarQube's new-code gate plus automatic per-author assignment plus trend view is the most *complete* governance story available as a product, and it is a stock-and-author story, not a rate story. The cells marked "—" for Snipper are §6's opportunity list.
+
+---
+
+## 4. Where Snipper is behind (explicit gap list)
+
+1. **Duplication: behind on clone kinds and badly behind on speed.** Type-3 absent; Type-4 experimental elsewhere. 52.6 s vs jscpd's advertised 3.4 s on a smaller corpus.
+2. **Zero prioritization.** No complexity, no churn, no hotspots. Consequence: Snipper cannot answer "which 200 of these 2,839 findings matter?", and cannot rank its own output. This also blocks every hotspot-flavoured idea in §6.
+3. **No suppression accounting.** Snipper *applies* suppressions at report time and therefore knows exactly which findings each one killed — and never says so. A user cannot audit how much of their "clean" status is suppression.
+4. **No history.** Every run is a fresh full analysis (188 s on the 3,070-file monorepo). No delta mode, no rate, no trend.
+5. **No agent surface.** jscpd and SonarQube both ship MCP servers; Snipper emits JSON/SARIF only. This is the cheapest gap on this list and the most strategically relevant — agent-mediated consumption is becoming the primary interface for this category.
+6. **No architecture modelling.** Layering, cycles, and fitness functions are entirely absent (a deliberate non-goal to date, never explicitly argued).
+7. **Attribution.** No `--blame` equivalent on findings.
+8. **Free ReSharper in CI** (`qodana-cdnet`) means dead-code parity must be defended on certainty and dependency depth, not coverage.
+
+---
+
+## 5. Where Snipper leads
+
+- **SNP0012** — redundant transitive packages via real lock-file graphs with version-range awareness. Nothing in the ecosystem does this; ReSharper/Rider/VS only flag *wholly unused* references, and now do so for free in CI.
 - **SNP0013** — framework-inbox packages via `PackageOverrides.txt`. Unique.
 - **SNP0011** — orphan + detached projects with plugin-loading string evidence. Unique; no tool sweeps for projects abandoned on disk.
 - **SNP0018** — obsolete-member dead code. Unique.
-- **CI-first shape** — read-only, fast (no mandatory build; InspectCode builds by default), SARIF + JSON + baseline in a zero-dependency global tool. InspectCode only matched SARIF in 2024.1 and still has no baseline concept.
-
-**Bottom line (2026-09-18):** Snipper owns the *dependency-hygiene* quadrant outright and, as of 1.4.0, has closed the daily-visible parity gaps — unused usings (SNP0019), commented-out code (SNP0020), suppression config (`snipper.json`), read/write flow analysis (SNP0021), the redundancy sweep (SNP0022/0025/0026), hierarchy dead code (SNP0023 — formerly ReSharper-exclusive), and tightening (SNP0024). **Update 2026-09-19 (1.5.x–1.6.0):** framework evidence closed the data-contract FP flood (SNP0006 −28% on the monorepo, contract-based after the 1.5.1 course-correction); parallelism adoption (0-drift gate) cut the monorepo bottleneck 165s → 58s; the 1.6.0 gap-filler sweep added the upcast cast variant, can-be-private, redundant qualifiers (SNP0028), empty ctor/dtor (SNP0029), override-family dead code (SNP0027), and never-raised events (SNP0030) — 26 rule IDs. **Update 2026-09-21 (1.6.1–1.6.2):** two FP-review rounds against the live monorepo hardened accuracy end-to-end — transitive consumer/upstream flow for SNP0003/0004, stamped reports (`commitSha` + `lineText`, mechanically verifiable findings — an external agent applied 35/39 with zero breakage), the corrected/expanded framework-dispatched contract evidence (OpenApi/Swashbuckle/xUnit/MVC/MediatR-pipeline), reflection plugin-by-scan evidence, and two root-cause fixes (SNP0020 block locations, attribute-class reference discovery). Both rounds also *upheld* challenged true positives with strip-compile proof (SNP0025 inference shapes, the sibling-namespace SNP0028). The remaining deltas are deliberate or unscheduled: auto-fix is rejected (read-only tenet); **duplicates shipped in 1.6.3 as opt-in SNP0031** ([`plan_1_6_3.md`](plan_1_6_3.md)); coverage import and .resx/XAML evidence are tracked but not committed.
+- **Certainty tiers as a first-class axis.** Snipper's Guaranteed/High/Moderate/Advisory scale is *confidence the finding is correct*. SonarQube's MQR mode is *severity of impact on each software quality*; ReSharper's `.Global`/`.Local` split is *scope*. These are orthogonal axes and Sonar is the only peer that has made impact multi-dimensional — it has not made **confidence** a reported dimension. Pairs naturally with MQR into a 2-D severity × confidence matrix; nobody offers it.
+- **CI-first shape** — read-only, no mandatory build (InspectCode builds by default), SARIF + JSON + baseline in a zero-dependency global tool. InspectCode only matched SARIF in 2024.1 and still has no baseline concept; Qodana adds one but needs Docker/native runner setup and a JetBrains account for anything beyond the free tier.
+- **Compounding FP discipline.** Two FP-review rounds against a live 3,070-file monorepo with strip-compile proofs, and a record of *upholding* challenged true positives rather than reflexively demoting rules. Most competitors report recall; Snipper documents soundness.
 
 ---
 
-## 5. Phase 3 candidate mapping
+## 6. Features no tool offers
 
-> **Superseded 2026-09-15 by [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md)**, which commits Waves 1–3 (1.2.0–1.4.0). Notable delta: candidate #5 (`--fix`) is **rejected** — Snipper is read-only forever by design.
+Ranked by expected impact on a large codebase's entropy trajectory. For each, the nearest existing neighbour is named so the novelty claim is auditable — several ideas that look original are **not**, and are marked as such.
 
-Gap → candidate rule, in suggested implementation order (Tier 1 first). IDs provisional.
+### 6.1 Clone drift / inconsistent-fix detection — *nearest neighbour: PMD CPD, which concedes it is unsolved*
 
-| # | Candidate | Gap closed | Certainty | Effort | Notes |
+PMD's CPD documentation says it plainly: *"failure to keep the code in sync may mean automated tools will no longer recognise these blocks as duplicates. This means the task of finding duplicates to keep them in sync when doing subsequent refactorings can no longer be entrusted to an automated tool… We thus advise developers to use CPD to help remove duplicates, not to help keep duplicates in sync."*
+
+This is a vendor stating that the most valuable half of duplication management is unassisted. The mechanism is straightforward and reuses SNP0031's index: for each clone set, walk git history and identify **copies that received a change the others did not** — then rank by whether the divergence is a bug fix (one copy got the null guard, three did not) or benign drift. jscpd's `--blame` yields authors and dates but no divergence analysis. Nothing computes it.
+
+Why this is first: it is the only item on this list that finds **correctness defects** rather than smells; it is the missing half of the feature Snipper just shipped; and it has unambiguous remediation (consolidate or delete the clone set). It also explains *why* duplication matters, which SNP0031 currently cannot.
+
+Caveat that must be stated in any plan: "one copy changed" is a heuristic, not proof. High-confidence subset — a change that looks like a defensive fix (`null`/guard/try/catch/exception/bounds) applied to one copy of a clone set, where the other copies are byte-identical to the pre-change text — is defensible; anything looser is a report of *possible* drift and belongs in a lower tier.
+
+### 6.2 Entropy as a rate, normalized by churn, with an enforced budget — *nearest neighbours: SonarQube new-code trends, CodeScene Goals; neither computes a churn-normalized rate*
+
+Every tool ships entropy **stock** (how many findings) or a **delta** (new findings since a reference). None ships a **rate** — findings added per unit of change — which is the number a maintainer is actually asked for in a quarterly engineering review, and the only one that is comparable across teams of different sizes and cadences.
+
+Design: persist a per-commit time series of (findings added, findings resolved, lines changed, commit SHA). Emit `new_findings / kLOC changed` per PR, per team, per month, with a configurable budget that fails CI. Snipper already stamps `commitSha` in its JSON report and already computes new-vs-baseline, so the increment is normalization plus a stored series. Cost: a small state file, no new analysis, no new semantic work.
+
+This is deliberately the cheapest high-impact item on the list. It is also the only one that directly answers the maintainer's question — *are we actually controlling entropy, or just not looking at the stock?*
+
+### 6.3 Suppression and baseline integrity audit — *nearest neighbour: none*
+
+Every long-lived codebase accumulates `#pragma: disable`, `[SuppressMessage]`, `.editorconfig` severities, and baseline entries. This is entropy disguised as cleanliness, and no tool reports on it. A maintainer inheriting a repository needs: total suppressions and their age distribution; which rules dominate; **findings suppressed and nothing else**; suppressions that are now obsolete (the code they covered is gone); and the headline question — *what fraction of our "clean" status is suppression currently buying us?*
+
+Snipper is unusually well-placed here: `snipper.json` is applied at report time, *after* baseline fingerprinting, so the analyser knows precisely which findings each exclusion removed and can attribute them. It is currently discarding that information. This is a governance feature rather than a detection feature, and it is the item most likely to be valuable to exactly the large-codebase maintainers this tool targets.
+
+### 6.4 Inferred architecture and erosion deltas — *nearest neighbour: ArchUnitNET/NetArchTest/jQAssistant (hand-authored rules), CodeScene change coupling (behavioural, adjacent)*
+
+Architecture erosion is the largest single source of long-run entropy in a large codebase, and the standard defence — fitness functions as executable tests — is **labour-intensive to author**, which is why most teams never do it. Nobody *infers* the architecture from dependency history, proposes candidate fitness functions, and then reports where the code has since violated them: *"Layer B took 14 new dependencies on Layer C since March, across 23 commits; here they are."*
+
+Note the honest caveat: this is a **recommendation** engine, not a gate. Inferring intent from history is inferable, not provable, so output must be proposals with evidence, never findings.
+
+### 6.5 Unanalysed-region accounting — *nearest neighbour: none*
+
+Every static analyser silently skips `#if` regions, generated code, and excluded paths. The tool's own entropy measurement is therefore quietly incomplete, and it never says so. Nothing reports *"18% of your lines sit inside conditional-compilation regions; findings there are unmeasured"*; nothing finds branches that are dead because the condition is a compile-time constant; nothing finds feature flags that are now permanently on or off.
+
+This is the cheapest item on the list and the best fit for Snipper specifically: `#if` regions are a **syntax-level** construct, so this needs no semantic model and fits the architecture that made SNP0031 cheap. It also raises trust — a tool that volunteers where it cannot see is more credible than one that presents partial coverage as total.
+
+### 6.6 Removal-safety evidence (proof, not auto-fix) — *nearest neighbour: auto-fix everywhere; proof nowhere*
+
+Auto-fix is broadly available: `dotnet format` and ReSharper CleanupCode, Qodana Quick-Fix with CLEANUP/APPLY strategies, SonarQube AI CodeFix (Claude Sonnet 4 / GPT-5.1 / Bedrock / self-hosted), CodeScene ACE. None of them emits **evidence that removal preserved behaviour**. Qodana's "CLEANUP" strategy is described as safe minor fixes; that is a claim, not an artifact.
+
+Snipper can attack this without breaking its read-only tenet: a `--verify-removals` mode that applies Guaranteed-tier removals in a **scratch worktree**, recompiles, and emits a proof artifact — referenced-symbol set unchanged, public API surface unchanged, no new compiler warnings. It mutates nothing the user owns. Snipper already stamps `lineText` + `commitSha` on every finding specifically so consumers can verify a finding still matches before applying it, and an external agent previously applied 35/39 findings with zero breakage — that is the raw material for a real proof rather than a claim.
+
+### 6.7 Also absent, lower priority
+
+- **Cross-repo / org-level duplication and convention drift.** Every tool is per-repository. Large organisations cannot ask "did we implement this three times across services?" or "which of these four utilities is canonical?". Requires an org-scoped index — a service, which conflicts with Snipper's shape (§7).
+- **Per-team entropy ledgers via CODEOWNERS.** SonarQube auto-assigns new issues to the introducing developer and CodeScene does team-coupling analysis; Qodana counts contributors via `.mailmap`. The missing piece is a deterministic, free, per-team burn-down ledger with an enforced budget. Organisationally high value; novelty is moderate, not high.
+- **Test-suite strength on surviving code** (mutation testing, e.g. Stryker.NET). Nobody combines "is this code dead?" with "do the tests that keep it alive actually constrain it?". Combining them yields *dead code that cannot be deleted safely* and *live code held together by assertions that mean nothing* — both genuinely expensive entropy. Large scope; mutation testing is expensive by nature.
+- **Semantic clone detection done properly.** jscpd has Type-4 experimentally; the 2026 literature is openly pessimistic ("current SOTA detectors remain vulnerable even to simple Type-2 and Type-3 transformations"). Not a differentiator to claim, and not a gap to close.
+
+---
+
+## 7. What the current shape rules out
+
+Constrained to Snipper's zero-dependency, single-binary, read-only, per-repository shape, the following are **off the table** and are recorded as deliberate non-considerations rather than oversights:
+
+- **MCP server / agent skills** (§4.5) — an MCP server is a long-running process or at minimum a second entry point; it is cheap in *code* but it changes the product from "one binary you run in CI" to "a service". **Recommended exception:** the `ai`/token-efficient reporter pattern (a compact flat clone list on stdout) delivers most of the value with none of the shape change, and is a ~1-day item.
+- **Org-scoped cross-repo index** (§6.7) — requires shared state at organisation scope. Not compatible; do not attempt.
+- **Hosting a time-series/dashboard** (§6.2, §6.7) — a rate needs somewhere to live. The mitigation is a **committed, diffable JSON state file** in the repository, which keeps the tool stateless and makes the ledger reviewable in PRs. That is a genuine design constraint, not an obstacle.
+- **Any LLM dependency** — Sonar AI CodeFix and CodeScene ACE both take an external model. Snipper can stay model-free and emit the deterministic inputs (`lineText`, `commitSha`, clone sets, divergence evidence) that an agent needs to do the fixing. This is a *stronger* position than embedding a model, given the zero-dependency tenet, and it should be stated as a deliberate choice.
+
+---
+
+## 8. Candidate mapping
+
+### 8.1 Committed — Wave 4 (see [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md))
+
+| # | Candidate | Gap | Certainty | Effort | Notes |
 |---|---|---|---|---|---|
-| 1 | **SNP0019 Unused using directives** ✅ shipped 1.2.0 | Tier 1.1 | Guaranteed | S | Shipped as compiler-diagnostic surfacing (CS8019 incl. global usings, CS8933 duplicates) after the spike proved coverage — even simpler than the original design. |
-| 2 | **Suppression & severity config** (`snipper.json`, per-rule severity, path/glob exclusions) ✅ shipped 1.2.0 | Tier 1.2 | — | M | Walk-up discovery, report-time application (baseline-stable), analysers skip when fully disabled. |
-| 3 | **SNP0020 Commented-out code** ✅ shipped 1.2.0 | Tier 1.3 | Advisory | S | Comment-trivia code-likeness heuristic; doc comments/license/URLs/TODO markers excluded. |
-| 4 | **SNP0021 Field assigned, never read** ✅ shipped 1.3.0 | Tier 2.4 | High | M | Syntax-role read/write classification at reference locations (compound/`++`/`ref` = read, `out`/simple assignment = write); serialization attributes demote to Moderate. Unassigned fields deliberately stay with SNP0001/CS0649 — no separate variant. |
-| 5 | **`--fix` for Guaranteed rules** (dry-run diff first; SNP0019 + SNP0002 initially) | Tier 2.5 | — | L | Keep read-only default; explicit opt-in; idempotent. |
-| 6 | **SNP0022/0025/0026 Redundant code sweep** ✅ complete 1.4.0 | Tier 2.6 | High | L | Per-pattern rules: SNP0022 (default-value argument) + SNP0025 (method type arguments) verified by speculative re-binding (1.3.1); SNP0026 (identity cast) proven by the type system — spike-confirmed IsIdentity discriminates every non-flag shape (1.4.0). Upcast variant deferred: stripping changes the static type (overload/`var` caveats). |
-| 7 | **SNP0023 Hierarchy dead code** ✅ shipped 1.4.0 | Tier 3.7 | Moderate | M | New shared `InheritanceGraph` index (the SNP0018 "override graph" turned out not to exist — per-symbol checks only). Class-level findings suppress member-level (root cause); usage gates keep zero-reference types/members with SNP0001/0005/0006; name-string/JSON evidence suppresses. |
-| 8 | **SNP0024 Tightening** (can-be-static, can-be-readonly, can-be-sealed) ✅ shipped 1.4.0 | Tier 3.8 | Advisory | M | CA1822/IDE0044/CA1852 parity at flat Advisory. can-be-readonly reuses the SNP0021 reference machinery via the extracted `FieldReferenceMap`. |
-| 9 | **Duplicate detection engine** (token-hash, cross-project) | Tier 3.9 | Advisory | L | **Shipped 1.6.3 as SNP0031, opt-in via `--duplicate-detection`** — token-shingle engine ([`plan_1_6_3.md`](plan_1_6_3.md)); a normal finding rule, not a separate report section (config/baseline/SARIF come free). Size revised M→L→**measured 52.6s** marginal on a 3,070-file monorepo (3.5× the planned ≤15s budget). Opt-in + cross-directory guard: Snipper's own solution 1,160 → 2 findings. |
-| 10 | **Coverage evidence import** (`--coverage coverlet.xml` → certainty adjust) | Tier 3.10 | (channel) | M | Downgrade/upgrade certainty; never a standalone finding. |
-| 11 | **Unused `.resx` keys; XAML/Razor evidence** | Tier 3.11 | Moderate | M–L | Generalise `AssemblyNameEvidenceScanner` to resource/view assets. |
+| 12 | **Clone drift / inconsistent-fix detection** (§6.1) | new | High (defensive-fix subset) / Advisory (possible drift) | L | Builds on SNP0031's index + git history. The missing half of the feature just shipped; finds correctness defects, not smells. Requires history access → first Snipper feature that reads git. |
+| 13 | **Entropy rate ledger** (§6.2) | new | — (metric, not a finding) | M | Churn-normalized new-findings rate with an enforced budget; committed JSON state file; no new analysis. Answers "are we controlling entropy?" |
+| 14 | **Suppression / baseline integrity audit** (§6.3) | new | Guaranteed (it is a count of our own config) | S–M | Snipper already knows which findings each exclusion killed and discards it. Highest value-per-effort on this list. |
 
-*Non-goals (deliberate):* design-time IDE integration, general lint/bug-risk inspections (compiler warnings, NRE detection — ReSharper/Roslyn territory), outdated/vulnerable package reporting (NuGet Audit / `dotnet list package` already own this).
+### 8.2 Tracked, not committed
+
+| # | Candidate | Gap | Certainty | Effort | Notes |
+|---|---|---|---|---|---|
+| 15 | **Unanalysed-region accounting** (§6.5) | new | Guaranteed | S | `#if`/feature-flag regions; constant-folded dead branches; permanently-on/off flags. Pure syntax — best architectural fit on the list. |
+| 16 | **Clone kinds: Type-3 near-miss** (§2) | parity | Advisory | M | jscpd parity. Lower priority than 12 — Type-3 on normalized tokens re-introduces exactly the structural-skeleton noise that forced SNP0031 behind a flag. Measure before building. |
+| 17 | **Finding attribution (`--blame` equivalent)** (§2) | parity | — | S | Author + last-touch date per finding. jscpd, Sonar and CodeScene all have it; Snipper does not. Prerequisite for per-team routing. |
+| 18 | **Complexity + churn as prioritization only** (§4.2) | new | — (not findings) | M–L | Deliberately **not** new complexity rules (non-goal): import both signals purely to *rank existing findings*, which is what unblocks hotspot-flavoured work without violating the lint non-goal. |
+| 19 | **Coverage evidence import** (carried) | Tier 3.10 | channel | M | `--coverage coverlet.xml`; adjusts certainty, never a standalone finding. Pairs with 6.7's dead-code-kept-alive-by-tests rule. |
+| 20 | **Unused `.resx` keys / XAML-Razor evidence** (carried) | Tier 3.11 | Moderate | M–L | Generalise `AssemblyNameEvidenceScanner` to resource/view assets. |
+| 21 | **Token-efficient `ai` reporter** (§7) | parity | — | S | jscpd `--reporters ai` parity; the cheap 80% of MCP. |
+
+### 8.3 Superseded / rejected
+
+| # | Candidate | Status |
+|---|---|---|
+| 5 | `--fix` for Guaranteed rules | ❌ Rejected 2026-09-15 — read-only is a permanent tenet. Superseded in spirit by candidate 16 (removal-safety *evidence*, §6.6), which proves safety without mutating the user's tree. |
+| — | Outdated/vulnerable packages | Non-goal — NuGet Audit and Qodana own it. |
+| — | Design-time IDE squiggles | Non-goal — ReSharper/Rider/SonarLint own it. |
+| — | General lint/bug-risk rules | Non-goal — compiler warnings and NRE detection are Roslyn/ReSharper territory. |
+| — | Auto-generated *complexity* rules | Non-goal — but see candidate 18, which imports complexity for ranking only. |
+| — | Org-scoped index, hosted dashboard, LLM fix generation | Rejected by shape (§7). |
