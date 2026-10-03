@@ -1,5 +1,6 @@
 namespace Snipper.Tests;
 
+using System.Collections.Frozen;
 using System.Text.Json;
 using FluentAssertions;
 using Snipper.Cli;
@@ -74,6 +75,66 @@ public sealed class ReportSchemaShould : IDisposable
             .GetProperty("physicalLocation")
             .GetProperty("region");
         region.GetProperty("snippet").GetProperty("text").GetString().Should().Be("private static void Unused() { }");
+    }
+
+    [Fact]
+    public void Omit_The_Suppression_Section_When_No_Audit_Was_Requested_For_BuildJson()
+    {
+        // Existing consumers must see byte-identical output when the flag is absent.
+        var json = CliRunner.BuildJson([Finding()], commitSha: null);
+
+        using var document = JsonDocument.Parse(json);
+        document.RootElement.TryGetProperty("suppression", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Include_The_Suppression_Audit_As_Its_Own_Section_For_BuildJson()
+    {
+        var audit = SuppressionAuditBuilder.Build(
+            [Finding(Path.Combine(_directory, "Generated", "a.cs"))],
+            Config(paths: ["**/Generated/**"]),
+            minimumCertainty: null,
+            disabledRuleShadowFindings: null,
+            namespaceShadowFindings: null,
+            shadowAnalysisRan: false,
+            globMatchesNoFile: null,
+            namespaceExists: null);
+
+        var json = CliRunner.BuildJson([Finding()], commitSha: null, audit);
+
+        using var document = JsonDocument.Parse(json);
+        var suppression = document.RootElement.GetProperty("suppression");
+
+        suppression.GetProperty("shadowAnalysisRan").GetBoolean().Should().BeFalse();
+        suppression.GetProperty("totals").GetProperty("findingsAnalysed").GetInt32().Should().Be(1);
+        suppression.GetProperty("totals").GetProperty("findingsDropped").GetInt32().Should().Be(1);
+        suppression.GetProperty("totals").GetProperty("hiddenDebtPercent").GetInt32().Should().Be(100);
+
+        var glob = suppression.GetProperty("pathGlobs")[0];
+        glob.GetProperty("selector").GetString().Should().Be("**/Generated/**");
+        glob.GetProperty("suppressedCount").GetInt32().Should().Be(1);
+        glob.GetProperty("channel").GetString().Should().Be("PathGlob");
+    }
+
+    [Fact]
+    public void Omit_A_Null_Certainty_Filter_From_The_Suppression_Audit_For_BuildJson()
+    {
+        var audit = SuppressionAuditBuilder.Build(
+            [Finding()], SnipperConfig.Empty, null, null, null, false, null, null);
+
+        var json = CliRunner.BuildJson([Finding()], commitSha: null, audit);
+
+        using var document = JsonDocument.Parse(json);
+        var suppression = document.RootElement.GetProperty("suppression");
+        suppression.TryGetProperty("certaintyFilter", out _).Should().BeFalse();
+    }
+
+    private static SnipperConfig Config(string[] paths)
+    {
+        return new SnipperConfig
+        {
+            ExcludedPathGlobs = paths.ToFrozenSet(StringComparer.Ordinal),
+        };
     }
 
     public void Dispose()

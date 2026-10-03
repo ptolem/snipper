@@ -31,7 +31,7 @@ dotnet tool uninstall --global Snipper
 ## Usage
 
 ```shell
-snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--baseline <path>] [--certainty-tier <tier>] [--exclude-namespaces <list>] [--config-analysis] [--duplicate-detection]
+snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--baseline <path>] [--certainty-tier <tier>] [--exclude-namespaces <list>] [--config-analysis] [--duplicate-detection] [--audit-suppressions]
 ```
 
 | Argument / Flag | Description |
@@ -39,12 +39,13 @@ snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--bas
 | `<path>` | Target `.sln`, `.slnx`, or `.csproj`. |
 | `[output-file]` | Optional report destination. Directory is created if missing. The JSON report stamps the tool version, generation time, and the analysed commit SHA (when the target is a git checkout — a dirty tree prints a warning); every finding carries `lineText`, the trimmed source line it points at, so consumers can verify a finding still matches before applying it. SARIF reports carry the same text as the region snippet. |
 | `--format json\|sarif` | Report format (default `json`). SARIF 2.1.0 integrates with GitHub Advanced Security, Azure DevOps, and other SAST consumers. |
-| `--baseline <path>` | Baseline file for CI adoption: previously recorded findings are suppressed, only **new** findings are reported, and the baseline is refreshed in place. |
+| `--baseline <path>` | Baseline file for CI adoption: previously recorded findings are suppressed, only **new** findings are reported, and the baseline is refreshed in place. Independent of every `snipper.json` channel — see [Configuration file](#configuration-file). |
 | `--certainty-tier <tier>` | Minimum certainty to report: `guaranteed`, `high`, `moderate`, or `advisory`. E.g. `--certainty-tier high` shows only Guaranteed and High findings. Applies to the terminal table and report file; the baseline always tracks the full finding set so switching tiers never churns it. |
 | `--version`, `-v` | Print the tool version and exit. |
 | `--config-analysis` | Opt in to configuration binding analysis (SNP0007/SNP0008). **Off by default**: indirect binding through referenced libraries and framework conventions makes its false-positive rate too high for default runs. |
 | `--duplicate-detection` | Opt in to duplicate-fragment detection (SNP0031). **Off by default**: token-normalized clone detection flags structurally uniform code, which is duplication by design in most codebases (every workspace analyser shares one project/document loop). Costs ~53s on a 3,000-file monorepo, so it is never paid unless asked for. |
-| `--exclude-namespaces <list>` | Suppress findings in the given namespaces (exact match plus sub-namespaces). Repeatable; each occurrence may be a comma-separated list. Code in excluded namespaces still counts as usage evidence — references from it keep other members alive. Applies to SNP0001/0002/0005/0006/0008/0009/0010/0019/0020/0021/0022/0023/0024/0025/0026/0027/0028/0029/0030/0031; assembly-level rules (SNP0003/0004) and JSON keys (SNP0007) have no namespace concept. SNP0031 resolves the namespace syntactically through the enclosing namespace declaration; for a fragment at file scope, exclude it with the special name `<global>`. Note: the baseline refreshes in place, so excluded findings drop out of it and resurface as new if the exclusion is removed later. |
+| `--exclude-namespaces <list>` | Suppress findings in the given namespaces (exact match plus sub-namespaces). Repeatable; each occurrence may be a comma-separated list. Code in excluded namespaces still counts as usage evidence — references from it keep other members alive. Applies to SNP0001/0002/0005/0006/0008/0009/0010/0019/0020/0021/0022/0023/0024/0025/0026/0027/0028/0029/0030/0031; assembly-level rules (SNP0003/0004) and JSON keys (SNP0007) have no namespace concept. SNP0031 resolves the namespace syntactically through the enclosing namespace declaration; for a fragment at file scope, exclude it with the special name `<global>`. Excluded findings are still recorded in the baseline, so removing an exclusion later does not resurface them as new. |
+| `--audit-suppressions` | Report what your suppressions are actually hiding, per channel, and flag any that have gone stale. Adds a `suppression` section to the JSON report (omitted entirely when the flag is absent). **Off by default**, and free when you have no suppressions: measured at 0.0s on `Snipper.slnx` with no `snipper.json`, and 0.8s (~10% marginal) with an exclusion configured — the shadow passes reuse the memoized compilations and symbol indexes, so they cost far less than a second full analysis. See [Suppression audit](#suppression-audit). |
 
 ### Exit codes
 
@@ -120,7 +121,68 @@ Snipper discovers `snipper.json` by walking up from the target solution/project 
 - `exclude.namespaces`: unioned with `--exclude-namespaces`; suppresses findings, never usage evidence.
 - `exclude.paths`: glob patterns (`**`, `*`, `?`) matched against finding paths — findings are filtered, evidence is retained.
 
-Config applies at report time, after baseline fingerprinting — toggling it never churns your baseline. Malformed files and unknown entries degrade to warnings, never failures.
+Malformed files and unknown entries degrade to warnings, never failures.
+
+**No suppression channel can churn your baseline.** Every configuration produces an identical
+baseline, so adding or removing a suppression never turns untouched code into a wall of "new"
+findings. Two mechanisms get there:
+
+| Channel | How it is kept churn-free |
+| --- | --- |
+| `exclude.paths`, `rules` severity overrides, `--certainty-tier` | Applied at report time, **after** fingerprinting. |
+| `exclude.namespaces`, `rules: "off"` | These suppress findings *before* they exist — namespace exclusions run inside the analysers, and a sole-rule analyser is never run at all. So when either is configured **and** you use `--baseline`, Snipper fingerprints the suppression-independent set: every finding that exists, ignoring config. Costs one extra analysis pass (~10% marginal, measured). |
+
+Two consequences worth stating plainly:
+
+- **Your baseline file legitimately grows the first time you run a version with this fix**, because it now also records findings for code you have excluded. That is the price of a baseline that means the same thing regardless of configuration.
+- **Findings you suppress stay out of the report.** They are baselined, not reported — suppression still works exactly as before.
+
+Run `--audit-suppressions` to see what those suppressions are hiding.
+
+## Suppression audit
+
+`--audit-suppressions` answers the question suppressions exist to raise: *what fraction of our "clean" status is suppression buying, and what is it hiding?*
+
+```shell
+snipper ./MyMonorepo.slnx report.json --audit-suppressions
+```
+
+Suppressions work through five channels, and they do not all work the same way. Two of them remove findings before those findings exist, so an honest count needs the tool to re-run analysis with suppressions lifted — that shadow run is why the flag is opt-in, and why it is skipped entirely when there is nothing to audit.
+
+The JSON report gains a `suppression` section (omitted completely when the flag is absent, so existing consumers see byte-identical output):
+
+```json
+{
+  "suppression": {
+    "shadowAnalysisRan": true,
+    "totals": {
+      "findingsAnalysed": 221,
+      "findingsHiddenByShadow": 35,
+      "findingsDropped": 0,
+      "findingsDowngraded": 5,
+      "findingsAfterSuppression": 221,
+      "hiddenDebtPercent": 14
+    },
+    "disabledRules": [{ "channel": "DisabledRule", "selector": "SNP0024", "suppressedCount": 30, "ruleIds": ["SNP0024"] }],
+    "namespaceExclusions": [{ "channel": "NamespaceExclusion", "selector": "CoreLib.Shadowing, Does.Not.Exist", "suppressedCount": 5, "detail": "aggregate over 2 namespace(s); per-namespace split not available" }],
+    "pathGlobs": [{ "channel": "PathGlob", "selector": "**/NoSuchDir/**", "suppressedCount": 0 }],
+    "severityOverrides": [{ "selector": "SNP0018", "downgradedCount": 5, "detail": "-> Advisory (was Highx3, Moderatex2)" }],
+    "obsolete": [
+      { "channel": "NamespaceExclusion", "selector": "Does.Not.Exist", "confidence": "Certain", "reason": "namespace is not declared anywhere in the analysed solution" },
+      { "channel": "PathGlob", "selector": "**/NoSuchDir/**", "confidence": "Certain", "reason": "matches no file in the analysed tree" }
+    ]
+  }
+}
+```
+
+`hiddenDebtPercent` is the headline: `(dropped + hidden-before-analysis) / total debt`. On Snipper's own repository, disabling a single rule that emits one `Advisory` finding reports **33%** — one suppressed finding is a third of everything the tool finds there.
+
+**Stale suppressions** are flagged with a confidence level, because the evidence genuinely differs:
+
+- `Certain` — the target provably does not exist: a glob matching no file in the tree, or an exclusion for an undeclared namespace. Safe to delete.
+- `Suspected` — the suppression matched nothing this run, but that can be legitimate. A rule that produced no findings may simply be clean; a glob over clean generated code is doing its job. Review, don't auto-delete.
+
+Two details worth knowing. A severity override can *cause* a suppression rather than soften one: `CertaintyTier` runs `Guaranteed=1 … Advisory=4` and the floor keeps `Certainty <= floor`, so a `High → Advisory` override pushes a finding *past* a `Moderate` floor. The audit credits the drop to the override rather than the floor. And namespace exclusions are reported as a single aggregate — per-namespace counts would need one shadow pass per namespace — with the `detail` field saying so rather than implying a split exists.
 
 ## Development
 

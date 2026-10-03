@@ -40,7 +40,7 @@ public sealed class BaselineServiceShould
         {
             BaselineService.Write(baselinePath, ["abc123", "def456"]);
 
-            var loaded = BaselineService.Load(baselinePath);
+            var loaded = BaselineService.Load(baselinePath).Fingerprints;
 
             loaded.Should().Contain("abc123").And.Contain("def456");
         }
@@ -58,7 +58,29 @@ public sealed class BaselineServiceShould
     {
         var loaded = BaselineService.Load(Path.Combine(Path.GetTempPath(), $"does-not-exist-{Guid.NewGuid():N}.json"));
 
-        loaded.Should().BeEmpty();
+        loaded.Fingerprints.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Carry_No_Commit_Reference_For_A_Baseline_Written_Without_One()
+    {
+        // 4B reports `noBaselineReference` rather than guessing a range, so the field has to
+        // survive a write that predates commit stamping.
+        var baselinePath = Path.Combine(Path.GetTempPath(), $"snipper-baseline-{Guid.NewGuid():N}.json");
+
+        try
+        {
+            BaselineService.Write(baselinePath, ["abc123"]);
+
+            BaselineService.Load(baselinePath).CommitSha.Should().BeNull();
+        }
+        finally
+        {
+            if (File.Exists(baselinePath))
+            {
+                File.Delete(baselinePath);
+            }
+        }
     }
 
     private static SnipperFinding CreateFinding(string baseDirectory, int lineNumber)

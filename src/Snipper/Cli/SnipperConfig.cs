@@ -5,10 +5,15 @@ using Snipper.Models;
 
 /// <summary>
 /// Resolved snipper.json configuration (schema "version": 1). Disabled rules are
-/// skipped entirely (their analysers never run); severity overrides and path-glob
-/// exclusions are applied to findings at report time, after baseline fingerprinting,
-/// so toggling config never churns the baseline. Path globs filter findings only —
+/// skipped entirely (their analysers never run). Path globs filter findings only —
 /// usage evidence from excluded paths is always retained.
+///
+/// Baseline safety (measured 2026-10-03, see <c>docs/plan_1_7_0.md</c>): no suppression
+/// channel can rewrite a baseline. Path globs and severity overrides apply after
+/// fingerprinting, and as of 4A-2 namespace exclusions and disabled rules are
+/// fingerprinted from the suppression-independent finding set, so a config toggle never
+/// changes what the baseline records. The accepted cost is that a baseline legitimately
+/// grows on first run to include findings for excluded code.
 /// </summary>
 internal sealed record SnipperConfig
 {

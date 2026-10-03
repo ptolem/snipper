@@ -184,7 +184,9 @@ This is deliberately the cheapest high-impact item on the list. It is also the o
 
 Every long-lived codebase accumulates `#pragma: disable`, `[SuppressMessage]`, `.editorconfig` severities, and baseline entries. This is entropy disguised as cleanliness, and no tool reports on it. A maintainer inheriting a repository needs: total suppressions and their age distribution; which rules dominate; **findings suppressed and nothing else**; suppressions that are now obsolete (the code they covered is gone); and the headline question — *what fraction of our "clean" status is suppression currently buying us?*
 
-Snipper is unusually well-placed here: `snipper.json` is applied at report time, *after* baseline fingerprinting, so the analyser knows precisely which findings each exclusion removed and can attribute them. It is currently discarding that information. This is a governance feature rather than a detection feature, and it is the item most likely to be valuable to exactly the large-codebase maintainers this tool targets.
+**Correction, 2026-10-03.** An earlier draft of this section claimed `snipper.json` is applied at report time for *every* channel, "so the analyser knows precisely which findings each exclusion removed". That is true of only three of the five channels. `exclude.namespaces` suppresses findings inside the analysers and `rules: "off"` for a sole-rule analyser prevents the analyser running at all, so for those two the analyser does **not** know what was removed — the findings never become objects. Measuring this is what produced the two non-obvious consequences: an honest audit needs an opt-in re-run with suppressions lifted, and those same two channels silently rewrote the baseline (measured −30 and −19 fingerprints on the SampleApp fixture). Both are now fixed — see [`plan_1_7_0.md`](plan_1_7_0.md).
+
+Snipper remains unusually well-placed here, for a different and better reason than the one originally claimed: all five channels funnel through two auditable places — `FindingFilter` for the report-time three, `ExclusionEngine.IsNamespaceExcluded` plus the analyser-removal path for the other two — so a single shared classifier can attribute every channel without duplicating the filter's logic. **Implemented** as `--audit-suppressions`. This is a governance feature rather than a detection feature, and it remains the item most likely to be valuable to exactly the large-codebase maintainers this tool targets.
 
 ### 6.4 Inferred architecture and erosion deltas — *nearest neighbour: ArchUnitNET/NetArchTest/jQAssistant (hand-authored rules), CodeScene change coupling (behavioural, adjacent)*
 
@@ -228,11 +230,13 @@ Constrained to Snipper's zero-dependency, single-binary, read-only, per-reposito
 
 ### 8.1 Committed — Wave 4 (see [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md))
 
-| # | Candidate | Gap | Certainty | Effort | Notes |
-|---|---|---|---|---|---|
-| 12 | **Clone drift / inconsistent-fix detection** (§6.1) | new | High (defensive-fix subset) / Advisory (possible drift) | L | Builds on SNP0031's index + git history. The missing half of the feature just shipped; finds correctness defects, not smells. Requires history access → first Snipper feature that reads git. |
-| 13 | **Entropy rate ledger** (§6.2) | new | — (metric, not a finding) | M | Churn-normalized new-findings rate with an enforced budget; committed JSON state file; no new analysis. Answers "are we controlling entropy?" |
-| 14 | **Suppression / baseline integrity audit** (§6.3) | new | Guaranteed (it is a count of our own config) | S–M | Snipper already knows which findings each exclusion killed and discards it. Highest value-per-effort on this list. |
+Candidate IDs here are **ranked by value**; the roadmap's `4A/4B/4C` are **sequenced by implementation order** (cheapest first). The two schemes are deliberately in different orders, so the mapping is given rather than left implicit.
+
+| # | Candidate | Roadmap | Gap | Certainty | Effort | Status | Notes |
+|---|---|---|---|---|---|---|---|
+| 14 | **Suppression / baseline integrity audit** (§6.3) | 4A | new | Guaranteed (it is a count of our own config) | S–M | **IMPLEMENTED** 2026-10-03, unreleased | `--audit-suppressions`. Highest value-per-effort on this list. Two of five channels needed an opt-in shadow re-run — see the correction in §6.3. |
+| 13 | **Entropy rate ledger** (§6.2) | 4B | new | — (metric, not a finding) | M | next | Churn-normalized new-findings rate with an enforced budget; committed JSON state file; no new analysis. Answers "are we controlling entropy?" Introduces Snipper's first real gate. |
+| 12 | **Clone drift / inconsistent-fix detection** (§6.1) | 4C | new | High (defensive-fix subset) / Advisory (possible drift) | L | after 4B | Builds on SNP0031's index + git history — the missing half of that rule. Finds correctness defects, not smells. Requires history access → first Snipper feature that reads git. |
 
 ### 8.2 Tracked, not committed
 
@@ -245,12 +249,13 @@ Constrained to Snipper's zero-dependency, single-binary, read-only, per-reposito
 | 19 | **Coverage evidence import** (carried) | Tier 3.10 | channel | M | `--coverage coverlet.xml`; adjusts certainty, never a standalone finding. Pairs with 6.7's dead-code-kept-alive-by-tests rule. |
 | 20 | **Unused `.resx` keys / XAML-Razor evidence** (carried) | Tier 3.11 | Moderate | M–L | Generalise `AssemblyNameEvidenceScanner` to resource/view assets. |
 | 21 | **Token-efficient `ai` reporter** (§7) | parity | — | S | jscpd `--reporters ai` parity; the cheap 80% of MCP. |
+| 22 | **Removal-safety evidence (proof, not auto-fix)** (§6.6) | new | — (evidence, not a finding) | L | `--verify-removals` applies Guaranteed-tier removals in a scratch worktree, recompiles, and emits proof that the referenced-symbol set and public API surface are unchanged. Mutates nothing the user owns, so it respects the read-only tenet. Supersedes candidate 5 in spirit. |
 
 ### 8.3 Superseded / rejected
 
 | # | Candidate | Status |
 |---|---|---|
-| 5 | `--fix` for Guaranteed rules | ❌ Rejected 2026-09-15 — read-only is a permanent tenet. Superseded in spirit by candidate 16 (removal-safety *evidence*, §6.6), which proves safety without mutating the user's tree. |
+| 5 | `--fix` for Guaranteed rules | ❌ Rejected 2026-09-15 — read-only is a permanent tenet. Superseded in spirit by candidate **22** (removal-safety *evidence*, §6.6), which proves safety without mutating the user's tree. *(An earlier draft cited "candidate 16" here; 16 is Type-3 near-miss clone detection. Removal-safety had no candidate ID at all, and §6.6 is a section number, not one.)* |
 | — | Outdated/vulnerable packages | Non-goal — NuGet Audit and Qodana own it. |
 | — | Design-time IDE squiggles | Non-goal — ReSharper/Rider/SonarLint own it. |
 | — | General lint/bug-risk rules | Non-goal — compiler warnings and NRE detection are Roslyn/ReSharper territory. |
