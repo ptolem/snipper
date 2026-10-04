@@ -5,7 +5,7 @@ pipeline recipes and gating strategies see [CI integration](ci-integration.md). 
 *means* see the [rule catalogue in the README](../README.md#rules); this document covers *how to run
 and filter it*.
 
-Every behaviour here was verified against the running tool on this repository (Snipper 1.6.3,
+Every behaviour here was verified against the running tool on this repository (Snipper 1.7.0,
 Wave 4 working tree). Where something is a limitation rather than a feature, it says so.
 
 ---
@@ -555,7 +555,7 @@ pipeline. Adopt it before adding any gate.
 
 ```json
 {
-  "toolVersion": "1.6.3",
+  "toolVersion": "1.7.0",
   "commitSha": "0f59d6d...",
   "generatedAtUtc": "2026-10-03T12:34:56Z",
   "findings": [

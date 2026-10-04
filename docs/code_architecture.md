@@ -4,7 +4,7 @@ A map of the codebase for people who want to contribute to it. It explains how S
 memory, how analysers run, and how findings become a report — and, importantly, which invariants you
 must not break when adding to it.
 
-Written against the Wave 4 working tree (1.6.3 + 4A/4A-2/4B/4C), ~13,800 lines of C# across 74
+Written against the 1.7.0 tree (Wave 4: 4A/4A-2/4B/4C plus the perf increment), ~13,800 lines of C# across 74
 files, zero third-party runtime dependencies beyond Roslyn, MSBuild, and Spectre.Console.
 
 For *using* the tool see the [usage guide](usage.md). For *why* the design is the way it is see

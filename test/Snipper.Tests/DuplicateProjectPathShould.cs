@@ -2,9 +2,7 @@ namespace Snipper.Tests;
 
 using FluentAssertions;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.Text;
 using Snipper.Analysis;
-using Snipper.Models;
 using Xunit;
 
 /// <summary>
@@ -82,7 +80,10 @@ public sealed class DuplicateProjectPathShould
     public async Task Union_Tfm_Instances_When_Testing_A_Referenced_Assembly_For_AnalyzeAsync()
     {
         var solution = BuildDuplicatePathShape();
-        var consumer = solution.Projects.Single(static p => p.Name == "Consumer");
+
+        // Assert the shape rather than binding an unused local: the assertion below is only
+        // meaningful if the consumer project actually exists.
+        solution.Projects.Should().ContainSingle(static p => p.Name == "Consumer");
 
         var act = async () => await new UnreferencedPackageAnalyser().AnalyzeAsync(solution, CancellationToken.None);
 

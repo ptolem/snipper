@@ -1,6 +1,6 @@
 # Competitive Analysis — Snipper vs. the Codebase-Cleaning Ecosystem
 
-**Date:** 2026-09-14 · **Updated:** 2026-10-03 · **Snipper version:** 1.6.3 (27 rule IDs: SNP0001–0013, 0018–0031; 353 tests)
+**Date:** 2026-09-14 · **Updated:** 2026-10-04 · **Snipper version:** 1.7.0 (28 rule IDs: SNP0001–0013, 0018–0032; 527 tests)
 **Scope:** features for *reducing the entropy of a large codebase* — dead code detection, redundancy/hygiene sweeps, dependency bloat, duplication, and the machinery that actually controls entropy: gating, prioritization, architecture, history, suppression, and agent consumption.
 
 The previous revision compared five tools that all perform *single-snapshot static* analysis of one repository. That was the wrong axis. Large-codebase entropy is not primarily a detection problem — it is a **governance** problem. A tool that finds 20,000 issues and cannot say which 200 matter, or cannot prove the next thousand commits will not add another twenty thousand, does not reduce entropy. This revision therefore splits the comparison in two (§2 detection, §3 governance) and adds the vendors that actually compete on the second axis.
