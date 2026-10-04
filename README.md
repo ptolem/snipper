@@ -31,7 +31,7 @@ dotnet tool uninstall --global Snipper
 ## Usage
 
 ```shell
-snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--baseline <path>] [--certainty-tier <tier>] [--exclude-namespaces <list>] [--config-analysis] [--duplicate-detection] [--audit-suppressions]
+snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--baseline <path>] [--certainty-tier <tier>] [--exclude-namespaces <list>] [--config-analysis] [--duplicate-detection] [--clone-drift] [--audit-suppressions] [--entropy-rate] [--entropy-budget <per-kloc>] [--entropy-ledger <path>] [--entropy-min-lines <n>] [--version]
 ```
 
 | Argument / Flag | Description |
@@ -44,8 +44,13 @@ snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--bas
 | `--version`, `-v` | Print the tool version and exit. |
 | `--config-analysis` | Opt in to configuration binding analysis (SNP0007/SNP0008). **Off by default**: indirect binding through referenced libraries and framework conventions makes its false-positive rate too high for default runs. |
 | `--duplicate-detection` | Opt in to duplicate-fragment detection (SNP0031). **Off by default**: token-normalized clone detection flags structurally uniform code, which is duplication by design in most codebases (every workspace analyser shares one project/document loop). Costs ~53s on a 3,000-file monorepo, so it is never paid unless asked for. |
+| `--clone-drift` | Report the **temporal one-sided fix** in a clone set: a commit that changed one copy of a duplicated region without touching its siblings. Emits `SNP0032` — `High` when the change reads as a defensive fix (`null`/guard/`try`/`catch`/bounds), `Advisory` otherwise. **Implies `--duplicate-detection`** and reuses its shingling pass, so there is no second analysis. Costs no extra analysis either: history is read in two batched git calls regardless of how many clone sets exist. **Off by default**, and silent outside a git repository. See [Clone drift](#clone-drift). |
 | `--exclude-namespaces <list>` | Suppress findings in the given namespaces (exact match plus sub-namespaces). Repeatable; each occurrence may be a comma-separated list. Code in excluded namespaces still counts as usage evidence — references from it keep other members alive. Applies to SNP0001/0002/0005/0006/0008/0009/0010/0019/0020/0021/0022/0023/0024/0025/0026/0027/0028/0029/0030/0031; assembly-level rules (SNP0003/0004) and JSON keys (SNP0007) have no namespace concept. SNP0031 resolves the namespace syntactically through the enclosing namespace declaration; for a fragment at file scope, exclude it with the special name `<global>`. Excluded findings are still recorded in the baseline, so removing an exclusion later does not resurface them as new. |
 | `--audit-suppressions` | Report what your suppressions are actually hiding, per channel, and flag any that have gone stale. Adds a `suppression` section to the JSON report (omitted entirely when the flag is absent). **Off by default**, and free when you have no suppressions: measured at 0.0s on `Snipper.slnx` with no `snipper.json`, and 0.8s (~10% marginal) with an exclusion configured — the shadow passes reuse the memoized compilations and symbol indexes, so they cost far less than a second full analysis. See [Suppression audit](#suppression-audit). |
+| `--entropy-rate` | Report findings added per kLOC changed, normalized by churn, plus a month-over-month history. Requires `--baseline`. Adds an `entropyRate` section to the JSON report (omitted entirely when the flag is absent). **Off by default**, and costs no measurable analysis time (7.0s vs 6.8s on `Snipper.slnx`): the numerator is already computed for the baseline and the denominator is two git calls. See [Entropy rate](#entropy-rate). |
+| `--entropy-budget <per-kloc>` | Turn `--entropy-rate` into a gate: exit `3` when a **scored** rate exceeds the budget. **Opt-in, with no default** — no budget is ever applied unless you pass one, so upgrading cannot break an existing build. Fails *open*: a rate that could not be measured never fails the run. |
+| `--entropy-ledger <path>` | Append each scored run to a committed JSON ledger, and include per-month aggregates in the report. Implies `--entropy-rate`. Recommended to write from your default branch only; two branches writing the same ledger will conflict. |
+| `--entropy-min-lines <n>` | Scoring floor in changed lines (default `50`). Below it the rate is reported but marked **not scored**, so the gate stays silent — a 5-line change carrying one finding would otherwise read as 200/kLOC. |
 
 ### Exit codes
 
@@ -54,6 +59,7 @@ snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--bas
 | `0` | Analysis completed (and report written, if requested). |
 | `1` | Usage error: missing/invalid arguments, missing target, or unopenable solution. |
 | `2` | Report could not be written to disk. |
+| `3` | Entropy budget exceeded (`--entropy-budget`). Distinct from `1` and `2` so a pipeline can tell a policy failure from a tool failure. |
 
 ### Examples
 
@@ -102,6 +108,13 @@ snipper ./MyMonorepo.slnx --baseline .snipper-baseline.json
 
 Framework entry points are excluded automatically: ASP.NET Core controllers, MediatR/MassTransit/Quartz handlers, hosted services, xUnit facts/theories, `IAsyncLifetime` fixtures and `[CollectionDefinition]` types, `[ModuleInitializer]` methods, entry-point (`Main`) containing types, source-generated members (`[LoggerMessage]`, `[GeneratedRegex]`), DI-registered services, members whose interface contracts have callers, interface implementations and override-chain members (polymorphic dispatch), and types whose names are spelled in string literals or configuration JSON (plugin loading by name). Framework-dispatched contracts are recognised by simple name — health checks, hosted services, exception handlers, FusionCache serializers, OpenApi transformers, Swashbuckle filters/examples (`IDocumentFilter`/`IOperationFilter`/`ISchemaFilter`/`IExamplesProvider`), xUnit serialization/test-case orderers, the MVC filter family (`IActionFilter`, `IOrderedFilter`, and the exception/result/resource/authorization twins), and MediatR pipeline behaviours — their implementations are framework-instantiated, so the type and its contract members are evidence. Types discovered by reflection assembly scans (`IsSubclassOf` / `IsAssignableFrom` plugin loading) are likewise treated as framework-instantiated. Package findings are additionally suppressed when the reference roots a transitive subtree the project actually uses (removal would break compilation).
 
+## Documentation
+
+| Document | Covers |
+| --- | --- |
+| [Usage guide](docs/usage.md) | Every option in depth, certainty tiers, the four suppression channels, glob and namespace semantics, the analyser→rule catalogue, report schemas, performance knobs, and known limitations. |
+| [Code architecture](docs/code_architecture.md) | For contributors: C4 context/container and class diagrams, a full run sequence, how code is loaded through Roslyn, the analyser contract and shared-index pattern, the filtering order, 16 invariants, and a checklist for adding a rule. |
+| [CI integration](docs/ci-integration.md) | Gating strategies for a large monorepo, baseline adoption, report-gating recipes with `jq`/PowerShell, the entropy budget, suppression hygiene, sharding, and ready-to-use GitHub Actions / Azure Pipelines / GitLab CI definitions. |
 ## Configuration file
 
 Snipper discovers `snipper.json` by walking up from the target solution/project directory (first file wins). Schema `"version": 1`:
@@ -112,7 +125,7 @@ Snipper discovers `snipper.json` by walking up from the target solution/project 
   "rules": { "SNP0010": "off", "SNP0018": "advisory" },
   "exclude": {
     "namespaces": ["Company.Generated"],
-    "paths": ["**/Generated/**", "src/Legacy/**"]
+    "paths": ["**/Generated/**", "**/Legacy/**"]
   }
 }
 ```
@@ -183,6 +196,126 @@ The JSON report gains a `suppression` section (omitted completely when the flag 
 - `Suspected` — the suppression matched nothing this run, but that can be legitimate. A rule that produced no findings may simply be clean; a glob over clean generated code is doing its job. Review, don't auto-delete.
 
 Two details worth knowing. A severity override can *cause* a suppression rather than soften one: `CertaintyTier` runs `Guaranteed=1 … Advisory=4` and the floor keeps `Certainty <= floor`, so a `High → Advisory` override pushes a finding *past* a `Moderate` floor. The audit credits the drop to the override rather than the floor. And namespace exclusions are reported as a single aggregate — per-namespace counts would need one shadow pass per namespace — with the `detail` field saying so rather than implying a split exists.
+
+## Entropy rate
+
+`--entropy-rate` answers the question a maintainer is asked in a quarterly review: *are we controlling entropy, or just not looking at the stock?* Every tool ships entropy **stock** (how many findings) or a **delta** (new since a reference). This ships a **rate** - findings added per kLOC changed - which is the only one of the three that is comparable across teams of different sizes and cadences.
+
+```shell
+snipper ./MyMonorepo.slnx report.json --baseline snipper.baseline.json --entropy-rate
+```
+
+### Why the denominator is not "this pull request"
+
+The obvious definition - new findings divided by lines changed in the PR - does not survive contact with real numbers. Holding code quality constant at **exactly one new finding**:
+
+| Change size | Rate |
+| --- | --- |
+| 5 lines | **200.0** /kLOC |
+| 50 lines | 20.0 /kLOC |
+| 251 lines (median commit on Snipper's own repo) | 4.0 /kLOC |
+| 2000 lines | **0.5** /kLOC |
+
+That is a **400x spread driven entirely by commit size**. A fixed budget would therefore be a measure of pull-request size, not of entropy: a budget of 5/kLOC passes a 251-line PR carrying one finding and fails a 5-line PR carrying one finding.
+
+So the denominator is anchored to the commit your baseline was stamped at. Snipper records that commit in the baseline file, and the changed-line count is taken over exactly the range the recorded findings came from - numerator and denominator provably cover the same span. Small ranges are handled by an explicit floor (`--entropy-min-lines`, default 50) rather than being averaged away: below it the rate is reported but marked **not scored**, and the gate stays silent. For a stable trend, use the per-month aggregate, whose denominator is large by construction.
+
+### The gate fails open, on purpose
+
+`--entropy-budget <per-kloc>` exits `3` when a **scored** rate exceeds the budget. Every other case is silent, because a metric that can break a build when git is missing trains people to switch it off. A rate that could not be measured is never `0.00`; it is one of seven named statuses, each with a printed reason:
+
+| Status | Meaning |
+| --- | --- |
+| `Scored` | Both halves measured; the rate is meaningful. |
+| `BaselineSeeded` | No baseline existed, so every finding counted as new. Re-run to score. |
+| `NoBaselineReference` | The baseline predates commit stamping. Re-baseline to score. |
+| `NotAGitRepository` | Not a git repository, or the revisions could not be read. |
+| `DirtyWorkingTree` | Uncommitted changes mean the analysed tree is not the analysed commit. |
+| `UnchangedRange` | The baseline commit is HEAD; nothing changed. |
+| `BelowMinimumChange` | Under the scoring floor. The rate is still shown. |
+
+**There is no default budget.** Upgrading cannot break an existing build, and the ledger has no history yet from which to derive a defensible default.
+
+### The operational requirement this creates
+
+Because a dirty tree is refused, **your baseline must be committed** and build output must be gitignored, or the rate can never be scored locally. That is the intent of a committed baseline anyway, but it is a real constraint rather than an implementation detail.
+
+### Ledger
+
+`--entropy-ledger <path>` appends each *scored* run to a committed JSON file - reviewable in a pull request, no service and no dashboard. Entries are replace-or-insert keyed on commit SHA, so a CI re-run cannot duplicate a row, and the file is sorted by commit rather than chronologically so a re-run produces a byte-identical file and diffs stay clean. The gate never writes; only an explicit `--entropy-ledger` run does. Write from your default branch, since two branches writing the same ledger will conflict.
+
+Only scored runs are recorded - a run that seeded a baseline or sat below the floor has no rate, and rows of nulls would make the ledger look fuller than the data is.
+
+```json
+{
+  "entropyRate": {
+    "status": "Scored",
+    "scored": true,
+    "newFindings": 12,
+    "resolvedFindings": 4,
+    "linesChanged": 1840,
+    "baselineCommitSha": "25b9a6a...",
+    "headCommitSha": "853625b...",
+    "minimumLines": 50,
+    "findingsPerKloc": 6.52,
+    "budget": 10.0,
+    "budgetExceeded": false,
+    "monthly": [
+      { "month": "2026-09", "newFindings": 88, "resolvedFindings": 31, "linesChanged": 21400, "findingsPerKloc": 4.11 }
+    ]
+  }
+}
+```
+
+`resolvedFindings` is a count, not a repair record: a fingerprint also disappears when its file is deleted or its message is rewritten.
+
+Not included: per-team attribution via CODEOWNERS. It needs CODEOWNERS parsing plus mapping each finding to an owner, and is deferred rather than half-shipped.
+
+The `entropyRate` section lands in the **JSON** report only, as with the suppression audit. With `--format sarif` the console table and the budget gate still work, but the SARIF file carries no entropy section.
+## Clone drift
+
+`--clone-drift` is the missing half of duplicate detection. SNP0031 tells you two regions are identical; 4C tells you when one copy of such a region was changed and the others were not.
+
+```shell
+snipper ./MyMonorepo.slnx report.json --clone-drift
+```
+
+PMD's CPD documentation concedes why this is worth building: *"failure to keep the code in sync may mean automated tools will no longer recognise these blocks as duplicates... we thus advise developers to use CPD to help remove duplicates, not to help keep duplicates in sync."* A vendor stating the valuable half of duplication management is unassisted. jscpd's `--blame` yields authors and dates but no divergence analysis. Nothing computes it.
+
+### What it actually reports, and the subtlety that shapes it
+
+SNP0031 builds clone sets from **current** text, so its members are token-identical *now*. The consequence is not obvious: **a copy that receives a fix stops being identical, and has already dropped out of the set.** So "one copy of a clone set got a fix" cannot be expressed in the present tense at all — it only exists historically.
+
+4C therefore reports the **event**, not the standing state:
+
+```
+SNP0032  High  One-sided defensive fix in a clone set of 2 copies: commit a1592e4
+        ("fix(A): guard empty label", 2026-10-03) changed this copy without touching
+        CloneFixtures.cs:1; an equivalent change reached the sibling later (62f48e4 on 2026-10-03).
+```
+
+Read that as: copy A got a guard; copy B did not, until a later commit. **The second half of the message is the actionable part** — it dates the window in which the copies were out of sync, or tells you no equivalent change ever arrived. A commit that *brought a copy into line* is reported as a resolution, not as new drift, so one inconsistency yields one finding rather than one per link in the chain.
+
+**The honest limit:** if the one-sided fix is still in place, the copies are no longer a clone set and 4C says nothing about them today. Detecting that case needs clone-set *breakup* search over history, which is the documented follow-up.
+
+### Tiers
+
+| Tier | Condition |
+| --- | --- |
+| `High` | One-sided, and the change reads as a defensive fix. |
+| `Advisory` | One-sided, with no fix-shaped marker: real drift, but not evidence of a defect. |
+
+Tier discipline matters more here than anywhere else in the tool. "One copy changed" is a heuristic, not proof, so the High tier is gated on the change actually looking like a fix, and the marker test is deliberately loose in the safe direction — it can only ever promote a change to fix-shaped, and it sits behind the one-sided requirement, which is the real filter.
+
+### Cost and behaviour
+
+Enabling drift costs **no extra analysis**. The clone sets SNP0031 already proved in the same pass are handed to the detector, and history is read in **two batched git calls** regardless of how many clone sets exist — per-path `git log` costs ~90 ms of process spawn on Windows, which would have made per-member lookups unusable.
+
+`--clone-drift` implies `--duplicate-detection` rather than erroring, since the two share one shingling pass. Outside a git repository it emits nothing and fails nothing. Merge commits are skipped, and renames are not followed.
+
+### It found a bug in its own author
+
+The first dogfood run reported SNP0032 `High` on Snipper's own repository: the new git runner duplicated an existing one, and a stderr-drain fix applied earlier in the session had landed in only one of the two copies. The fix was to delete the duplication — `GitProcess.cs` is now the sole place Snipper shells out to git — rather than suppress the finding. Post-fix, Snipper reports zero clone drift on itself.
 
 ## Development
 

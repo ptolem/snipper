@@ -1,14 +1,18 @@
-# Plan — Snipper 1.7.0: Wave 4, story 4A (suppression / baseline integrity audit)
+# Plan — Snipper 1.7.0: Wave 4 (4A, 4A-2, 4B, 4C) + the perf/correctness increment
 
-**Status: IMPLEMENTED for 4A and 4A-2** (2026-10-03). 395 tests green (was 353; +42). Dogfood back to the 1.6.3 baseline of 3 pre-existing findings, zero contributed by this change. Two of my own defects were caught by the dogfood run and fixed rather than suppressed — recorded in "What implementation changed". **The cost model below was wrong by roughly an order of magnitude and is corrected against measurement.**
+**Status: ALL FOUR STORIES IMPLEMENTED, UNRELEASED** (2026-10-04). **527 tests green** (353 at 1.6.3 → 469 at 4C → 520 after the `CliRunner` refactor → 527 with the perf increment). Dogfood at the 1.6.3 baseline of 3 pre-existing findings, **zero contributed** by any of this work. Eleven of my own defects were caught by dogfood runs, mutation testing, or A/B comparison and fixed rather than suppressed — recorded per story below.
 
-**Objective:** answer the question a suppression audit exists to answer — *what fraction of our current "clean" status is suppression buying, and what is it hiding?* — for every suppression channel Snipper supports, and flag suppressions that have gone stale.
+**`<Version>` is still `1.6.3`, the work is uncommitted, and nothing is published.** Per this repo's convention (`plan_1_6_3.md` reserves "SHIPPED" for after pack + `dotnet tool update`), 1.7.0 is not shipped. See [What is left for 1.7.0](#what-is-left-for-170) for the release gate.
 
-This is the first Wave 4 story and the first that adds **no new rules**. Wave 4 is a governance wave (`docs/Snipper-Feature-Parity-Roadmap.md`); adding a `FindingCategory` here would contradict that framing, so 4A is a **report**, not a finding.
+**Corrections to the original roadmap design, all established by measurement:** 4A was budgeted at ~2× analysis time and measured ~10%; 4B's per-pull-request denominator was measured to be dominated by commit size (a 400× spread) and replaced; 4C's present-tense framing was not expressible, because a copy that receives a fix *leaves* the clone set. **Two of my own performance hypotheses were also measured and rejected** — Server GC and disabling tiered JIT — see the perf section.
 
-Two corrections to the roadmap's 4A description, both established by measurement below: it is *not* "nothing new is analysed" (the two dominant channels require a shadow pass), and it does not cost ~2× analysis time (measured at ~10% marginal, because the expensive parts are memoized).
+**Objective of 4A–4C:** answer the question a suppression audit exists to answer — *what fraction of our current "clean" status is suppression buying, and what is it hiding?* — for every suppression channel Snipper supports, flag stale suppressions, measure whether new-finding entropy is actually controlled, and detect clone sets that were fixed inconsistently.
 
-Repo constraints (standing): no dynamic; no exceptions for flow control; FrozenSet/FrozenDictionary; syntax pre-filters first; `ArgumentNullException.ThrowIfNull`; evidence ≠ findings; red phase first with fixture scenarios in NEW files; deterministic sorted output; dogfood stays 0 or every new own-finding is triaged. Zero new dependencies (locked decision: single self-contained binary). Read-only tenet holds — 4A writes only its own report section.
+This is a governance wave (`docs/Snipper-Feature-Parity-Roadmap.md`), so 4A is a **report**, not a finding. 4C is the one story that finds **correctness defects** rather than smells.
+
+Two corrections to the roadmap's 4A description, both established by measurement below: it is *not* "nothing new is analysed" (the two dominant channels require a shadow pass), and it does not cost ~2× analysis time.
+
+Repo constraints (standing): no dynamic; no exceptions for flow control; FrozenSet/FrozenDictionary; syntax pre-filters first; `ArgumentNullException.ThrowIfNull`; evidence ≠ findings; red phase first with fixture scenarios in NEW files; deterministic sorted output; dogfood stays 0 or every new own-finding is triaged. Zero new dependencies (locked decision: single self-contained binary). Read-only tenet holds — 4A writes only its own report section, 4C reads git history read-only and degrades gracefully outside a checkout.
 
 ## Phase 0 — measured investigation (done, 2026-10-03)
 
@@ -320,11 +324,11 @@ findings respectively. Only the baseline's dependence on configuration is gone.
 
 ---
 
-# 4B — Entropy rate ledger (Phase 0 + design, 2026-10-03)
+# 4B — Entropy rate ledger (DESIGN → IMPLEMENTED, 2026-10-03)
 
-**Status: DESIGN SETTLED, implementation starting.** Decisions below were maintainer-confirmed
-after seeing the Phase 0 measurements. Nothing here is implemented yet; measured results are
-recorded in "Measured result" once the code exists.
+**Status: IMPLEMENTED** (2026-10-03). 438 tests green, +43 in `EntropyRateShould.cs`. Red phase verified by three mutations of the fail-open contract, each caught. No measurable analysis overhead (7.0s vs 6.8s). Dogfood found four defects in this change, all fixed. Implementation, measured results, honest limits and exit criteria are below; the Phase 0 investigation that produced the design is retained because the correction it forced is the most important thing here.
+
+Decisions below were maintainer-confirmed after seeing the Phase 0 measurements.
 
 **Objective:** answer the question a maintainer is actually asked in a quarterly review — *are
 we controlling entropy, or just not looking at the stock?* — as a churn-normalized **rate** with
@@ -588,3 +592,517 @@ defence behind the null rate, not the only one.
 - **A default budget.** Deliberately not shipped. Any default would fail existing builds on
   upgrade, and the ledger has no history yet from which to derive a defensible one.
 - **Cross-repository comparison.** The ledger format supports it; nothing consumes it yet.
+
+---
+
+# 4C — Clone drift / inconsistent-fix detection (Phase 0 + design, 2026-10-03)
+
+**Status: DESIGN SETTLED, implementation starting.** New rule **SNP0032**. Detect the temporal
+one-sided fix: a commit that added a defensive construct to one copy of a clone set without
+touching its siblings. Decisions confirmed by the maintainer after the Phase 0 findings below.
+
+**Objective:** the missing half of SNP0031. Per `competitive-analysis.md` §6.1, this is the only
+item on the Wave 4 list that finds **correctness defects** rather than smells, and the only one
+whose nearest neighbour concedes it is unsolved — PMD CPD's own documentation says automated tools
+cannot be entrusted with keeping duplicates in sync.
+
+## Phase 0 — measured investigation
+
+### The cost is two git calls, not one per clone set
+
+The obvious implementation — `git log` per member path — is unusable. Measured on this repository:
+
+| Operation | Cost |
+|---|---|
+| `git log --format=%H -- <path>` | **~90 ms** per call (process spawn) |
+| `git show --unified=0 <sha> -- <path>` | ~167 ms per call |
+
+At ~90 ms a call, per-member history lookups would dominate a run that already costs ~53 s on a
+3,000-file monorepo. Batching changes the shape entirely:
+
+| Batched form | Cost | Output |
+|---|---|---|
+| `git log --no-merges --format=%H --name-only` (whole repo, 1 call) | 100 ms | 19.2 KB |
+| `git log -p --no-walk --unified=0` for 30 commits (1 call) | 174 ms | 954.9 KB |
+| `git log -p --no-merges --unified=0 -- <4 member paths>` (1 call) | **94 ms** | **101.2 KB** |
+
+So 4C's git cost is **O(1) process spawns** — one path-filtered patch call per *batch of member
+paths*, not per member. Path filtering at the git level is what makes this work: 9x less output
+than the unfiltered equivalent. Paths are chunked per invocation and commits are capped, with
+truncation reported rather than silent.
+
+### The detection problem, which is not a detail
+
+**SNP0031 builds clone sets from current text, so its members are token-identical *now*.** A member
+that received a fix is therefore *no longer identical* and has already dropped out of the set.
+"One copy of a clone set received a fix the others did not" is not expressible in the present tense
+at all — it only exists historically.
+
+This rules out the naive reading of the roadmap's "identify copies that received a change the others
+did not". Three framings were considered:
+
+| Framing | Catches | Cost |
+|---|---|---|
+| **Temporal one-sided fix** *(chosen)* | The commit where a defensive fix landed on one member only. Reports which siblings still lack it today. | Flat — the plumbing measured above |
+| Clone-set breakup | Regions identical at an earlier commit but different now. Catches "A fixed permanently, B stale permanently". | Scales with history depth; needs similarity search over history |
+| Current-text clone sets + past commits | Nothing — a member that diverged is not in the set, so there is no set to attribute the divergence to. | n/a |
+
+Clone-set breakup is the more satisfying signal and is the natural follow-up; it does not fit the
+size 4C was budgeted at. The chosen framing has one honest limitation, recorded under "Honest limits":
+**if the fix is still in place, the copies are no longer a clone set and 4C reports nothing about
+them today.** It reports the *event*, not the standing state.
+
+### The coordinate problem, and why the chosen framing dissolves it
+
+A member's clone region is expressed in HEAD line numbers, but a patch's coordinates are the
+*parent's*. Reconciling the two across a long history is where this design would otherwise go wrong.
+
+The chosen framing sidesteps it entirely by **searching for the siblings' token stream in the
+commit's pre-image**. If the fix landed on member `M` at commit `C`, then `C^:M` still contains the
+original clone verbatim — because the siblings still hold it. So:
+
+1. Take the siblings' current token stream for the region as the **search key**.
+2. Find it inside `tokenize(git show C^:M)`. If absent, `M` was not a clone of them before `C`, so
+   no drift claim is made.
+3. The search yields pre-image line numbers, which are **exactly the coordinate system the patch's
+   `-` side already uses**. No reconciliation needed.
+
+The same search doubles as the High-tier proof required by §6.1 ("the other copies are byte-identical
+to the pre-change text"): if the key is found in the pre-image, they provably were.
+
+### Fixture scenario, verified end to end before designing against it
+
+Seeded `SampleApp`, then applied a defensive fix to **one** member of a 2-member set:
+
+```
+fix commit 7838644  "fix: guard empty label in MirroredPair.Render"
+  App/CloneFixturesMirrored.cs   @@ -11,0 +12,5 @@   (guard inserted)
+  CoreLib/CloneFixtures.cs       (untouched)
+```
+
+`git show 7838644^:App/CloneFixturesMirrored.cs` returns 88 lines with no guard; the working copy has
+5 guard lines at 12-16. The signal is present, unambiguous, and reachable with the plumbing above.
+
+## Design
+
+### Output
+
+A finding, not a report section — the maintainer's decision, and the right one for a correctness
+defect: a report section cannot fail CI and cannot appear in SARIF. New rule **SNP0032**,
+`FindingCategory` reused from the duplicate family so tiering and baselines behave like any other rule.
+
+### Certainty
+
+| Tier | Condition |
+|---|---|
+| `High` | One-sided **and** defensive-fix-shaped **and** at least one sibling still lacks the construct today. |
+| `Advisory` | One-sided and fix-shaped but every sibling now has it (resolved), or one-sided with no fix-shaped marker. |
+
+The third clause is what makes the finding actionable rather than historical trivia: it is the
+difference between "this codebase shipped inconsistent code" and "this happened once and was fixed".
+
+### Defensive-fix markers
+
+Conservative and token-based, per §6.1's `null`/guard/`try`/`catch`/exception/bounds list:
+`null`, `IsNullOrEmpty`, `IsNullOrWhiteSpace`, `??`, `?.`, `try`, `catch`, `finally`, `throw`,
+`ArgumentNullException`, `ArgumentOutOfRangeException`, `NullReferenceException`, `Length`, `Count`.
+One hit promotes a change to fix-shaped. Anything looser would manufacture High findings, which is
+how a drift rule gets switched off.
+
+### CLI
+
+`--clone-drift`. **Implies `--duplicate-detection`** rather than erroring, because the two share one
+shingling pass and asking users to pass two flags for one feature would be user-hostile. Outside a git
+repository, or with no usable history, 4C emits nothing and says so — never a crash, consistent with
+`GitMetadata`'s degrade-never-fail contract and the read-only tenet.
+
+## Honest limits
+
+- **A fix still in place is invisible to 4C today.** The copies have stopped being clones, so there
+  is no set to attribute the divergence to. This is the cost of the chosen framing and is the reason
+  clone-set breakup is the recommended follow-up.
+- **Temporal, not standing.** The finding describes a commit. It reports which siblings still lack
+  the construct now, but it is not proof that the missing construct was ever a live defect.
+- **Commit cap.** History is bounded and chunked; a truncated walk is reported in the finding, never
+  silently shortened.
+- **"One copy changed" remains a heuristic.** §6.1's caveat applies unchanged: the High tier is
+  defensible, the Advisory tier is a prompt to look, not a verdict.
+- **`--merge` commits are skipped**, so drift introduced and reverted within a merge is missed.
+
+### Correction to the design above, forced by building the fixture
+
+The sibling-token search described in Phase 0 **does not work**, and building the scenario proved
+why. Two findings, both from measurement rather than reasoning:
+
+**1. A one-sided fix that is still in place destroys the clone set.** Applying the guard to
+`App/CloneFixturesMirrored.cs` alone and committing it does not shrink the reported set — it
+*changes which pair is reported*. The surviving set became `Compose` ↔ `SeedPairRenamed.Compose`
+(207 tokens), an unrelated pair that was always a clone. The `Render` pair, which is the one the
+fix touched, was gone from the report entirely. So 4C, iterating HEAD's clone sets, correctly
+reports nothing about it: there is no longer a set to attribute the divergence to.
+
+**2. The sibling-token search key is therefore wrong.** It searches for the siblings' *current*
+tokens inside the commit's pre-image. But once the sibling has also been fixed, its current tokens
+contain the guard, which the pre-image by definition lacks. The search fails on exactly the case
+the feature exists to catch.
+
+The substitution that does work is simpler and needs no search at all:
+
+> **HEAD proves the copies are meant to be in sync** (SNP0031 proved token-identity over the
+> region), **and the patch proves they were not, at commit C** (C changed one member's region and
+> no sibling). Those two facts together are the finding. §6.1's High-tier clause — "the other
+> copies are byte-identical to the pre-change text" — was written for a present-tense framing that
+> cannot exist; HEAD-identity is the correct substitute for it here, and it is *stronger*, because
+> it is a proof over the whole region rather than a single commit's parent.
+
+### Scope narrowed to "the most recent change to each copy", deliberately
+
+Reconciling a patch's pre-image coordinates with a HEAD-anchored region is where this design would
+otherwise go wrong, and the honest fix is to refuse the ambiguity. 4C examines **the most recent
+commit touching each copy of a clone set** — at most one candidate commit per member. For such a
+commit the post-image *is* HEAD, so the hunk coordinates and the region coordinates are the same
+system and no reconciliation is needed.
+
+This costs recall: a one-sided fix followed by unrelated later edits to the same file is missed. It
+buys exactness, a bounded and predictable cost (two git calls regardless of clone-set count), and a
+scope that can be stated in one sentence. Widening it is a follow-up, not a redesign.
+
+The detectable window, verified on the fixture — HEAD shows the pair as clones again, while C1
+changed only one copy:
+
+```
+C1 78f0d905  "fix(A): guard empty label"        App/CloneFixturesMirrored.cs  @@ -12 +12,5 @@
+C2 18174cfe  "fix(B): guard empty label (later)" CoreLib/CloneFixtures.cs      (the sibling catching up)
+```
+
+Between C1 and C2 the sibling shipped unguarded. That window is the finding, and it is reported with
+both dates so a reader can see how long the copies were out of sync.
+
+## Implementation (done 2026-10-03)
+
+**Status: IMPLEMENTED.** **469 tests green** (was 438; +31 in `CloneDriftShould.cs`). Dogfood back to
+the 3 pre-existing findings. Red phase verified by two mutations of the decision logic, each caught.
+New rule **SNP0032**, flag `--clone-drift`.
+
+New: `GitHistory.cs`, `GitProcess.cs`, `CloneDriftDetector.cs`, `CloneDriftShould.cs`.
+Changed: `DuplicateFragmentAnalyser.cs`, `FindingCategory.cs`, `CliRunner.cs`, `GitMetadata.cs`.
+
+### Measured cost
+
+On `Snipper.slnx`, 9.6 s with `--duplicate-detection --clone-drift` against 7.0 s for a plain
+baseline run. The shingling pass is **shared, not repeated** — 4C runs over the clone sets SNP0031
+already proved in the same call, which is why the roadmap's "builds on SNP0031's index" was treated
+as a requirement rather than a convenience. Enabling drift with duplicate detection already off
+implies it rather than erroring.
+
+### What the design above got wrong, and the four bugs that found it
+
+Building the fixture before designing against it was the right call; it invalidated two of the
+three mechanisms in the original design.
+
+**1. The sibling-token search could never fire.** It searched for the siblings' *current* tokens
+inside the commit's pre-image, but once the sibling is also fixed its tokens contain the guard the
+pre-image lacks. Replaced by a simpler argument needing no search: HEAD proves the copies are meant
+to be in sync, the patch proves they were not at commit C.
+
+**2. A one-sided fix that is still in place destroys the clone set.** Applying the guard to one
+member and committing it did not shrink the reported set — it *changed which pair was reported*.
+The surviving set became `Compose` ↔ `SeedPairRenamed.Compose`, an unrelated pair. The pair the fix
+touched was gone entirely. This is the honest limit of the temporal framing and it is why 4C reports
+the *event* rather than the standing state.
+
+**3. Git timestamps cannot order commits.** The first implementation compared `Date` to decide
+whether a sibling was caught up later. Git timestamps have one-second resolution; the fixture's two
+commits landed in the same second and the comparison silently failed. Replaced with `Order`, the
+position in `git log`'s newest-first output. **Any commit-ordering logic must use log order, never
+timestamps.**
+
+**4. Embedded quoting silently broke every git lookup.** Paths were quoted by hand inside a
+single command string, so git searched for a pathspec that literally included the quote characters
+and returned nothing — with no error. Fixed by passing arguments through
+`ProcessStartInfo.ArgumentList`. Hand-built command strings are a trap; the runtime's escaping is
+strictly better than anything written by hand.
+
+### The rule found a real defect in its own author, on the day it was written
+
+The first dogfood run reported **SNP0032 High** on Snipper's own repository:
+
+```
+One-sided defensive fix in a clone set of 2 copies: commit 0f59d6d changed this copy
+without touching GitHistory.cs:435
+```
+
+A true positive. `GitHistory.RunGit` duplicated `GitMetadata.RunGit`, and when the stderr-drain fix
+was applied earlier in the session it was applied to only one of the two copies. That is precisely
+the defect class SNP0032 exists to find, and it was found by the tool on its own author's code in the
+same session. The fix was to delete the duplication rather than suppress the finding: `GitProcess.cs`
+is now the only place Snipper shells out to git, with the incident recorded in its doc comment so a
+future copy is not written by accident. Post-fix dogfood reports **zero** SNP0032 on this repository.
+
+### Dogfood findings fixed, not suppressed
+
+| Rule | Site | Defect |
+|---|---|---|
+| SNP0006 | `GitHistory.cs` | `ParseHunks` was public but had no caller in the solution. Removed; its three tests were rewritten against **real git output** rather than a canned patch string, which is a stronger test — a hand-written fixture only proves the parser agrees with the fixture. |
+| SNP0019 | `GitHistory.cs` | `using System.Diagnostics;` orphaned by the extraction. |
+| SNP0024 | `GitProcess.cs` | `DefaultTimeoutMilliseconds` was public but used only inside its own type. |
+
+Final dogfood: **3 findings, all pre-existing** (`DuplicateFragmentAnalyser.cs:5`,
+`DuplicateFragmentAnalyser.cs:109`, `FindingFilter.cs:125`) plus 2 SNP0031 clone sets that predate
+this work. Nothing from Wave 4.
+
+## Honest limits
+
+- **A one-sided fix that is still in place is invisible to 4C.** The copies have stopped being
+  clones, so there is no set to attribute the divergence to. This is the cost of the chosen framing
+  and the reason clone-set breakup is the recommended follow-up.
+- **Scope is the most recent commit touching each copy.** A one-sided fix followed by unrelated
+  later edits to the same file is missed. Widening it is a follow-up, not a redesign.
+- **Temporal, not standing.** The finding describes a commit. It reports whether the sibling caught
+  up and when, but it is not proof the missing construct was ever a live defect.
+- **The fix-shaped test is loose by design.** Substring, case-insensitive; `null` matches
+  `Nullable`. This only ever promotes a change to fix-shaped, and it is gated by the one-sided
+  requirement, which is the real filter.
+- **`--merge` commits are skipped**, so drift introduced and reverted within a merge is missed.
+- **Outside a git repository 4C emits nothing and says nothing.** It degrades like `GitMetadata`
+  rather than failing.
+- **Renames are not followed.** A commit that renamed a copy is attributed to the old path.
+- **Not validated on a large repository.** All measurements are from a 39-commit repo and the
+  SampleApp fixture. The commit cap and path chunking exist but their limits were not exercised.
+
+## Exit criteria — status
+
+| # | Criterion | Status |
+|---|---|---|
+| 1 | Detects a one-sided defensive fix in a real clone set | **met** — end-to-end test plus the self-detection above |
+| 2 | Silent when the change was applied to every copy | **met** — `Report_No_Drift_When_Both_Copies_Were_Fixed_In_One_Commit` |
+| 3 | Silent for a change outside the cloned region | **met** — `Report_No_Drift_For_An_Unrelated_Later_Edit` |
+| 4 | Reports the earlier link of a chain, not both | **met** — mutation 2; a catch-up commit is a resolution, not new drift |
+| 5 | Degrades outside a git repository | **met** — `Say_Nothing_Rather_Than_Failing_Outside_A_Git_Repository` |
+| 6 | Reuses SNP0031's shingling pass | **met** — one pass, `BuildFindings` returns the sets it proved |
+| 7 | Git cost independent of clone-set count | **met** — one call per 256-path batch |
+| 8 | Tests fail without the logic | **met** — two mutations, 3 and 1 failures respectively |
+| 9 | Full suite green; dogfood clean or triaged | **met** — 469 pass; dogfood at the 3 pre-existing findings |
+
+## Deferred
+
+- **Clone-set breakup** — regions identical at an earlier commit but different now. The signal that
+  catches "A permanently fixed, B permanently stale". Needs similarity search over history; L+xlarge.
+- **Per-team attribution** and widening the commit scope beyond the most recent change per copy.
+
+---
+
+# 4D - Performance and correctness increment (IMPLEMENTED 2026-10-04)
+
+Not a roadmap story. Added after 4C because two things surfaced that had to be fixed before
+a 1.7.0 cut: a **reproducible crash on real multi-project solutions**, and a measured
+performance profile that showed the planned work was aimed at the wrong phase.
+
+## The crash (the reason this section exists)
+
+Benchmarking candidate targets found that **2 of 7 real solutions on the machine aborted**:
+
+```
+System.ArgumentException: An item with the same key has already been added.
+Key: C:\pp\cardanosharp-wallet\CardanoSharp.Wallet\CardanoSharp.Wallet.csproj
+   at UnreferencedPackageAnalyser.AnalyzeAsync(...) line 41
+```
+
+`UnreferencedPackageAnalyser` keyed a `ToFrozenDictionary` on `project.FilePath`. **A csproj
+path is not unique inside a `Solution`**: a multi-targeted project surfaces once per TFM, and
+a project reached through two referencing paths can appear twice. The throw happened inside
+the analyser fan-out, so it took the whole run down rather than degrading to a missed finding.
+`Mintsafe.sln` crashed because it pulls in the CardanoSharp projects.
+
+Fixed by making the mapping one-to-many. The referenced-assembly test now unions every TFM
+instance rather than picking one arbitrarily — which is what `ProjectPackageUsageCache` already
+does with `UsedAssemblyNames`, so the fix aligns the two rather than inventing a policy.
+
+**Swept for the same class of bug.** All 24 `ToDictionary` / `ToFrozenDictionary` sites were
+audited; the other path-keyed ones (`ProjectGraph`, `InheritanceGraph`) use indexer assignment
+or `TryGetValue` and are already duplicate-tolerant. One genuine site.
+
+**Also fixed a correctness gap in the parallelism contract:** `AssemblyNameEvidenceScanner`
+constructed `new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }`
+inline, so the documented `SNIPPER_MAX_DOP=1` "revert to sequential" escape hatch silently
+did not apply to that scan. Routed through `AnalysisParallelism.CreateOptions`.
+
+## Where the time actually goes — the finding that reordered the work
+
+The plan's implicit assumption was that analysis is the cost. Measured phase split:
+
+| Target | total wall | analysis fan-out | MSBuild load + output | load share |
+|---|---|---|---|---|
+| Peckr.sln (8 proj) | 5.41 s | 1.70 s | 3.71 s | **69%** |
+| AzureBusDepot.sln (4 proj) | 4.04 s | 1.40 s | 2.64 s | **65%** |
+| Cscli.sln (3 proj) | 9.25 s | 4.80 s | 4.45 s | **48%** |
+| Snipper.csproj (1 proj) | 7.29 s | 4.50 s | 2.79 s | 38% |
+
+`MSBuildWorkspace.OpenSolutionAsync` is single-threaded per project and everything downstream
+needs its `Solution`, so its cost cannot overlap with analysis. Measured CPU/wall is **1.7–3.0×
+on a 16-core box** — roughly 80% of the machine idle.
+
+**The biggest remaining lever is the load phase, not the analysers.** That work was explicitly
+deferred (see [Deferred](#deferred-for-170)) because `OpenSolutionAsync` is Roslyn's design-time
+build with no supported parallelism knob.
+
+The analyser fan-out, by contrast, is already well-tuned and was left alone: `AnalysisRunner`
+pre-warms compilations sequentially (33 s → 4.6 s when that was removed), and all four shared
+indexes are correctly memoized on the `Solution` instance. There is no `solution.With*` call
+anywhere in `src/`, so those caches genuinely hit once.
+
+## What changed, and what it measured
+
+Every figure is an **interleaved A/B** — two binaries alternating run-by-run so machine drift
+cancels. This matters: a real, verified improvement measured **3.8% slower** when compared
+non-interleaved, and one pair of runs of identical binaries differed by **>2×** from machine load
+alone. CPU is quoted alongside wall throughout because CPU is the far less noisy signal.
+
+| Change | Kind | Effect |
+|---|---|---|
+| `TieredPGO=false` in `Snipper.csproj` | config | **−2.9% to −11.1% wall, −11.6% to −18.6% CPU**, all six targets |
+| `FrameworkEvidenceIndex` receiver text | allocation | `memberAccess.Expression.ToString()` ran for **every** invocation; the result is only read for 7 method names out of ~4,500. ~99.9% of those strings were built and discarded. Now gated on the identifier first. |
+| `FrameworkEvidenceIndex` attribute names | allocation | `AttributeNameText` removes 1–2 allocations per attribute per document, **while deliberately keeping the `ToString()` fallback for qualified names** (see [Invariant 20](#invariants-added-by-this-increment)). |
+| `SolutionUsageIndex` interning | allocation | Every `SimpleNameSyntax` hashed its identifier 3×. A `names.Add` guard collapses it to 1× on the hottest loop in the tool. |
+| `CliRunner` fingerprint memo | redundancy | `ComputeFingerprint` ran up to 3× per finding across the audit and baseline blocks; one reference-keyed memo now serves all five call sites. |
+| `ExclusionEngine` entry-point memo | redundancy | `IsFrameworkEntryPointType` was O(members in the type) **per candidate symbol** — a 50-method type with 40 candidates paid ~2,000 `GetAttributes()` bindings where 50 suffice. |
+| `DocumentIdentifierIndex` memo | redundancy | Two analysers built the same per-document index independently. |
+| `RedundancyAnalyser` walk fusion | redundancy | Five full `DescendantNodes()` traversals per document → one walk into five buckets. |
+| `ProjectFileReader` cache | redundancy | Five call sites each parsed the same csproj with `XDocument.Load(..., SetLineInfo)`. Invalidated by last-write time. |
+
+### Cumulative effect
+
+| Target | wall | CPU |
+|---|---|---|
+| CardanoSharp.sln | **−18.1%** | **−25.3%** |
+| Cscli.sln | −13.3% | −20.4% |
+| Peckr.sln | −12.8% | −23.4% |
+| Snipper.csproj | −10.5% | −20.3% |
+| Mintsafe.sln | −10.2% | −16.4% |
+| AzureBusDepot.sln | −2.2% | −7.8% |
+
+Verified output-neutral: the `findings` array is **byte-identical on all six targets**.
+
+### Two hypotheses measured and rejected
+
+Recorded so they are not relitigated:
+
+- **Server GC** — neutral to *worse* (Cscli 7.91 → 8.79 s). Startup cost dominates a
+  single-shot process.
+- **`TieredCompilation=0`** — **+27% worse**. Disabling tiered JIT entirely is far too expensive
+  for a ~7-second run. Tiered compilation stays **on**.
+
+### Honest gaps in the perf work
+
+- **The fingerprint memo is reasoned, not measured.** It only runs under `--baseline` /
+  `--audit-suppressions`, which the harness does not exercise by default. A targeted interleaved
+  A/B on the two largest findings sets gave −3.7%, +2.3%, −5.0% — i.e. noise. It is kept because
+  it strictly removes duplicate work, but **do not quote a number for it**.
+- **No monorepo-scale target existed locally.** The largest real solution available was 119 `.cs`
+  files. The per-symbol and per-node memos measured as **neutral on every real target** and only
+  paid off (**−2.9% wall / −3.0% CPU**) on a generated 40-project / 800-file / 172k-line target.
+  Small-target benchmarking **under-reports this class of change** — that is why they are kept.
+- `TieredPGO=false` ships in `runtimeconfig.json` and therefore applies to every consumer.
+  Validated on one 16-core x64 box only; re-measure on ARM or older x86 before trusting it broadly.
+
+## Invariants added by this increment
+
+Numbered to continue §"Invariants you must not break" in `docs/code_architecture.md`:
+
+19. A cache keyed on a csproj path must be invalidated by last-write time.
+20. Do not "optimise" a name comparison by returning a bare identifier.
+21. A project path is not unique in a `Solution`.
+
+**Invariant 20 is a trap worth stating explicitly.** The obvious allocation fix for
+`attribute.Name.ToString()` is `SimpleNameOf`, which is already in that file. Using it would have
+been a **silent behaviour change**: callers compare the *whole rendered string*, so
+`[Newtonsoft.Json.JsonSerializable]` deliberately does **not** match `[JsonSerializable]`. Returning
+the bare identifier would have started accepting it. `AttributeNameText` keeps the qualified-name
+fallback.
+
+## Test-coverage gaps this increment closed
+
+Both new caches shipped with **zero** invalidation coverage. Two mutations were applied to check:
+
+| Mutation | Before | After |
+|---|---|---|
+| `ProjectFileReader` cache never expires | **34/34 project-file tests green** | 2 of 4 new tests fail |
+| `UnreferencedPackageAnalyser` duplicate-key throw | crashes | 3 of 3 new tests fail |
+
+`ProjectFileReaderShould` and `DuplicateProjectPathShould` exist because the existing suite could
+not see either failure. **A cache without an invalidation test is a cache that will silently rot.**
+
+## Harness
+
+`test/Fixtures/Measure-Performance.ps1` — timing and interleaved A/B, with a canonical
+`findings` hash as the output-equivalence oracle. Documented in its own header, including the two
+methodology mistakes it exists to prevent (non-interleaved comparison; using Snipper-on-Snipper
+as the oracle).
+
+---
+
+# What is left for 1.7.0
+
+Everything above is **implemented and verified but unreleased**. `<Version>` is `1.6.3`.
+
+## Release gate — none of this is done
+
+| # | Step | State |
+|---|---|---|
+| 1 | Version bump `1.6.3` → `1.7.0` in `src/Snipper/Snipper.csproj` | **not started** |
+| 2 | `dotnet pack` | **not started** |
+| 3 | `dotnet tool update -g Snipper` | **not started** |
+| 4 | Self-run verification against the *installed* tool | **not started** |
+| 5 | Monorepo A/B on the 4C High tier | **open — see below** |
+| 6 | Commit | **not started** (working tree holds 37 changed entries, unstaged) |
+
+## Open items that gate or qualify the release
+
+**4C's High tier has never run against a large repository.** The roadmap's own Wave 4 exit
+criterion — "4C's High tier produces zero false positives on the monorepo or drops a tier" — is
+**not met**. It is verified on the SampleApp fixture and on the author's own repository only. This
+is the single most important thing left, because 4C is the one story that emits *correctness*
+findings rather than smells, and an unproven High tier is a trust risk.
+
+**Monorepo-scale performance is unvalidated for everything in this document.** Every local target
+is ≤119 files. The 1.4.2 precedent applies: the user's monorepo A/B is the acceptance test, and
+per locked decision on that wave, **any SNP0005/0006 finding increase blocks**.
+
+**Also open, carried forward from the individual stories:**
+
+- 4A-2's baseline now legitimately **grows on first run** to include findings for excluded code.
+  Needs a release-note line, because users will see their baseline file change on upgrade.
+- `--entropy-budget` ships **opt-in with no default budget**, deliberately: any default would fail
+  existing builds on upgrade. Documented in `docs/usage.md`.
+- Clone-set breakup (4C follow-up, L+xlarge) — regions identical at an earlier commit but different
+  now. Unstarted, and the reason permanently diverged pairs are still deferred.
+- Per-team CODEOWNERS attribution (4B follow-up) — deferred.
+
+## Not in 1.7.0
+
+Governance candidates deliberately held back are listed in
+`docs/Snipper-Feature-Parity-Roadmap.md` §"Added 2026-10-03". The first of them —
+**unanalysed-region accounting** — is explicitly flagged there as "the first thing to add" to
+this wave, so it is the natural 1.7.1 candidate.
+
+## Deferred for 1.7.0
+
+- **The MSBuild load phase.** 38–69% of wall clock on real multi-project solutions, and the
+  largest remaining lever. `MSBuildWorkspace.OpenSolutionAsync` is Roslyn's design-time build;
+  there is no supported parallelism knob, so any attempt carries real risk. Deliberately not
+  attempted, and documented as the next investigation rather than quietly forgotten.
+
+## Suggested commit split
+
+The working tree mixes four separable concerns. A single commit would be unreviewable; splitting
+on these lines gives four independently revertable changes:
+
+1. **4C** — `CloneDriftDetector`, `GitHistory`, `GitProcess`, `DuplicateFragmentAnalyser`,
+   `FindingCategory`, `GitMetadata`, `EntropyRateShould`, `CloneDriftShould`, docs.
+2. **`CliRunner` decomposition** — the six extracted `Cli/` types, `CommandLineParserShould`,
+   `ShadowPassShould`, `JsonReportSerializerContext`, `ReportSchemaShould`. Behaviour-neutral.
+3. **The crash fix** — `UnreferencedPackageAnalyser`, `AssemblyNameEvidenceScanner`,
+   `DuplicateProjectPathShould`. Independently revertable and worth shipping on its own merits.
+4. **The perf increment** — the seven `Analysis/` files, `Snipper.csproj`,
+   `ProjectFileReaderShould`, and the `code_architecture.md` perf section. Output-neutral,
+   which the harness's findings hash is what proves.
