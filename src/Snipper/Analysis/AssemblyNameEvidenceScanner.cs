@@ -49,7 +49,11 @@ internal static class AssemblyNameEvidenceScanner
         var allFound = 0;
         Parallel.ForEach(
             documents,
-            new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+            // Routed through AnalysisParallelism rather than built inline: a raw
+            // `new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }`
+            // here bypassed the documented SNIPPER_MAX_DOP=1 "revert to sequential" escape
+            // hatch, so the advertised global revert did not apply to this scan.
+            AnalysisParallelism.CreateOptions(CancellationToken.None),
             (document, loopState) =>
             {
                 if (Volatile.Read(ref allFound) == 1)

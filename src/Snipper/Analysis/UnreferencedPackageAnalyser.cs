@@ -38,9 +38,21 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
         var findings = new List<SnipperFinding>();
 
         // Frozen: built once per run, queried for every ProjectReference in every project.
+        //
+        // A path can map to MORE THAN ONE Project: a multi-targeted csproj surfaces once
+        // per TFM, and a project reached through two referencing paths can appear twice.
+        // Keying a frozen dictionary on the path threw `ArgumentException: An item with the
+        // same key has already been added` on real solutions for exactly that reason, so the
+        // mapping is one-to-many. ProjectPackageUsageCache.BuildAsync unions every TFM
+        // instance of a path into a single UsedAssemblyNames set, so the assembly-name
+        // comparison below unions them the same way rather than picking one arbitrarily.
         var projectsByPath = solution.Projects
             .Where(static p => p.FilePath is not null)
-            .ToFrozenDictionary(static p => p.FilePath!, static p => p, StringComparer.OrdinalIgnoreCase);
+            .GroupBy(static p => p.FilePath!, StringComparer.OrdinalIgnoreCase)
+            .ToFrozenDictionary(
+                static group => group.Key,
+                static group => (IReadOnlyList<Project>)group.ToArray(),
+                StringComparer.OrdinalIgnoreCase);
 
         var usageCache = ProjectPackageUsageCache.Get(solution);
 
@@ -151,18 +163,32 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
                     continue;
                 }
 
-                if (!projectsByPath.TryGetValue(projectReference.FullPath, out var referencedProject))
+                if (!projectsByPath.TryGetValue(projectReference.FullPath, out var referencedProjects))
                 {
                     continue;
                 }
 
-                var referencedCompilation = await referencedProject.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
-                if (referencedCompilation is null)
+                // Union across every TFM instance, matching how ProjectPackageUsageCache
+                // builds UsedAssemblyNames. Testing only one instance would let a package
+                // look unreferenced just because the TFM we happened to pick does not use
+                // the assembly while another does.
+                var referencedAssemblyIsUsed = false;
+                foreach (var referencedProject in referencedProjects)
                 {
-                    continue;
+                    var referencedCompilation = await referencedProject.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
+                    if (referencedCompilation is null)
+                    {
+                        continue;
+                    }
+
+                    if (usage.UsedAssemblyNames.Contains(referencedCompilation.Assembly.Name))
+                    {
+                        referencedAssemblyIsUsed = true;
+                        break;
+                    }
                 }
 
-                if (usage.UsedAssemblyNames.Contains(referencedCompilation.Assembly.Name))
+                if (referencedAssemblyIsUsed)
                 {
                     continue;
                 }
