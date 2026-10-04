@@ -21,15 +21,23 @@ using Snipper.Models;
 /// noise rather than signal - Program.cs still collided on 1,248 buckets with
 /// its using lists stripped.
 /// </summary>
-public sealed class DuplicateFragmentAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class DuplicateFragmentAnalyser(
+    AnalysisExclusions? exclusions = null,
+    CloneDriftDetector? cloneDrift = null) : IWorkspaceAnalyser
 {
-    public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0031"];
+    public IReadOnlyCollection<string> RuleIds { get; } = cloneDrift is null ? ["SNP0031"] : ["SNP0031", "SNP0032"];
 
     private const int WindowTokens = 60;
     private const int MinimumFragmentLines = 4;
     private const string GlobalNamespaceMarker = "<global>";
 
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
+
+    /// <summary>
+    /// Optional 4C drift pass. Null disables SNP0032 entirely, so the default cost and output of
+    /// SNP0031 are unchanged.
+    /// </summary>
+    private readonly CloneDriftDetector? _cloneDrift = cloneDrift;
 
     /// <summary>One maximal duplicated run inside a single file.</summary>
     private sealed record Fragment(
@@ -76,7 +84,16 @@ public sealed class DuplicateFragmentAnalyser(AnalysisExclusions? exclusions = n
         var (fragments, matches) = FindFragments(index.Windows, files, cancellationToken);
 
         progress?.Invoke($"DuplicateFragmentAnalyser: grouping {fragments.Count} fragments");
-        var findings = BuildFindings(fragments, matches, files);
+        var (duplicateFindings, cloneSets) = BuildFindings(fragments, matches, files);
+        var findings = duplicateFindings.ToList();
+
+        // 4C runs over the sets this pass already proved, so enabling drift costs git lookups and
+        // no second shingling. Degrades to nothing outside a git repository.
+        if (_cloneDrift is { } detector && cloneSets.Count > 0)
+        {
+            progress?.Invoke($"DuplicateFragmentAnalyser: checking {cloneSets.Count} clone set(s) for one-sided fixes");
+            findings.AddRange(detector.Detect(cloneSets));
+        }
 
         // Deterministic ordering is a hard requirement (plan guiding principle
         // 5): clone sets are discovered through hash buckets, so without this
@@ -328,14 +345,21 @@ public sealed class DuplicateFragmentAnalyser(AnalysisExclusions? exclusions = n
     /// the same code that sit at different offsets in differently sized files
     /// still form one set.
     /// </summary>
-    private IReadOnlyList<SnipperFinding> BuildFindings(
+    /// <summary>
+    /// SNP0031 findings, plus the clone sets that produced them.
+    ///
+    /// The sets are returned rather than recomputed so 4C can run drift detection over exactly
+    /// the sets this rule reported — one shingling pass, two rules — and so the two can never
+    /// disagree about what counts as a clone.
+    /// </summary>
+    private (IReadOnlyList<SnipperFinding> Findings, IReadOnlyList<CloneSet> Sets) BuildFindings(
         List<Fragment> fragments,
         List<CloneMatch> matches,
         List<SourceFile> files)
     {
         if (fragments.Count == 0)
         {
-            return [];
+            return ([], []);
         }
 
         var byPath = files.ToDictionary(f => f.Path, StringComparer.Ordinal);
@@ -372,6 +396,7 @@ public sealed class DuplicateFragmentAnalyser(AnalysisExclusions? exclusions = n
             .ToList();
 
         var findings = new List<SnipperFinding>();
+        var cloneSets = new List<CloneSet>();
 
         foreach (var members in sets)
         {
@@ -386,6 +411,8 @@ public sealed class DuplicateFragmentAnalyser(AnalysisExclusions? exclusions = n
                 continue;
             }
 
+            var reported = new List<CloneSetMember>();
+
             for (var index = 0; index < members.Count; index++)
             {
                 var member = members[index];
@@ -398,6 +425,9 @@ public sealed class DuplicateFragmentAnalyser(AnalysisExclusions? exclusions = n
                 {
                     continue;
                 }
+
+                reported.Add(new CloneSetMember(
+                    member.Path, member.StartLine, member.StartCharacter, member.EndLine));
 
                 var other = members[(index + 1) % members.Count];
                 var lines = member.EndLine - member.StartLine + 1;
@@ -413,9 +443,16 @@ public sealed class DuplicateFragmentAnalyser(AnalysisExclusions? exclusions = n
                     CharacterOffset: member.StartCharacter,
                     Symbol: null));
             }
+
+            // A single surviving copy is not a set 4C can reason about: there is no sibling to
+            // have drifted from.
+            if (reported.Count >= 2)
+            {
+                cloneSets.Add(new CloneSet(reported));
+            }
         }
 
-        return findings;
+        return (findings, cloneSets);
     }
 
     /// <summary>

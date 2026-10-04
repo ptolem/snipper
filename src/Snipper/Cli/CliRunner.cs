@@ -1,204 +1,74 @@
 namespace Snipper.Cli;
 
 using System.Collections.Frozen;
-using System.Reflection;
-using System.Text.Json;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
 using Spectre.Console;
 using Snipper.Analysis;
 using Snipper.Models;
 
+/// <summary>
+/// The orchestrator: opens the workspace, decides which analysers run, sequences the
+/// analysis passes, applies the filtering pipeline, and produces output.
+/// <para>
+/// This type used to hold argument parsing, report serialisation, console rendering and
+/// analyser construction as well, at roughly 1,100 lines. Those are now
+/// <see cref="CommandLineParser"/>, <see cref="ReportWriter"/>,
+/// <see cref="ConsoleRenderer"/> and <see cref="AnalyserFactory"/> respectively — all pure
+/// with respect to this orchestration, and all unit-testable without a workspace or a
+/// console. What remains here is only what genuinely needs all of them at once: ordering.
+/// </para>
+/// <para>
+/// The <b>order</b> of the steps below is the design, not their implementation. In
+/// particular: analysis runs before filtering; the baseline is classified against visible
+/// findings but written from the suppression-independent set; and report-time channels run
+/// after fingerprinting so they can never churn the baseline file.
+/// </para>
+/// </summary>
 public static class CliRunner
 {
-    private static readonly string ToolVersion = ComputeToolVersion();
-
     /// <summary>
     /// Package version (e.g. "1.0.5"). Safe to call before MSBuildLocator
     /// registration — touches no MSBuild/workspace types.
     /// </summary>
-    public static string GetToolVersion() => ToolVersion;
+    public static string GetToolVersion() => ToolVersion.Current;
 
     public static async Task<int> RunAsync(string[] args)
     {
+        ArgumentNullException.ThrowIfNull(args);
+
         if (args.Any(static a => string.Equals(a, "--version", StringComparison.OrdinalIgnoreCase)
             || string.Equals(a, "-v", StringComparison.OrdinalIgnoreCase)))
         {
-            AnsiConsole.WriteLine(ToolVersion);
+            AnsiConsole.WriteLine(ToolVersion.Current);
             return 0;
         }
 
-        AnsiConsole.MarkupLine($"[bold blue]Snipper[/] [grey]{ToolVersion}[/]");
+        AnsiConsole.MarkupLine($"[bold blue]Snipper[/] [grey]{ToolVersion.Current}[/]");
 
-        if (args.Length == 0 || string.IsNullOrWhiteSpace(args[0]))
+        if (!CommandLineParser.TryParse(args, out var options, out var parseError))
         {
-            AnsiConsole.MarkupLine("[red]Error: Missing target path. Provide a .sln, .slnx, or .csproj path.[/]");
-            AnsiConsole.MarkupLine("[yellow]Usage: Snipper <path-to-solution-or-project> [[output-file]] [[--format json|sarif]] [[--baseline <path>]] [[--certainty-tier guaranteed|high|moderate|advisory]] [[--exclude-namespaces <list>]] [[--config-analysis]] [[--duplicate-detection]] [[--audit-suppressions]] [[--entropy-rate]] [[--entropy-budget <per-kloc>]] [[--entropy-ledger <path>]] [[--entropy-min-lines <n>]] [[--version]][/]");
+            AnsiConsole.MarkupLine($"[red]{parseError}[/]");
+            if (parseError is not null && parseError.StartsWith("Error: Missing target path", StringComparison.Ordinal))
+            {
+                AnsiConsole.MarkupLine($"[yellow]{CommandLineParser.Usage}[/]");
+            }
+
             return 1;
         }
 
-        var targetPath = Path.GetFullPath(args[0]);
-        if (!File.Exists(targetPath))
+        var targetPath = options.TargetPath;
+
+        // Reported after parsing rather than printed from inside it, so the parser stays free
+        // of Spectre.Console and remains testable without capturing console output. Nothing
+        // else prints during parsing, so this preserves the original message order.
+        foreach (var malformed in options.MalformedNamespaces)
         {
-            AnsiConsole.MarkupLine($"[red]Error: Target file does not exist: {targetPath}[/]");
-            return 1;
-        }
-
-        string? outputPath = null;
-        string? baselinePath = null;
-        CertaintyTier? minimumCertainty = null;
-        var format = ReportFormat.Json;
-        var includeConfigAnalysis = false;
-        var includeDuplicateDetection = false;
-        var auditSuppressions = false;
-        var entropyRateRequested = false;
-        double? entropyBudget = null;
-        string? entropyLedgerPath = null;
-        var entropyMinimumLines = EntropyRateCalculator.DefaultMinimumLines;
-        var excludedNamespaces = new List<string>();
-
-        for (var i = 1; i < args.Length; i++)
-        {
-            if (string.Equals(args[i], "--format", StringComparison.OrdinalIgnoreCase))
-            {
-                if (i + 1 >= args.Length || !Enum.TryParse(args[i + 1], ignoreCase: true, out format))
-                {
-                    AnsiConsole.MarkupLine("[red]Error: --format requires a value of 'json' or 'sarif'.[/]");
-                    return 1;
-                }
-
-                i++;
-            }
-            else if (string.Equals(args[i], "--certainty-tier", StringComparison.OrdinalIgnoreCase))
-            {
-                if (i + 1 >= args.Length || !Enum.TryParse<CertaintyTier>(args[i + 1], ignoreCase: true, out var parsedTier))
-                {
-                    AnsiConsole.MarkupLine("[red]Error: --certainty-tier requires a value of 'guaranteed', 'high', 'moderate', or 'advisory'.[/]");
-                    return 1;
-                }
-
-                minimumCertainty = parsedTier;
-                i++;
-            }
-            else if (string.Equals(args[i], "--baseline", StringComparison.OrdinalIgnoreCase))
-            {
-                if (i + 1 >= args.Length || string.IsNullOrWhiteSpace(args[i + 1]))
-                {
-                    AnsiConsole.MarkupLine("[red]Error: --baseline requires a file path.[/]");
-                    return 1;
-                }
-
-                baselinePath = Path.GetFullPath(args[i + 1]);
-                i++;
-            }
-            else if (string.Equals(args[i], "--entropy-rate", StringComparison.OrdinalIgnoreCase))
-            {
-                entropyRateRequested = true;
-            }
-            else if (string.Equals(args[i], "--entropy-budget", StringComparison.OrdinalIgnoreCase))
-            {
-                // Parsed with InvariantCulture on purpose: a budget is a CI-facing number and
-                // must not shift meaning with the machine's locale.
-                if (i + 1 >= args.Length
-                    || !double.TryParse(
-                        args[i + 1],
-                        System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        out var budget)
-                    || budget < 0)
-                {
-                    AnsiConsole.MarkupLine("[red]Error: --entropy-budget requires a non-negative number of findings per kLOC.[/]");
-                    return 1;
-                }
-
-                entropyBudget = budget;
-                entropyRateRequested = true;
-                i++;
-            }
-            else if (string.Equals(args[i], "--entropy-ledger", StringComparison.OrdinalIgnoreCase))
-            {
-                if (i + 1 >= args.Length || string.IsNullOrWhiteSpace(args[i + 1]))
-                {
-                    AnsiConsole.MarkupLine("[red]Error: --entropy-ledger requires a file path.[/]");
-                    return 1;
-                }
-
-                entropyLedgerPath = Path.GetFullPath(args[i + 1]);
-                entropyRateRequested = true;
-                i++;
-            }
-            else if (string.Equals(args[i], "--entropy-min-lines", StringComparison.OrdinalIgnoreCase))
-            {
-                if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out var minimumLines))
-                {
-                    AnsiConsole.MarkupLine("[red]Error: --entropy-min-lines requires an integer line count.[/]");
-                    return 1;
-                }
-
-                entropyMinimumLines = minimumLines;
-                entropyRateRequested = true;
-                i++;
-            }
-            else if (string.Equals(args[i], "--exclude-namespaces", StringComparison.OrdinalIgnoreCase))
-            {
-                // Repeatable flag; each occurrence may carry a comma-separated list.
-                if (i + 1 >= args.Length || string.IsNullOrWhiteSpace(args[i + 1]))
-                {
-                    AnsiConsole.MarkupLine("[red]Error: --exclude-namespaces requires a value (comma-separated and/or repeatable).[/]");
-                    return 1;
-                }
-
-                foreach (var entry in args[i + 1].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                {
-                    if (IsValidNamespace(entry))
-                    {
-                        excludedNamespaces.Add(entry);
-                    }
-                    else
-                    {
-                        AnsiConsole.MarkupLine($"[yellow]Warning: ignoring malformed namespace '{Markup.Escape(entry)}'.[/]");
-                    }
-                }
-
-                i++;
-            }
-            else if (string.Equals(args[i], "--config-analysis", StringComparison.OrdinalIgnoreCase))
-            {
-                includeConfigAnalysis = true;
-            }
-            else if (string.Equals(args[i], "--duplicate-detection", StringComparison.OrdinalIgnoreCase))
-            {
-                includeDuplicateDetection = true;
-            }
-            else if (string.Equals(args[i], "--audit-suppressions", StringComparison.OrdinalIgnoreCase))
-            {
-                auditSuppressions = true;
-            }
-            else if (outputPath is null && !string.IsNullOrWhiteSpace(args[i]))
-            {
-                outputPath = Path.GetFullPath(args[i]);
-            }
-            else
-            {
-                AnsiConsole.MarkupLine($"[red]Error: Unexpected argument '{args[i]}'.[/]");
-                return 1;
-            }
+            AnsiConsole.MarkupLine($"[yellow]Warning: ignoring malformed namespace '{Markup.Escape(malformed)}'.[/]");
         }
 
         using var workspace = MSBuildWorkspace.Create();
 
-        // "New" is defined relative to a recorded baseline, so an entropy rate without one has
-        // no numerator. This is a usage error rather than a silent zero: a quiet 0.00 would be
-        // indistinguishable from a genuinely clean change, and would pass any budget.
-        if (entropyRateRequested && baselinePath is null)
-        {
-            AnsiConsole.MarkupLine("[red]Error: --entropy-rate requires --baseline, because 'new' findings are defined relative to a recorded baseline.[/]");
-            return 1;
-        }
-
-        // Design-time build diagnostics (e.g. NuGet vulnerability audit warnings)
-        // are non-fatal: the project still loads and is analyzed. Print each
-        // distinct message once and summarize duplicates instead of spamming.
         var seenWarnings = new HashSet<string>(StringComparer.Ordinal);
         var duplicateWarningCount = 0;
         workspace.RegisterWorkspaceFailedHandler(e =>
@@ -255,77 +125,23 @@ public static class CliRunner
             AnsiConsole.MarkupLine($"[yellow]Warning: {Markup.Escape(warning)}[/]");
         }
 
-        excludedNamespaces.AddRange(config.ExcludedNamespaces);
-
+        // Command-line namespaces union with the config's rather than replacing them, so a
+        // CI job can add an exclusion without editing the committed file.
+        var excludedNamespaces = options.ExcludedNamespaces.Concat(config.ExcludedNamespaces).ToList();
         var exclusions = AnalysisExclusions.Create(excludedNamespaces);
         if (excludedNamespaces.Count > 0)
         {
             AnsiConsole.MarkupLine($"[grey]Excluding namespaces (findings suppressed, usage evidence retained): {Markup.Escape(string.Join(", ", excludedNamespaces))}[/]");
         }
 
-        // Configuration binding analysis (SNP0007/SNP0008) is opt-in: indirect
-        // binding through referenced libraries and framework conventions makes its
-        // false-positive rate too high for default runs. The analyser remains in
-        // the codebase for a long-term fix and is exercised by the test suite.
-        //
-        // Built by a local factory because the suppression audit (4A) needs the same
-        // analyser set under different exclusions: once with namespaces lifted, and
-        // once containing only the analysers a disabled rule removed.
-        List<IWorkspaceAnalyser> BuildAnalysers(AnalysisExclusions analysisExclusions)
-        {
-            var built = new List<IWorkspaceAnalyser>
-            {
-                new UnreachableCodeAnalyser(analysisExclusions),
-                new UnusedLocalVariableAnalyser(analysisExclusions),
-                new UnusedPrivateMemberAnalyser(analysisExclusions),
-                new UnusedParameterAnalyser(analysisExclusions),
-                new UnusedNonPrivateMemberAnalyser(analysisExclusions),
-                new UnreferencedPackageAnalyser(),
-                new ObsoleteMemberAnalyser(analysisExclusions),
-                new OrphanProjectAnalyser(),
-                new RedundantTransitivePackageAnalyser(),
-                new FrameworkInboxPackageAnalyser(),
-                new UnusedUsingDirectiveAnalyser(analysisExclusions),
-                new CommentedCodeAnalyser(analysisExclusions),
-                new WriteOnlyFieldAnalyser(analysisExclusions),
-                new RedundancyAnalyser(analysisExclusions),
-                new HierarchyDeadCodeAnalyser(analysisExclusions),
-                new TighteningAnalyser(analysisExclusions),
-                new EventNeverInvokedAnalyser(analysisExclusions),
-            };
+        var analysers = AnalyserFactory.Build(options, exclusions, targetPath);
 
-            if (includeConfigAnalysis)
-            {
-                built.Add(new ConfigurationBindingAnalyser(analysisExclusions));
-            }
-
-            if (includeDuplicateDetection)
-            {
-                built.Add(new DuplicateFragmentAnalyser(analysisExclusions));
-            }
-
-            return built;
-        }
-
-        var analysers = BuildAnalysers(exclusions);
-
-        // Duplicate detection (SNP0031) is opt-in for the same reason, and with
-        // a measured result behind it: on Snipper's own solution it produced
-        // 1160 findings across 988 clone sets, because all 17 workspace
-        // analysers share one 200+ token structural skeleton (project loop,
-        // document loop, GetSemanticModelAsync, ShouldSkipDocument,
-        // DescendantNodes) and every identifier normalizes to ID. That is a
-        // true positive about duplication, but it is duplication by design, and
-        // a rule that is red on a clean codebase is not useful on every run.
-        // The analyser also applies a cross-directory/cross-project guard, which
-        // removes the largest same-directory share of that noise (measured: 1160
-        // to 642 findings on Snipper.slnx).
-        if (!includeDuplicateDetection)
+        if (!options.IncludeCloneDrift && !options.IncludeDuplicateDetection)
         {
             AnsiConsole.MarkupLine("[grey]Duplicate detection (SNP0031) is off by default — enable with --duplicate-detection.[/]");
         }
 
-        if (!includeConfigAnalysis)
+        if (!options.IncludeConfigAnalysis)
         {
             AnsiConsole.MarkupLine("[grey]Configuration analysis (SNP0007/SNP0008) is off by default — enable with --config-analysis.[/]");
         }
@@ -381,15 +197,15 @@ public static class CliRunner
         // ---------------------------------------------------------------------
         var hasChurnProneSuppression = excludedNamespaces.Count > 0 || removedByDisabledRules.Count > 0;
         var needsSuppressionIndependentPass = BaselineService.RequiresSuppressionIndependentFingerprints(
-            baselineRequested: baselinePath is not null,
+            baselineRequested: options.BaselinePath is not null,
             excludedNamespaceCount: excludedNamespaces.Count,
             removedAnalyserCount: removedByDisabledRules.Count);
 
-        var needsDisabledShadow = auditSuppressions && removedByDisabledRules.Count > 0;
-        var needsNamespaceShadow = auditSuppressions && excludedNamespaces.Count > 0;
+        var needsDisabledShadow = options.AuditSuppressions && removedByDisabledRules.Count > 0;
+        var needsNamespaceShadow = options.AuditSuppressions && excludedNamespaces.Count > 0;
 
         var needsUnexcludedPass = needsSuppressionIndependentPass
-            || (auditSuppressions && hasChurnProneSuppression);
+            || (options.AuditSuppressions && hasChurnProneSuppression);
 
         var shadowStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
@@ -413,13 +229,42 @@ public static class CliRunner
                 ? "keeping the baseline stable under configuration changes"
                 : "auditing namespace exclusions";
 
+            // Only the exclusion-aware half needs re-running. The four package and project
+            // graph analysers take no exclusions, so their output is already identical to
+            // what a lifted pass would produce; re-running them would repeat the most
+            // expensive work in the set for no change in the result.
+            //
+            // The instances are rebuilt with exclusions lifted rather than reusing the ones
+            // already built: the existing instances still hold the original exclusions, so
+            // reusing them would run an unlifted pass that looks lifted and silently reports
+            // no hidden findings.
+            //
+            // Restricted to the audit-only case. When this pass feeds the baseline, the
+            // whole set is rebuilt, so the recorded baseline cannot depend on which
+            // analysers happen to be exclusion-agnostic today.
+            IReadOnlyList<IWorkspaceAnalyser>? liftedAnalysers = null;
+            IReadOnlyList<SnipperFinding> reusableFindings = [];
+
+            if (options.AuditSuppressions && !needsSuppressionIndependentPass)
+            {
+                var liftedAll = AnalyserFactory.Build(options, AnalysisExclusions.None, targetPath);
+                liftedAnalysers = [.. AnalyserFactory.PartitionByExclusionSensitivity(liftedAll).Aware];
+                reusableFindings = FindingsFromExclusionAgnosticAnalysers(analysers, allFindings);
+            }
+
             await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .StartAsync($"Re-running analysis with suppressions lifted ({reason})...", async ctx =>
                 {
-                    unexcludedFindings = await AnalysisRunner.RunAsync(
-                        BuildAnalysers(AnalysisExclusions.None), solution, ctx, CancellationToken.None)
-                        .ConfigureAwait(false);
+                    var liftedFindings = await AnalysisRunner.RunAsync(
+                        liftedAnalysers ?? AnalyserFactory.Build(options, AnalysisExclusions.None, targetPath),
+                        solution,
+                        ctx,
+                        CancellationToken.None).ConfigureAwait(false);
+
+                    unexcludedFindings = liftedAnalysers is null
+                        ? liftedFindings
+                        : liftedFindings.Concat(reusableFindings).ToArray();
                 });
         }
 
@@ -428,25 +273,57 @@ public static class CliRunner
         // which case the lifted pass is authoritative.
         var baselineSourceFindings = needsSuppressionIndependentPass ? unexcludedFindings : allFindings;
 
+        // One fingerprint per finding instance for the whole run. ComputeFingerprint is not
+        // cheap - GetRelativePath, a separator replace, an interpolated string, a UTF8 encode
+        // and a SHA256 per call - and the audit and baseline blocks below walk overlapping
+        // sets: disabledShadow is hashed at both the disabled-set build and the accounted-set
+        // build, allFindings at both the accounted-set build and baseline classification, and
+        // unexcludedFindings at both the namespace-shadow walk and the baseline write.
+        //
+        // Keyed by REFERENCE on purpose. SnipperFinding is a record, so default equality
+        // would run a structural comparison on every lookup - and two genuinely distinct
+        // findings can compare equal, which would hand back the wrong fingerprint. Same
+        // instance in, same fingerprint out, because the inputs are deterministic.
+        var fingerprintMemo = new Dictionary<SnipperFinding, string>(ReferenceEqualityComparer.Instance);
+
+        string Fingerprint(SnipperFinding finding)
+        {
+            if (!fingerprintMemo.TryGetValue(finding, out var fingerprint))
+            {
+                fingerprint = BaselineService.ComputeFingerprint(finding, baseDirectory);
+                fingerprintMemo[finding] = fingerprint;
+            }
+
+            return fingerprint;
+        }
+
         SuppressionAudit? suppressionAudit = null;
 
-        if (auditSuppressions)
+        if (options.AuditSuppressions)
         {
             var disabledFingerprints = disabledShadow
-                .Select(f => BaselineService.ComputeFingerprint(f, baseDirectory))
+                .Select(Fingerprint)
                 .ToFrozenSet(StringComparer.Ordinal);
 
             // Namespace channel = everything the lifted pass found, minus what the
             // normal run already accounted for and minus the disabled-rule set.
+            // Fingerprinted once per finding: this runs over the full finding set on a
+            // large repository, and hashing the same finding twice per predicate was pure
+            // repeated work. `Fingerprint` also collapses the overlap with the sets above.
             var accountedFingerprints = allFindings
                 .Concat(disabledShadow)
-                .Select(f => BaselineService.ComputeFingerprint(f, baseDirectory))
+                .Select(Fingerprint)
                 .ToFrozenSet(StringComparer.Ordinal);
 
-            var namespaceShadow = unexcludedFindings
-                .Where(f => !accountedFingerprints.Contains(BaselineService.ComputeFingerprint(f, baseDirectory)))
-                .Where(f => !disabledFingerprints.Contains(BaselineService.ComputeFingerprint(f, baseDirectory)))
-                .ToArray();
+            var namespaceShadow = new List<SnipperFinding>();
+            foreach (var finding in unexcludedFindings)
+            {
+                var fingerprint = Fingerprint(finding);
+                if (!accountedFingerprints.Contains(fingerprint) && !disabledFingerprints.Contains(fingerprint))
+                {
+                    namespaceShadow.Add(finding);
+                }
+            }
 
             var fileInventory = NamespaceInventory.CollectFiles(solution);
             var namespaceProbe = NamespaceInventory.ExistenceProbe(NamespaceInventory.CollectDeclaredNamespaces(solution));
@@ -454,7 +331,7 @@ public static class CliRunner
             suppressionAudit = SuppressionAuditBuilder.Build(
                 analysedFindings: allFindings,
                 config: config,
-                minimumCertainty: minimumCertainty,
+                minimumCertainty: options.MinimumCertainty,
                 disabledRuleShadowFindings: disabledShadow,
                 namespaceShadowFindings: namespaceShadow,
                 shadowAnalysisRan: needsDisabledShadow || needsNamespaceShadow,
@@ -462,7 +339,7 @@ public static class CliRunner
                 namespaceExists: namespaceProbe);
 
             shadowStopwatch.Stop();
-            var elapsedSuffix = auditSuppressions ? $", {shadowStopwatch.Elapsed.TotalSeconds:0.0}s" : string.Empty;
+            var elapsedSuffix = options.AuditSuppressions ? $", {shadowStopwatch.Elapsed.TotalSeconds:0.0}s" : string.Empty;
 
             // Headline now, breakdown after the findings table: the shadow passes can be
             // slow on a large solution and the user should not wait for a number.
@@ -475,7 +352,7 @@ public static class CliRunner
         IReadOnlyList<SnipperFinding> reportableFindings = allFindings;
         EntropyRateResult? entropyResult = null;
 
-        if (baselinePath is not null)
+        if (options.BaselinePath is { } baselinePath)
         {
             // Read once: 4B needs the commit the baseline was stamped at, which is what binds
             // the entropy denominator to exactly the range these findings came from.
@@ -494,7 +371,7 @@ public static class CliRunner
 
             foreach (var finding in allFindings)
             {
-                if (knownFingerprints.Contains(BaselineService.ComputeFingerprint(finding, baseDirectory)))
+                if (knownFingerprints.Contains(Fingerprint(finding)))
                 {
                     suppressedCount++;
                 }
@@ -507,7 +384,7 @@ public static class CliRunner
             var allFingerprints = new List<string>(baselineSourceFindings.Count);
             foreach (var finding in baselineSourceFindings)
             {
-                allFingerprints.Add(BaselineService.ComputeFingerprint(finding, baseDirectory));
+                allFingerprints.Add(Fingerprint(finding));
             }
 
             var headCommitSha = GitMetadata.TryResolveCommitSha(baseDirectory, out var workingTreeDirty);
@@ -532,7 +409,7 @@ public static class CliRunner
 
             reportableFindings = newFindings;
 
-            if (entropyRateRequested)
+            if (options.EntropyRateRequested)
             {
                 var currentFingerprints = allFingerprints.ToFrozenSet(StringComparer.Ordinal);
                 var resolvedFindings = EntropyRateCalculator.CountResolved(knownFingerprints, currentFingerprints);
@@ -570,7 +447,7 @@ public static class CliRunner
                     NewFindings: newFindings.Count,
                     ResolvedFindings: resolvedFindings,
                     ChangedLines: changedLines,
-                    MinimumLines: entropyMinimumLines));
+                    MinimumLines: options.EntropyMinimumLines));
             }
         }
 
@@ -592,18 +469,18 @@ public static class CliRunner
         // Certainty-tier filter applies at report/output time only. The baseline
         // above always tracks the full finding set so that switching tiers between
         // runs never churns the baseline file.
-        if (minimumCertainty is { } tier)
+        if (options.MinimumCertainty is { } tier)
         {
             var unfilteredCount = reportableFindings.Count;
             reportableFindings = reportableFindings.Where(f => f.Certainty <= tier).ToArray();
             AnsiConsole.MarkupLine($"[grey]Certainty filter: showing tier {tier} and above — {reportableFindings.Count} of {unfilteredCount} finding(s).[/]");
         }
 
-        RenderReport(reportableFindings);
+        ConsoleRenderer.RenderReport(reportableFindings);
 
         if (suppressionAudit is not null)
         {
-            RenderSuppressionAudit(suppressionAudit);
+            ConsoleRenderer.RenderSuppressionAudit(suppressionAudit);
         }
 
         EntropyRateReport? entropyReport = null;
@@ -612,22 +489,22 @@ public static class CliRunner
         {
             // Monthly history comes from the ledger, so it is only available once one is being
             // kept. Reporting an empty series rather than a fabricated zero is the point.
-            var monthly = entropyLedgerPath is null
+            var monthly = options.EntropyLedgerPath is null
                 ? []
-                : EntropyLedger.MonthlyRates(EntropyLedger.Load(entropyLedgerPath));
+                : EntropyLedger.MonthlyRates(EntropyLedger.Load(options.EntropyLedgerPath));
 
-            entropyReport = EntropyRateCalculator.ToReport(entropyResult, entropyBudget, monthly);
-            RenderEntropyRate(entropyReport);
+            entropyReport = EntropyRateCalculator.ToReport(entropyResult, options.EntropyBudget, monthly);
+            ConsoleRenderer.RenderEntropyRate(entropyReport);
 
-            if (entropyReport.Scored && entropyLedgerPath is not null)
+            if (entropyReport.Scored && options.EntropyLedgerPath is not null)
             {
-                AppendEntropyLedgerEntry(entropyLedgerPath, entropyResult);
+                AppendEntropyLedgerEntry(options.EntropyLedgerPath, entropyResult);
             }
         }
 
-        var writeExitCode = outputPath is null
+        var writeExitCode = options.OutputPath is null
             ? 0
-            : WriteReport(reportableFindings, outputPath, format, Path.GetDirectoryName(targetPath), suppressionAudit, entropyReport);
+            : ReportWriter.Write(reportableFindings, options.OutputPath, options.Format, baseDirectory, suppressionAudit, entropyReport);
 
         // A real failure outranks a policy failure: CI should see "snipper could not write the
         // report" rather than a budget breach it cannot act on. Exit code 3 is deliberately
@@ -641,11 +518,31 @@ public static class CliRunner
     }
 
     /// <summary>
+    /// The findings produced by the exclusion-agnostic analysers, which can be reused as-is
+    /// by a lifted pass because their output does not depend on namespace exclusions.
+    /// </summary>
+    private static IReadOnlyList<SnipperFinding> FindingsFromExclusionAgnosticAnalysers(
+        IReadOnlyList<IWorkspaceAnalyser> analysers,
+        IReadOnlyList<SnipperFinding> allFindings)
+    {
+        var agnostic = AnalyserFactory.PartitionByExclusionSensitivity(analysers).Agnostic;
+
+        var agnosticRuleIds = agnostic
+            .SelectMany(static a => a.RuleIds)
+            .ToFrozenSet(StringComparer.Ordinal);
+
+        return allFindings.Where(f => agnosticRuleIds.Contains(f.RuleId)).ToArray();
+    }
+
+    /// <summary>
     /// Appends a scored run to the committed ledger. Only scored runs are recorded — a row with
     /// no rate would make the ledger look fuller than the data is.
     /// </summary>
     private static void AppendEntropyLedgerEntry(string ledgerPath, EntropyRateResult result)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ledgerPath);
+        ArgumentNullException.ThrowIfNull(result);
+
         try
         {
             EntropyLedger.Append(
@@ -672,6 +569,10 @@ public static class CliRunner
     /// </summary>
     private static bool IsExcludedFromDenominator(string relativePath, string baseDirectory, SnipperConfig config)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
+        ArgumentNullException.ThrowIfNull(config);
+
         if (config.ExcludedPathGlobs.Count == 0)
         {
             return false;
@@ -689,378 +590,5 @@ public static class CliRunner
         }
 
         return false;
-    }
-
-    private static int WriteReport(
-        IReadOnlyList<SnipperFinding> findings,
-        string outputPath,
-        ReportFormat format,
-        string? targetDirectory,
-        SuppressionAudit? suppressionAudit = null,
-        EntropyRateReport? entropyRate = null)
-    {
-        var commitSha = GitMetadata.TryResolveCommitSha(targetDirectory, out var workingTreeDirty);
-        if (workingTreeDirty)
-        {
-            AnsiConsole.MarkupLine("[yellow]Warning: the analysed working tree has uncommitted changes — finding locations may already have drifted.[/]");
-        }
-
-        var json = format switch
-        {
-            ReportFormat.Sarif => BuildSarifJson(findings),
-            _ => BuildJson(findings, commitSha, suppressionAudit, entropyRate),
-        };
-
-        try
-        {
-            var parentDirectory = Path.GetDirectoryName(outputPath);
-            if (!string.IsNullOrEmpty(parentDirectory))
-            {
-                Directory.CreateDirectory(parentDirectory);
-            }
-
-            File.WriteAllText(outputPath, json);
-            AnsiConsole.MarkupLine($"[green]{format.ToString().ToUpperInvariant()} report written to: {outputPath}[/]");
-            return 0;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            AnsiConsole.MarkupLine($"[red]Error: Failed to write report to {outputPath}: {ex.Message}[/]");
-            return 2;
-        }
-    }
-
-    internal static string BuildJson(
-        IReadOnlyList<SnipperFinding> findings,
-        string? commitSha,
-        SuppressionAudit? suppressionAudit = null,
-        EntropyRateReport? entropyRate = null)
-    {
-        var lineCache = new SourceLineCache();
-        var report = new SnipperReport(
-            ToolVersion: ToolVersion,
-            CommitSha: commitSha,
-            GeneratedAtUtc: DateTimeOffset.UtcNow,
-            Findings: findings
-                .OrderBy(static f => f.Certainty)
-                .ThenBy(static f => f.FilePath)
-                .Select(f => new FindingReportEntry(
-                    RuleId: f.RuleId,
-                    Title: f.Title,
-                    Message: f.Message,
-                    Certainty: f.Certainty.ToString(),
-                    Category: f.Category.ToString(),
-                    FilePath: f.FilePath,
-                    LineNumber: f.LineNumber,
-                    CharacterOffset: f.CharacterOffset,
-                    LineText: lineCache.GetLine(f.FilePath, f.LineNumber)))
-                .ToArray(),
-            Suppression: suppressionAudit,
-            EntropyRate: entropyRate);
-
-        return JsonSerializer.Serialize(report, JsonReportSerializerContext.Default.SnipperReport);
-    }
-
-    private static bool IsValidNamespace(string value)
-    {
-        foreach (var segment in value.Split('.'))
-        {
-            if (segment.Length == 0 || (!char.IsLetter(segment[0]) && segment[0] != '_'))
-            {
-                return false;
-            }
-
-            for (var i = 1; i < segment.Length; i++)
-            {
-                if (!char.IsLetterOrDigit(segment[i]) && segment[i] != '_')
-                {
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    private static string ComputeToolVersion()
-    {
-        var assembly = typeof(CliRunner).Assembly;
-        var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-        if (!string.IsNullOrWhiteSpace(informational))
-        {
-            // Strip the "+<commit>" SourceLink suffix when present.
-            var plusIndex = informational.IndexOf('+', StringComparison.Ordinal);
-            return plusIndex > 0 ? informational[..plusIndex] : informational;
-        }
-
-        var version = assembly.GetName().Version;
-        return version is null ? "0.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
-    }
-
-    internal static string BuildSarifJson(IReadOnlyList<SnipperFinding> findings)
-    {
-        var toolVersion = ToolVersion;
-        var lineCache = new SourceLineCache();
-
-        var rules = findings
-            .GroupBy(static f => f.RuleId, StringComparer.Ordinal)
-            .Select(static g => new SarifReportingDescriptor(
-                Id: g.Key,
-                Name: g.First().Title,
-                ShortDescription: new SarifMultiformatMessageString(g.First().Title)))
-            .ToArray();
-
-        var results = findings
-            .Select(f => new SarifResult(
-                RuleId: f.RuleId,
-                Level: f.Certainty switch
-                {
-                    CertaintyTier.Guaranteed => "error",
-                    CertaintyTier.High => "warning",
-                    CertaintyTier.Moderate => "warning",
-                    _ => "note",
-                },
-                Message: new SarifMessage(f.Message),
-                Locations:
-                [
-                    new SarifLocation(new SarifPhysicalLocation(
-                        ArtifactLocation: new SarifArtifactLocation(new Uri(Path.GetFullPath(f.FilePath)).AbsoluteUri),
-                        Region: new SarifRegion(
-                            f.LineNumber,
-                            f.CharacterOffset,
-                            lineCache.GetLine(f.FilePath, f.LineNumber) is { } lineText ? new SarifArtifactContent(lineText) : null)))
-                ],
-                Properties: new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    ["certainty"] = f.Certainty.ToString(),
-                    ["category"] = f.Category.ToString(),
-                }))
-            .ToArray();
-
-        var log = new SarifLog(
-            Schema: "https://json.schemastore.org/sarif-2.1.0.json",
-            Version: "2.1.0",
-            Runs:
-            [
-                new SarifRun(
-                    Tool: new SarifTool(new SarifToolDriver(
-                        Name: "Snipper",
-                        Version: toolVersion,
-                        InformationUri: "https://github.com/Snipper",
-                        Rules: rules)),
-                    Results: results)
-            ]);
-
-        return JsonSerializer.Serialize(log, JsonReportSerializerContext.Default.SarifLog);
-    }
-
-    private enum ReportFormat : byte
-    {
-        Json,
-        Sarif,
-    }
-
-    internal sealed record SnipperReport(
-        string ToolVersion,
-        string? CommitSha,
-        DateTimeOffset GeneratedAtUtc,
-        FindingReportEntry[] Findings,
-        SuppressionAudit? Suppression = null,
-        EntropyRateReport? EntropyRate = null);
-
-    internal sealed record FindingReportEntry(
-        string RuleId,
-        string Title,
-        string Message,
-        string Certainty,
-        string Category,
-        string FilePath,
-        int LineNumber,
-        int CharacterOffset,
-        string? LineText);
-
-    /// <summary>
-    /// Renders the 4A suppression audit. The JSON section is for machines; this table is
-    /// where a human decides whether to delete a suppression, so a clean bill of health
-    /// gets one line rather than an empty table.
-    /// </summary>
-    private static void RenderSuppressionAudit(SuppressionAudit audit)
-    {
-        var entries = new List<SuppressionEntry>();
-        entries.AddRange(audit.DisabledRules);
-        entries.AddRange(audit.NamespaceExclusions);
-        entries.AddRange(audit.PathGlobs);
-        entries.AddRange(audit.SeverityOverrides);
-        if (audit.CertaintyFilter is { } certainty)
-        {
-            entries.Add(certainty);
-        }
-
-        var suppressing = entries.Where(e => e.SuppressedCount > 0 || e.DowngradedCount > 0).ToArray();
-
-        if (suppressing.Length == 0)
-        {
-            AnsiConsole.MarkupLine("[green]Suppression audit: no active suppression is hiding anything.[/]");
-        }
-        else
-        {
-            var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn("[bold]Channel[/]");
-            table.AddColumn("[bold]Selector[/]");
-            table.AddColumn("[bold]Hidden[/]");
-            table.AddColumn("[bold]Rules[/]");
-
-            foreach (var entry in suppressing)
-            {
-                var count = entry.DowngradedCount > 0
-                    ? $"{entry.DowngradedCount} downgraded"
-                    : $"{entry.SuppressedCount} hidden";
-
-                table.AddRow(
-                    entry.Channel.ToString(),
-                    Markup.Escape(entry.Selector),
-                    count,
-                    entry.RuleIds.Length == 0 ? "-" : Markup.Escape(string.Join(", ", entry.RuleIds)));
-            }
-
-            AnsiConsole.Write(table);
-        }
-
-        var totals = audit.Totals;
-        var share = totals.HiddenDebtPercent == 0
-            ? "nothing hidden"
-            : $"[bold]{totals.HiddenDebtPercent}%[/] of analysed debt hidden";
-
-        AnsiConsole.MarkupLine(
-            $"Suppression audit: {share} — {totals.FindingsDropped} dropped and " +
-            $"{totals.FindingsDowngraded} downgraded from {totals.FindingsAnalysed} analysed" +
-            $"{(totals.FindingsHiddenByShadow > 0 ? $", plus {totals.FindingsHiddenByShadow} hidden before analysis" : string.Empty)}.");
-
-        if (!audit.ShadowAnalysisRan && (audit.DisabledRules.Length > 0 || audit.NamespaceExclusions.Length > 0))
-        {
-            AnsiConsole.MarkupLine(
-                "[yellow]Note: disabled rules and namespace exclusions suppress findings before analysis, " +
-                "so their totals below are incomplete — a shadow pass did not run for them.[/]");
-        }
-
-        if (audit.Obsolete.Length > 0)
-        {
-            var obsolete = new Table().Border(TableBorder.Rounded);
-            obsolete.AddColumn("[bold]Stale[/]");
-            obsolete.AddColumn("[bold]Channel[/]");
-            obsolete.AddColumn("[bold]Selector[/]");
-            obsolete.AddColumn("[bold]Why[/]");
-
-            foreach (var entry in audit.Obsolete)
-            {
-                var confidence = entry.Confidence == SuppressionConfidence.Certain ? "certain" : "suspected";
-                obsolete.AddRow(
-                    confidence,
-                    entry.Channel.ToString(),
-                    Markup.Escape(entry.Selector),
-                    Markup.Escape(entry.Reason));
-            }
-
-            AnsiConsole.Write(obsolete);
-        }
-    }
-
-    private static void RenderReport(IReadOnlyList<SnipperFinding> findings)
-    {
-        if (findings.Count == 0)
-        {
-            AnsiConsole.MarkupLine("[green]No dead code or unused artifacts discovered.[/]");
-            return;
-        }
-
-        var table = new Table().Border(TableBorder.Rounded);
-        table.AddColumn("[bold]Certainty[/]");
-        table.AddColumn("[bold]Rule[/]");
-        table.AddColumn("[bold]Location[/]");
-        table.AddColumn("[bold]Description[/]");
-
-        var sortedFindings = findings.OrderBy(static f => f.Certainty).ThenBy(static f => f.FilePath);
-
-        foreach (var f in sortedFindings)
-        {
-            var certaintyMarkup = f.Certainty switch
-            {
-                CertaintyTier.Guaranteed => "[red]Guaranteed (100%)[/]",
-                CertaintyTier.High => "[orange1]High (~90%)[/]",
-                CertaintyTier.Moderate => "[yellow]Moderate (~70%)[/]",
-                CertaintyTier.Advisory => "[blue]Advisory (~50%)[/]",
-                _ => "[grey]Unknown[/]"
-            };
-
-            var relativeLocation = $"{Path.GetFileName(f.FilePath)}:{f.LineNumber}:{f.CharacterOffset}";
-            table.AddRow(certaintyMarkup, f.RuleId, relativeLocation, Markup.Escape(f.Message));
-        }
-
-        AnsiConsole.Write(table);
-        AnsiConsole.MarkupLine($"\n[bold]Total Candidates Identified:[/] [green]{findings.Count}[/]");
-    }
-
-    /// <summary>
-    /// Renders the 4B entropy rate. The console is where a maintainer decides whether a
-    /// change is acceptable, so an unmeasurable rate is stated as a reason rather than
-    /// than a confident-looking 0.00 - which would pass a budget while measuring nothing.
-    /// </summary>
-    private static void RenderEntropyRate(EntropyRateReport report)
-    {
-        ArgumentNullException.ThrowIfNull(report);
-
-        var rate = EntropyRateCalculator.Format(report.FindingsPerKloc);
-
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .AddColumn("[bold]Entropy[/]")
-            .AddColumn("[bold]Value[/]");
-
-        table.AddRow("New findings", report.NewFindings.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        table.AddRow("Fingerprints resolved", report.ResolvedFindings.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        table.AddRow("Lines changed", report.LinesChanged?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-");
-        table.AddRow("Findings per kLOC", rate);
-
-        if (report.Budget is { } budget)
-        {
-            table.AddRow("Budget", EntropyRateCalculator.Format(budget));
-            table.AddRow(
-                "Gate",
-                report.BudgetExceeded
-                    ? "[red]exceeded[/]"
-                    : report.Scored ? "[green]within budget[/]" : "[yellow]not scored[/]");
-        }
-
-        AnsiConsole.Write(table);
-
-        if (!report.Scored && report.Reason is { } reason)
-        {
-            AnsiConsole.MarkupLine($"[yellow]Entropy rate not scored:[/] {reason}");
-        }
-
-        if (report.Monthly.Length > 0)
-        {
-            AnsiConsole.MarkupLine("[grey]Monthly:[/]");
-
-            var monthly = new Table()
-                .Border(TableBorder.Rounded)
-                .AddColumn("[bold]Month[/]")
-                .AddColumn("[bold]New[/]")
-                .AddColumn("[bold]Resolved[/]")
-                .AddColumn("[bold]kLOC changed[/]")
-                .AddColumn("[bold]Per kLOC[/]");
-
-            foreach (var month in report.Monthly)
-            {
-                monthly.AddRow(
-                    month.Month,
-                    month.NewFindings.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    month.ResolvedFindings.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    EntropyRateCalculator.Format(month.LinesChanged / 1000.0),
-                    EntropyRateCalculator.Format(month.FindingsPerKloc));
-            }
-
-            AnsiConsole.Write(monthly);
-        }
     }
 }

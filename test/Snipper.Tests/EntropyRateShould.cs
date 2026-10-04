@@ -682,6 +682,12 @@ public sealed class EntropyRateShould : IDisposable
 
     private static string BaselinePath(string workspace) => Path.Combine(workspace, "baseline.json");
 
+    /// <summary>
+    /// Creates a repository inside the per-test workspace, so <see cref="Dispose"/> reclaims it.
+    /// Creating one directly in TEMP leaked a directory per call.
+    /// </summary>
+    private string InitRepo() => InitRepo(Path.Combine(_workspace, $"repo-{Guid.NewGuid():N}"));
+
     private static string InitRepo(string? path = null)
     {
         path ??= Path.Combine(Path.GetTempPath(), $"snipper-git-{Guid.NewGuid():N}");
@@ -766,14 +772,39 @@ public sealed class EntropyRateShould : IDisposable
 
     private static void Delete(string path)
     {
+        ClearReadOnly(path);
         try
         {
             Directory.Delete(path, recursive: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // git marks its own object files read-only, so a recursive delete of a fixture
-            // repository can be refused on Windows. Cleanup must never fail a test.
+        }
+    }
+
+    /// <summary>
+    /// Clears the read-only attribute git puts on its own object files.
+    ///
+    /// Without this, <c>Directory.Delete(recursive)</c> is refused on Windows and every test
+    /// run leaks a repository into TEMP — roughly a hundred per run here, which is how the
+    /// problem was found. Swallowing the error alone would hide the leak rather than fix it.
+    /// </summary>
+    private static void ClearReadOnly(string path)
+    {
+        try
+        {
+            if (!Directory.Exists(path))
+            {
+                return;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
         }
     }
 
@@ -781,6 +812,7 @@ public sealed class EntropyRateShould : IDisposable
     {
         try
         {
+            ClearReadOnly(_workspace);
             Directory.Delete(_workspace, recursive: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

@@ -22,7 +22,7 @@ public sealed class ReportSchemaShould : IDisposable
     [Fact]
     public void Wrap_Findings_With_Tool_Metadata_For_BuildJson()
     {
-        var json = CliRunner.BuildJson([Finding()], commitSha: "abc123");
+        var json = ReportWriter.BuildJson([Finding()], commitSha: "abc123");
 
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
@@ -35,7 +35,7 @@ public sealed class ReportSchemaShould : IDisposable
     [Fact]
     public void Omit_Commit_Sha_When_Unknown_For_BuildJson()
     {
-        var json = CliRunner.BuildJson([Finding()], commitSha: null);
+        var json = ReportWriter.BuildJson([Finding()], commitSha: null);
 
         using var document = JsonDocument.Parse(json);
         document.RootElement.TryGetProperty("commitSha", out _).Should().BeFalse();
@@ -45,7 +45,7 @@ public sealed class ReportSchemaShould : IDisposable
     public void Include_The_Source_Line_Text_For_Each_Finding_For_BuildJson()
     {
         // FP-5: consumers verify the quoted line before applying a finding.
-        var json = CliRunner.BuildJson([Finding()], commitSha: null);
+        var json = ReportWriter.BuildJson([Finding()], commitSha: null);
 
         using var document = JsonDocument.Parse(json);
         var entry = document.RootElement.GetProperty("findings")[0];
@@ -55,7 +55,7 @@ public sealed class ReportSchemaShould : IDisposable
     [Fact]
     public void Omit_Line_Text_When_The_File_Is_Missing_For_BuildJson()
     {
-        var json = CliRunner.BuildJson([Finding(Path.Combine(_directory, "missing.cs"))], commitSha: null);
+        var json = ReportWriter.BuildJson([Finding(Path.Combine(_directory, "missing.cs"))], commitSha: null);
 
         using var document = JsonDocument.Parse(json);
         var entry = document.RootElement.GetProperty("findings")[0];
@@ -65,7 +65,7 @@ public sealed class ReportSchemaShould : IDisposable
     [Fact]
     public void Include_A_Region_Snippet_For_BuildSarifJson()
     {
-        var json = CliRunner.BuildSarifJson([Finding()]);
+        var json = ReportWriter.BuildSarifJson([Finding()]);
 
         using var document = JsonDocument.Parse(json);
         var region = document.RootElement
@@ -81,7 +81,7 @@ public sealed class ReportSchemaShould : IDisposable
     public void Omit_The_Suppression_Section_When_No_Audit_Was_Requested_For_BuildJson()
     {
         // Existing consumers must see byte-identical output when the flag is absent.
-        var json = CliRunner.BuildJson([Finding()], commitSha: null);
+        var json = ReportWriter.BuildJson([Finding()], commitSha: null);
 
         using var document = JsonDocument.Parse(json);
         document.RootElement.TryGetProperty("suppression", out _).Should().BeFalse();
@@ -100,7 +100,7 @@ public sealed class ReportSchemaShould : IDisposable
             globMatchesNoFile: null,
             namespaceExists: null);
 
-        var json = CliRunner.BuildJson([Finding()], commitSha: null, audit);
+        var json = ReportWriter.BuildJson([Finding()], commitSha: null, audit);
 
         using var document = JsonDocument.Parse(json);
         var suppression = document.RootElement.GetProperty("suppression");
@@ -122,7 +122,7 @@ public sealed class ReportSchemaShould : IDisposable
         var audit = SuppressionAuditBuilder.Build(
             [Finding()], SnipperConfig.Empty, null, null, null, false, null, null);
 
-        var json = CliRunner.BuildJson([Finding()], commitSha: null, audit);
+        var json = ReportWriter.BuildJson([Finding()], commitSha: null, audit);
 
         using var document = JsonDocument.Parse(json);
         var suppression = document.RootElement.GetProperty("suppression");

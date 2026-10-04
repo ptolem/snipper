@@ -7,7 +7,7 @@ using System.Text.Json.Serialization;
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     Converters = [typeof(JsonStringEnumConverter<SuppressionChannel>), typeof(JsonStringEnumConverter<SuppressionConfidence>), typeof(JsonStringEnumConverter<EntropyRateStatus>)])]
-[JsonSerializable(typeof(CliRunner.SnipperReport))]
+[JsonSerializable(typeof(SnipperReport))]
 [JsonSerializable(typeof(SarifLog))]
 [JsonSerializable(typeof(BaselineFile))]
 [JsonSerializable(typeof(EntropyLedgerFile))]

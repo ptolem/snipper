@@ -1,6 +1,6 @@
 namespace Snipper.Cli;
 
-using System.Diagnostics;
+using Snipper.Analysis;
 
 /// <summary>
 /// Best-effort git metadata for report stamping (FP-5, 1.6.1): the analysed
@@ -27,6 +27,21 @@ internal static class GitMetadata
 
         workingTreeDirty = RunGit(directory, "status --porcelain") is { Length: > 0 };
         return sha.Trim();
+    }
+
+    /// <summary>
+    /// The repository root containing <paramref name="directory"/>, or null when it is not inside
+    /// a checkout. Used by 4C so history paths and analysed paths share a base.
+    /// </summary>
+    public static string? TryResolveRepositoryRoot(string? directory)
+    {
+        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+        {
+            return null;
+        }
+
+        var root = RunGit(directory, "rev-parse --show-toplevel");
+        return string.IsNullOrWhiteSpace(root) ? null : root.Trim();
     }
 
     /// <summary>
@@ -87,54 +102,8 @@ internal static class GitMetadata
         return entries;
     }
 
-    private static string? RunGit(string directory, string arguments)
-    {
-        try
-        {
-            var startInfo = new ProcessStartInfo("git", arguments)
-            {
-                WorkingDirectory = directory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
-
-            using var process = Process.Start(startInfo);
-            if (process is null)
-            {
-                return null;
-            }
-
-            // Both pipes must be drained before waiting. A child that fills the stderr buffer
-            // while we are blocked reading stdout will never exit, and the only symptom would
-            // be a spurious 10s timeout on a large repository. Measured on a 39-commit repo,
-            // `status --porcelain` is cheap, but 4B now invokes git on every baseline run.
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
-
-            if (!process.WaitForExit(milliseconds: 10_000))
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (InvalidOperationException)
-                {
-                }
-
-                return null;
-            }
-
-            // Observe both tasks so an unread pipe cannot surface as an unobserved exception.
-            _ = errorTask.IsCompletedSuccessfully ? errorTask.Result : null;
-
-            return process.ExitCode == 0 ? outputTask.Result : null;
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
-        {
-            return null;
-        }
-    }
+    private static string? RunGit(string directory, string arguments) =>
+        GitProcess.RunTrimmed(directory, [.. arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries)]);
 }
 
 /// <summary>
