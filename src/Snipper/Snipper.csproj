@@ -7,6 +7,36 @@
     <LangVersion>preview</LangVersion>
   </PropertyGroup>
 
+    <!-- Runtime configuration.
+         TieredPGO is disabled deliberately. Snipper is a short-lived CLI that spends its
+         life inside Roslyn/MSBuild code repeating the same call patterns thousands of times,
+         so the instrumented tier-1 recompile and its PGO bookkeeping cost more than the
+         optimised code saves.
+
+         Measured with an INTERLEAVED A/B (DOTNET_TieredPGO=1 vs unset, alternating runs so
+         machine drift cancels) over six targets, 4 reps each, on a 16-core box:
+
+             target                wall              cpu
+             Snipper.csproj    7.14 -> 6.74s  23.8 -> 19.7s   -5.5% / -17.3%
+             Cscli.sln         8.91 -> 8.31s  21.5 -> 18.1s   -6.8% / -16.1%
+             Peckr.sln         5.15 -> 5.00s   8.7 ->  7.7s   -2.9% / -11.6%
+             AzureBusDepot.sln 4.32 -> 4.09s   8.6 ->  7.4s   -5.4% / -14.3%
+             Cardano.sln      10.79 -> 9.60s  46.0 -> 37.5s  -11.1% / -18.6%
+             Mintsafe.sln     10.10 -> 9.40s  19.0 -> 16.2s   -7.0% / -15.0%
+
+         Every target improves on both axes; CPU falls further and more consistently than
+         wall clock, which is the signature of less work rather than rescheduling. Non-
+         interleaved measurement put one target 3.8% the other way, so treat single-sample
+         deltas under ~5% wall as noise on this box.
+
+         Re-enable with DOTNET_TieredPGO=1 if a future workload regresses. TieredCompilation
+         itself stays ON: disabling it costs 27% on a run this short. Server GC was measured
+         and is NOT enabled - neutral-to-worse here, because startup cost dominates a
+         single-shot process. See docs/code_architecture.md. -->
+    <PropertyGroup>
+      <TieredPGO>false</TieredPGO>
+    </PropertyGroup>
+
   <!-- .NET global tool packaging -->
   <PropertyGroup>
     <PackAsTool>true</PackAsTool>

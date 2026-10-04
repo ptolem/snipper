@@ -161,8 +161,20 @@ internal sealed class SolutionUsageIndex
                     }
 
                     var text = simpleName.Identifier.Text;
+
+                    // .NET does not cache string.GetHashCode, so every hash re-reads the
+                    // whole identifier. Unqualified occurrence counts outnumber distinct
+                    // identifiers several times over, and once a name is in this
+                    // document's set both `documentsByName[name]` (already created on the
+                    // first occurrence) and the bucket entry (already holding this
+                    // document) are guaranteed to contain it - so lines below are provably
+                    // redundant and two of the three hashes go with them.
+                    if (!names.Add(text))
+                    {
+                        continue;
+                    }
+
                     var interned = internPool.GetOrAdd(text, text);
-                    names.Add(interned);
 
                     var bucket = documentsByName.GetOrAdd(interned, static _ => new ConcurrentDictionary<DocumentId, Document>());
                     bucket.TryAdd(document.Id, document);

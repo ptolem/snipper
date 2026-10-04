@@ -408,7 +408,7 @@ internal sealed class FrameworkEvidenceIndex
         {
             var isRefitMethod = method.AttributeLists
                 .SelectMany(static list => list.Attributes)
-                .Any(static attribute => RefitAttributeNames.Contains(StripAttributeSuffix(attribute.Name.ToString())));
+                .Any(static attribute => RefitAttributeNames.Contains(StripAttributeSuffix(AttributeNameText(attribute))));
 
             if (!isRefitMethod)
             {
@@ -733,14 +733,30 @@ internal sealed class FrameworkEvidenceIndex
 
     private static bool IsJsonSerializableAttribute(AttributeSyntax attribute)
     {
-        return StripAttributeSuffix(attribute.Name.ToString()) == "JsonSerializable";
+        return StripAttributeSuffix(AttributeNameText(attribute)) == "JsonSerializable";
     }
 
     private static bool HasBindingAttribute(ParameterSyntax parameter)
     {
         return parameter.AttributeLists
             .SelectMany(static list => list.Attributes)
-            .Any(static attribute => BindingAttributeNames.Contains(StripAttributeSuffix(attribute.Name.ToString())));
+            .Any(static attribute => BindingAttributeNames.Contains(StripAttributeSuffix(AttributeNameText(attribute))));
+    }
+
+    private static string AttributeNameText(AttributeSyntax attribute)
+    {
+        // Allocation-free for the overwhelmingly common unqualified case. ToString() on an
+        // identifier name returns exactly Identifier.Text (SyntaxNode.ToString() drops the
+        // node's outer trivia), so this is the same string without building one.
+        //
+        // Qualified names deliberately still go through ToString(): callers compare the
+        // WHOLE rendered string, so [Newtonsoft.Json.JsonSerializable] must keep failing the
+        // "JsonSerializable" / Refit / binding comparisons. Handing back the bare
+        // identifier here would silently start accepting those attributes - a behaviour
+        // change disguised as an allocation fix.
+        return attribute.Name is IdentifierNameSyntax identifier
+            ? identifier.Identifier.Text
+            : attribute.Name.ToString();
     }
 
     private static string StripAttributeSuffix(string name)

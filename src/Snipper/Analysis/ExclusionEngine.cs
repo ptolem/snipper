@@ -1,6 +1,7 @@
 namespace Snipper.Analysis;
 
 using System.Collections.Frozen;
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -155,10 +156,35 @@ public static class ExclusionEngine
         return typeSymbol is not null && IsNamespaceExcluded(typeSymbol, exclusions);
     }
 
+    /// <summary>
+    /// Per-symbol memo for <see cref="IsFrameworkEntryPointType"/>, keyed on the symbol
+    /// instance (Roslyn symbols are immutable, so the answer is a pure function of it) and
+    /// held weakly so it cannot outlive the compilation that produced it.
+    ///
+    /// Without this the check is quadratic in the members of the containing type: it walks
+    /// every method and calls GetAttributes() on each, and it runs once per candidate
+    /// symbol from six analysers (SNP0019/0022/0023/0024/0027 and the tightening rules).
+    /// A 50-method type with 40 candidates paid ~2,000 attribute bindings where 50 suffice.
+    /// GetAttributes() is not cached by Roslyn for source symbols - it re-binds the
+    /// attribute list and allocates a fresh ImmutableArray each call.
+    ///
+    /// Concurrent computes of the same type are possible and benign: the value is a pure
+    /// function, so every racer stores the same answer. Same idiom as InvocationSpeculation's
+    /// ConditionalAccessPresence.
+    /// </summary>
+    private static readonly ConditionalWeakTable<INamedTypeSymbol, StrongBox<bool>> FrameworkEntryPointTypes = new();
+
     public static bool IsFrameworkEntryPointType(INamedTypeSymbol type)
     {
         ArgumentNullException.ThrowIfNull(type);
 
+        return FrameworkEntryPointTypes.GetValue(
+            type,
+            static t => new StrongBox<bool>(ComputeIsFrameworkEntryPointType(t))).Value;
+    }
+
+    private static bool ComputeIsFrameworkEntryPointType(INamedTypeSymbol type)
+    {
         // ASP.NET Core MVC / Web API Controllers
         for (var current = type; current is not null; current = current.BaseType)
         {

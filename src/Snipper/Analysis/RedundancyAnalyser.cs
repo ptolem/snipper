@@ -54,7 +54,44 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
                     continue;
                 }
 
-                foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                // ONE walk, five buckets, instead of five full DescendantNodes() traversals.
+                // The buckets are then consumed below in the original shape order so the
+                // order findings are appended in is unchanged - the report sorts by
+                // (Certainty, FilePath) with a stable sort, so anything that reorders
+                // insertion within a tie would change the JSON. Within a bucket, document
+                // order is already the walk order, so each list matches exactly what
+                // DescendantNodes().OfType<T>() would have produced.
+                List<InvocationExpressionSyntax>? invocations = null;
+                List<CastExpressionSyntax>? casts = null;
+                List<MemberAccessExpressionSyntax>? accesses = null;
+                List<QualifiedNameSyntax>? qualifiedNames = null;
+                List<TypeDeclarationSyntax>? typeDeclarations = null;
+
+                foreach (var node in root.DescendantNodes())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    switch (node)
+                    {
+                        case InvocationExpressionSyntax invocation:
+                            (invocations ??= []).Add(invocation);
+                            break;
+                        case CastExpressionSyntax cast:
+                            (casts ??= []).Add(cast);
+                            break;
+                        case MemberAccessExpressionSyntax access:
+                            (accesses ??= []).Add(access);
+                            break;
+                        case QualifiedNameSyntax qualifiedName:
+                            (qualifiedNames ??= []).Add(qualifiedName);
+                            break;
+                        case TypeDeclarationSyntax typeDeclaration:
+                            (typeDeclarations ??= []).Add(typeDeclaration);
+                            break;
+                    }
+                }
+
+                foreach (var invocation in invocations ?? [])
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -74,7 +111,7 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
                     }
                 }
 
-                foreach (var cast in root.DescendantNodes().OfType<CastExpressionSyntax>())
+                foreach (var cast in casts ?? [])
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -93,7 +130,7 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
                     }
                 }
 
-                foreach (var access in root.DescendantNodes().OfType<MemberAccessExpressionSyntax>())
+                foreach (var access in accesses ?? [])
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -111,7 +148,7 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
                     }
                 }
 
-                foreach (var qualifiedName in root.DescendantNodes().OfType<QualifiedNameSyntax>())
+                foreach (var qualifiedName in qualifiedNames ?? [])
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -126,7 +163,7 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
                     }
                 }
 
-                foreach (var typeDeclaration in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
+                foreach (var typeDeclaration in typeDeclarations ?? [])
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 

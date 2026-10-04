@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -24,6 +25,19 @@ internal sealed class DocumentIdentifierIndex
 {
     private readonly Dictionary<string, List<SimpleNameSyntax>> _positionsByName;
 
+    /// <summary>
+    /// Per-root memo. Two analysers (SNP0009 unused parameters and SNP0016 unused locals)
+    /// each built this from the same document root in the same run - two full
+    /// <c>DescendantNodes()</c> walks and a fresh <c>List</c> per distinct identifier name,
+    /// roughly 150 lists per document, for an index that is a pure function of the root.
+    ///
+    /// Keyed on the root NODE rather than the SyntaxTree so a caller passing a non-root
+    /// subtree still gets an index built from exactly that subtree; document roots are
+    /// cached per (document, compilation), so the shared case hits by reference identity.
+    /// Held weakly, and a lost race just recomputes the same value.
+    /// </summary>
+    private static readonly ConditionalWeakTable<SyntaxNode, DocumentIdentifierIndex> ByRoot = new();
+
     private DocumentIdentifierIndex(Dictionary<string, List<SimpleNameSyntax>> positionsByName)
     {
         _positionsByName = positionsByName;
@@ -32,6 +46,12 @@ internal sealed class DocumentIdentifierIndex
     public static DocumentIdentifierIndex Build(SyntaxNode root)
     {
         ArgumentNullException.ThrowIfNull(root);
+
+        return ByRoot.GetValue(root, static node => Create(node));
+    }
+
+    private static DocumentIdentifierIndex Create(SyntaxNode root)
+    {
 
         Dictionary<string, List<SimpleNameSyntax>>? positionsByName = null;
         foreach (var node in root.DescendantNodes())

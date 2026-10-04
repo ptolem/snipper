@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Xml;
 using System.Xml.Linq;
@@ -13,9 +14,56 @@ using NuGet.Versioning;
 /// </summary>
 internal static class ProjectFileReader
 {
+    /// <summary>
+    /// Per-path memo, invalidated by last-write time.
+    ///
+    /// Five independent call sites read the same csproj files - the project graph, the
+    /// unreferenced-package and redundant-transitive rules, the framework-inbox rule and
+    /// the orphan-project rule - and each was building its own
+    /// <see cref="XDocument"/> DOM with <see cref="LoadOptions.SetLineInfo"/>, the
+    /// expensive <see cref="XmlReader"/> mode, then throwing it away. On a solution whose
+    /// analysers run more than once (the lifted suppression pass) that multiplied again.
+    ///
+    /// A stat call is orders of magnitude cheaper than an XML parse, so the last-write
+    /// check costs almost nothing and keeps the memo honest if a csproj changes under a
+    /// long-lived host. Parse failures are cached too (as a null <see cref="Info"/>),
+    /// because re-parsing a broken file on every call is the exact waste this removes;
+    /// touching the file changes its timestamp and forces a re-read.
+    ///
+    /// Bounded by the number of distinct project files read, which for a CLI process is
+    /// the project count. Pinned by ProjectFileReaderShould - mutating the invalidation
+    /// check so the cache never expires left every other test green.
+    /// </summary>
+    private sealed record CacheEntry(DateTime LastWriteUtc, ProjectFileInfo? Info);
+
+    private static readonly ConcurrentDictionary<string, CacheEntry> Cache = new(StringComparer.OrdinalIgnoreCase);
+
     public static ProjectFileInfo? Read(string projectFilePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(projectFilePath);
+
+        var lastWriteUtc = default(DateTime);
+        try
+        {
+            lastWriteUtc = File.GetLastWriteTimeUtc(projectFilePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Unreadable metadata: fall through to the parse, which reports the real failure.
+        }
+
+        if (Cache.TryGetValue(projectFilePath, out var cached) && cached.LastWriteUtc == lastWriteUtc)
+        {
+            return cached.Info;
+        }
+
+        var info = ReadCore(projectFilePath);
+        Cache[projectFilePath] = new CacheEntry(lastWriteUtc, info);
+        return info;
+    }
+
+    private static ProjectFileInfo? ReadCore(string projectFilePath)
+    {
 
         XDocument document;
         try
