@@ -1053,7 +1053,7 @@ Everything above is **implemented and verified but unreleased**. `<Version>` is 
 | 2 | `dotnet pack` | **done** — `Snipper.1.7.0.nupkg`, 11.34 MB, README + `TieredPGO: false` verified inside |
 | 3 | Global tool install | **done** — 1.7.0 installed from the packed nupkg |
 | 4 | Self-run against the *installed* tool | **done** — version, exit codes, JSON schema, dogfood, and packaged-vs-local byte parity |
-| 5 | Monorepo A/B on the 4C High tier | pending — determinism now fixed, re-run required |
+| 5 | Monorepo A/B on the 4C High tier | **ran and deterministic**; 4 High-tier defects open, see below |
 | 6 | Commit | **done** (4 commits) + this release commit |
 
 Packaged-artifact verification worth recording: the installed tool and the local Release build produce a
@@ -1181,7 +1181,59 @@ than changed blind: picking a winner deterministically is cheap and safe, but it
 output for multi-TFM solutions, and that deserves its own measurement on a target that actually
 multi-targets (`MILKRUN.slnx` does).
 
-## Also found during validation, unrelated to 4C
+## Gate 5 — monorepo A/B on the 4C High tier (runs; High tier NOT yet signable)
+
+Target: `C:\ws\milkrun\MILKRUN.slnx` — 2,763 `.cs` files, 81 projects, 3,896 commits, multi-targeted.
+Exclusions as specified by the owner. Installed packaged tool (1.7.0), not a local build.
+
+| Run | Wall | Findings | SNP0031 | SNP0032 |
+|---|---|---|---|---|
+| plain | 107.2 s (130 s cold) | 2,137 | — | — |
+| `--duplicate-detection --clone-drift` | 110.3 s | 6,812 | 4,373 | 302 |
+| `--duplicate-detection --clone-drift` | 114.6 s | 6,812 | 4,373 | 302 |
+| `--duplicate-detection --clone-drift` | 117.2 s | 6,812 | 4,373 | 302 |
+
+**Determinism holds at scale.** Runs 2 and 3 are separate processes and the reports are byte-identical
+apart from `generatedAtUtc`. This is the check that gate 5 was actually waiting on.
+
+**Performance is inside budget.** Marginal cost of the whole 4C tier is ~3–10 s on 2,763 files, against
+the ≤15 s the roadmap allows for SNP0031. Both fixes in this release were needed to get here: before the
+cap this run did not finish in 20 minutes.
+
+**Distribution.** SNP0031 is 4,373 findings, all `Advisory`, across 747 distinct files — median fragment
+76 tokens, and **54 % are ≤80 tokens**, i.e. close to the 60-token minimum window. That is a lot of
+surface for the lowest tier, and at this scale it wants its own tuning pass; the cap is what made it
+tractable, not what made it small.
+
+SNP0032 is 302 findings: 191 `Advisory` plus **111 `High`**, from clone sets of 2 copies (95), 3 (12),
+and one each of 4, 6, 7 and 11 copies.
+
+**Spot-checked a High finding, and it is a true positive.** `GetOrdersQuery.cs:50` reads
+`_lastOrderId ?? Guid.Empty` while both siblings in the clone set — `ChannelsQuery.cs:24` and
+`GetStoresQuery.cs:27` — read `lastOrderId ?? Guid.Empty`. Commit `094f266` renamed one copy only. The
+clone set and the one-sided divergence are both real.
+
+### Four defects found in the High tier while validating
+
+The mechanics pass; the presentation does not. These are recorded rather than fixed here, because each one
+changes what a High-tier finding claims and none is a release-mechanics decision.
+
+1. **Every one of the 111 High findings cites its siblings by bare filename** while its own `filePath` is
+   absolute. `GetStoresQuery.cs` exists at **two** paths in this repo, so those references are genuinely
+   ambiguous — you cannot act on the finding without a search. High tier must be self-locating.
+2. **4 of 111 attribute the "equivalent change reached the sibling later" to a single repeated SHA**, once
+   per sibling, e.g. `92a2b30 on 2025-05-14; 92a2b30 on 2025-05-14`. Either one commit fixed both siblings
+   or the attribution is not per-sibling; as written it cannot be told apart.
+3. **3 of 111 anchor on a line containing only `;`, `{` or `}`**, e.g. `GetCustomCountQuery.cs:1`. The
+   location points nowhere useful.
+4. **Severity over-claims.** The verified sample is a *cosmetic underscore rename*, yet it is reported as
+   "One-sided defensive fix" at `High`. The mechanism is right; the label claims more significance than a
+   rename warrants. High tier needs the significance of the divergence to be judged, not just its
+   existence — otherwise 111 High findings train reviewers to ignore High.
+
+**Verdict:** gate 5's *run* requirement is met — 4C completes, is deterministic, and is within budget on a
+2,763-file monorepo. The High tier's *quality* bar is not met until 1–4 are addressed. Recording gate 5 as
+passed would be signing off on a number I have not earned.
 
 Snipper surfaces a raw unhandled `System.Xml.XmlDocument` stack trace when handed a malformed `.slnx` (hit
 by hand-writing one). There is no try/catch around `OpenSolutionAsync`, so bad input produces a crash dump
@@ -1190,7 +1242,7 @@ not a regression from this work.
 
 ## Open items that gate or qualify the release
 
-**4C's High tier could not be signed off: the finding set was not stable between runs on identical input. Both causes are now fixed (see below), so this gate needs re-running rather than re-litigating.** The roadmap's own Wave 4 exit
+**4C's High tier runs deterministically on a 2,763-file monorepo and fits its performance budget. It is not yet signable: four High-tier defects were found during validation.** The roadmap's own Wave 4 exit
 criterion — "4C's High tier produces zero false positives on the monorepo or drops a tier" — is
 **not met**. It is verified on the SampleApp fixture and on the author's own repository only. This
 is the single most important thing left, because 4C is the one story that emits *correctness*
