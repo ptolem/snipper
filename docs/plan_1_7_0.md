@@ -1235,6 +1235,11 @@ figure previously recorded here came from consecutive non-interleaved runs and i
 surface for the lowest tier, and at this scale it wants its own tuning pass; the cap is what made it
 tractable, not what made it small.
 
+**The tuning pass was attempted in 1.7.1 and measured as a no-go.** There is no trimmable noise tail —
+raising either threshold deletes representative findings rather than noise, so the count was deliberately
+left alone. The measurement, and the one lever that does exist (reporting per clone set instead of per
+occurrence), are recorded in [`plan_1_7_1.md`](plan_1_7_1.md).
+
 SNP0032 is 302 findings: **220 `Advisory` + 82 `High`**. By kind — 185 `One-sided change` (Advisory),
 35 `One-sided rename` (Advisory), 82 `One-sided defensive fix` (High). By clone-set size: 2 copies
 (244), 3 (31), 4 (6), 5 (3), 6 (1), 7 (2), 9 (1), 10 (2), 11 (6), 12 (1), 19 (2), 126 (2), 148 (1).
@@ -1296,10 +1301,12 @@ individually inspected.
 Dogfood on `Snipper.slnx` remains at the 1.6.3 baseline of 3 pre-existing findings, zero contributed
 by this work.
 
-Snipper surfaces a raw unhandled `System.Xml.XmlDocument` stack trace when handed a malformed `.slnx` (hit
-by hand-writing one). There is no try/catch around `OpenSolutionAsync`, so bad input produces a crash dump
-instead of a diagnostic. Worth a follow-up; it is a robustness gap against the "degrade gracefully" tenet,
-not a regression from this work.
+**RESOLVED in 1.7.1** — Snipper used to surface a raw unhandled `System.Xml.XmlDocument` stack trace
+when handed a malformed `.slnx`. The wording above was slightly wrong on its own diagnosis: there *was* a
+try/catch around `OpenSolutionAsync`, but its filter was a closed type list that `XmlException` did not
+match. Fixed in 1.7.1 — see [`plan_1_7_1.md`](plan_1_7_1.md). The note is left here rather than deleted
+because the misdiagnosis is the interesting part: "no try/catch" and "a try/catch that does not cover this
+case" call for different fixes.
 
 ## Open items that gate or qualify the release
 

@@ -26,6 +26,63 @@ public sealed class CliRunnerShould
         exitCode.Should().Be(1);
     }
 
+    /// <summary>
+    /// A malformed <c>.slnx</c> used to escape as an unhandled <c>System.Xml.XmlException</c>. The
+    /// open-path filter matched IO exceptions plus the two MSBuild invalid-file exceptions, and
+    /// <c>XmlException</c> derives from <c>SystemException</c>, not <c>IOException</c>, so it reached
+    /// none of those clauses. SolutionPersistence throws it from an <c>XmlDocument.Load</c> in the
+    /// serializer's reader constructor and nothing above wraps, so the process died on a raw stack
+    /// trace with exit -532462766 rather than the documented 1.
+    /// <para>
+    /// Asserting the exit code alone would not catch that, because an unhandled exception also exits
+    /// non-zero - just the wrong way - which is why the assertion is on not throwing.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Return_One_Rather_Than_Throwing_When_The_Solution_File_Is_Malformed_Xml_For_RunAsync()
+    {
+        var directory = Directory.CreateTempSubdirectory("snipper-malformed-slnx");
+        try
+        {
+            var path = Path.Combine(directory.FullName, "Broken.slnx");
+            // <Solution> is opened and never closed.
+            await File.WriteAllTextAsync(path, "<Solution>\n  <Project Path=\"A.csproj\" />\n");
+
+            var act = () => CliRunner.RunAsync([path]);
+
+            (await act.Should().NotThrowAsync()).Which.Should().Be(1);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The same defect had a second shape: a <c>.slnx</c> that is <em>well-formed</em> XML with an
+    /// invalid schema fails inside <c>SlnxFile.ToModel</c> with a <c>SolutionException</c>, which is
+    /// not an IO type either. Valid XML is not a valid solution, and a wrong root element is the easy
+    /// way to reach it.
+    /// </summary>
+    [Fact]
+    public async Task Return_One_Rather_Than_Throwing_When_The_Solution_Has_An_Invalid_Schema_For_RunAsync()
+    {
+        var directory = Directory.CreateTempSubdirectory("snipper-bad-schema-slnx");
+        try
+        {
+            var path = Path.Combine(directory.FullName, "WrongRoot.slnx");
+            await File.WriteAllTextAsync(path, "<NotASolution><Project /></NotASolution>");
+
+            var act = () => CliRunner.RunAsync([path]);
+
+            (await act.Should().NotThrowAsync()).Which.Should().Be(1);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Return_One_When_Format_Value_Is_Invalid_For_RunAsync()
     {

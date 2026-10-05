@@ -73,7 +73,7 @@ If the target path is omitted, Snipper prints the synopsis and exits 1.
 | Code | Meaning |
 | --- | --- |
 | `0` | Analysis completed. **Also returned when there are findings.** |
-| `1` | Usage error — missing target, malformed flag value, unknown argument, or `--entropy-rate` without `--baseline`. |
+| `1` | Usage error — missing target, malformed flag value, unknown argument, `--entropy-rate` without `--baseline`, or a target that could not be opened. The last includes a malformed `.slnx`, and one whose XML is well-formed but schema-invalid (wrong root element, bad project `Type` GUID). Both are reported as `Error: Failed to open '<path>': <reason>` and exit 1; before 1.7.1 they crashed with an unhandled exception and exit -532462766. |
 | `2` | The report could not be written (I/O error). |
 | `3` | The entropy budget was exceeded (`--entropy-budget`). |
 

@@ -57,7 +57,7 @@ snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--bas
 | Code | Meaning |
 | --- | --- |
 | `0` | Analysis completed (and report written, if requested). |
-| `1` | Usage error: missing/invalid arguments, missing target, or unopenable solution. |
+| `1` | Usage error: missing/invalid arguments, missing target, or a target that could not be opened — including a malformed `.slnx` or a solution whose XML is well-formed but schema-invalid. |
 | `2` | Report could not be written to disk. |
 | `3` | Entropy budget exceeded (`--entropy-budget`). Distinct from `1` and `2` so a pipeline can tell a policy failure from a tool failure. |
 

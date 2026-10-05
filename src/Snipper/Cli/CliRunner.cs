@@ -99,12 +99,41 @@ public static class CliRunner
                 ? (await workspace.OpenProjectAsync(targetPath).ConfigureAwait(false)).Solution
                 : await workspace.OpenSolutionAsync(targetPath).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is FileNotFoundException or IOException or UnauthorizedAccessException
-            || ex.GetType().Name is "InvalidProjectFileException" or "InvalidSolutionFileException")
+        catch (OperationCanceledException)
         {
-            // InvalidProjectFileException lives in Microsoft.Build assemblies that are
-            // runtime-resolved via MSBuildLocator, not compile-time referenced — matched by name.
-            AnsiConsole.MarkupLine($"[red]Error: Failed to open '{targetPath}': {ex.Message}[/]");
+            // Ctrl+C, not a bad target. Reporting this as "failed to open" would misattribute a
+            // user interrupt to their solution file.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Any failure here means the target could not be opened, and saying so is more useful
+            // than whatever the third-party stack chose to throw. This used to filter on a closed
+            // set - IO exceptions plus InvalidProjectFileException/InvalidSolutionFileException,
+            // the latter two matched by name because they live in MSBuild assemblies resolved at
+            // runtime through MSBuildLocator rather than referenced at compile time. That filter
+            // leaked, because the malformed-input cases are none of those:
+            //
+            //   System.Xml.XmlException         invalid XML in a .slnx, from SolutionPersistence's
+            //                                 SlnXMLSerializer constructing an XmlDocument over the
+            //                                 stream. Derives from SystemException, not IOException.
+            //   SolutionException               .slnx that is well-formed XML with an invalid
+            //                                 schema (wrong root element, bad project Type GUID).
+            //   InvalidDataException            a .slnf filter naming a solution that is not there.
+            //
+            // None of those reach the old filter, so a hand-written malformed .slnx escaped as an
+            // unhandled exception and the process died on a raw stack trace with the runtime's
+            // abort exit code rather than the documented 1.
+            //
+            // Catching broadly is safe *here* and only here: this try block contains the dispatch
+            // ternary and two await calls into MSBuild/SolutionPersistence, and no Snipper logic, so
+            // there is no defect of ours for a broad catch to hide. Cancellation is rethrown above.
+            // Project-level failures stay non-fatal and continue through the workspace-failed handler.
+            //
+            // Both interpolations are markup-escaped: an XmlException message routinely ends
+            // "[at line 3, position 12]", and unescaped brackets are parsed as Spectre markup.
+            AnsiConsole.MarkupLine(
+                $"[red]Error: Failed to open '{Markup.Escape(targetPath)}': {Markup.Escape(ex.Message)}[/]");
             return 1;
         }
 

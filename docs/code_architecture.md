@@ -598,8 +598,24 @@ A project that fails to restore or compile does not abort the run. Each distinct
 and duplicates are counted, because a monorepo with one broken project should still be analysed. Only
 `OpenSolutionAsync`/`OpenProjectAsync` failure itself is fatal (exit 1).
 
-`InvalidProjectFileException` and `InvalidSolutionFileException` are matched **by type name**, not by
-type, because those types live in runtime-resolved MSBuild assemblies.
+That fatal path catches **`Exception`** rather than a closed type list, and the asymmetry with
+`ProjectFileReader` is deliberate: `ProjectFileReader` catches `XmlException` explicitly because it
+loads a single known file, while the open call is a boundary into MSBuild + SolutionPersistence and any
+failure from it means the target could not be opened. `OperationCanceledException` is rethrown first, so
+Ctrl+C is not misreported as a bad solution file. Both the path and the message are `Markup.Escape`d,
+because an `XmlException` message routinely ends `[at line 3, position 12]` and unescaped brackets are
+parsed as Spectre markup.
+
+The previous filter — IO exceptions plus `InvalidProjectFileException`/`InvalidSolutionFileException` —
+was a closed list that leaked. `XmlException` derives from `SystemException`, not `IOException`, so a
+hand-written malformed `.slnx` escaped as an unhandled exception and the process died with exit
+-532462766 instead of 1. A `.slnx` that is well-formed XML with an invalid schema failed the same way via
+`SolutionException`.
+
+`InvalidProjectFileException` and `InvalidSolutionFileException` are no longer matched by name, because
+the broad catch subsumes them; the reason they were matched by name — living in runtime-resolved MSBuild
+assemblies rather than being compile-time references — is why the list could not simply be widened with
+confidence at each new exception type.
 
 ### Generated and external code
 

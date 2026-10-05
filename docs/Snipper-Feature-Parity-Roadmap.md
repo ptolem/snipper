@@ -65,6 +65,28 @@ Not a rule wave. The 2026-10-03 competitive re-analysis ([`competitive-analysis.
 
 **Exit criteria:** 4A ships and reports on Snipper's own repository ✅ (it reports 33% of debt hidden under a one-rule suppression); 4A-2 makes the baseline churn-proof under every channel ✅; 4B's rate is measured against a plausible budget before any gate is enabled ✅ for the *opt-in* gate — **no default budget ships**, and per-team CODEOWNERS attribution is deferred; 4C's High tier produces zero false positives on the monorepo or drops a tier - **met 2026-10-05 on the second branch** (29 High findings demoted to Advisory, 111 -> 82); all three documented in README and `competitive-analysis.md` §8.1 ✅ (4A, 4B and 4C).
 
+### 1.7.1 released 2026-10-05 — unopenable targets, and an SNP0031 tuning pass measured as a no-go
+
+A patch release carrying one behavioural fix and one documented non-change. Full detail, measurements
+and the reasoning are in [plan_1_7_1.md](plan_1_7_1.md).
+
+**A malformed .slnx crashed the process.** The open-path filter was a closed type list and
+System.Xml.XmlException derives from SystemException, not IOException, so it matched nothing.
+SolutionPersistence throws it from an XmlDocument.Load in the serializer's reader constructor and
+nothing upstream wraps. A hand-written malformed .slnx produced Unhandled exception... and exit
+-532462766 instead of the documented 1. A .slnx that is well-formed XML with an invalid schema
+failed the same way via SolutionException. Now both exit 1 with a diagnostic, and a latent second
+bug on the same line is fixed too: neither the path nor the exception message was Markup.Escaped,
+and an XmlException message ends [at line 3, position 12], which Spectre parses as markup.
+
+**SNP0031's 4,373 findings on the monorepo were investigated and left alone.** 1.7.0 recorded that
+the count "wants its own tuning pass"; that pass was run and it measured as a no-go. There is no
+trimmable tail — the line distribution peaks at 10-13 lines, only 8% of findings sit at the 60-token
+window floor, and zero are in generated code. Every threshold that shrinks the count deletes
+representative findings rather than noise. The real driver is that the rule emits one finding per
+occurrence rather than per clone set (134,675 occurrences behind 4,373 findings); switching to per-set
+reporting would cut roughly 73% but changes the rule's contract, and with it baseline-churn and entropy
+rate semantics. Deferred to its own plan rather than smuggled into a patch release.
 ### 4D added 2026-10-04 — performance and correctness increment (not a roadmap story)
 
 Surfaced while validating 4C for release, and shipped in the same 1.7.0 because two of its
