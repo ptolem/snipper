@@ -485,6 +485,21 @@ public sealed class CloneDriftDetector
 
             foreach (var hunk in hunks)
             {
+                // A hunk that created this copy is not a one-sided *fix*: nothing existed
+                // to fall out of sync, so there was no inconsistency for the commit to
+                // resolve. On a real repository this is the majority of what the rule sees -
+                // the merge that introduced a clone set was being reported as drift within
+                // it, and the "later (… on …) reached …" clause could name a catch-up that
+                // in fact predated the change it was meant to resolve.
+                //
+                // Keyed on git's "new file mode" header, not on OldCount == 0: a guard
+                // inserted above a cloned block is also "@@ -N,0 +N,K @@", and that is the
+                // canonical shape this rule exists to report.
+                if (hunk.IsFileCreation)
+                {
+                    continue;
+                }
+
                 if (!CloneDriftClassifier.HunkTouchesRegion(hunk, member.StartLine, member.EndLine))
                 {
                     continue;
@@ -605,6 +620,10 @@ public sealed class CloneDriftDetector
 
             foreach (var hunk in hunks)
             {
+                // Deliberately left as OldCount > 0 rather than switched to IsFileCreation.
+                // The stated intent is "only hunks that modify existing lines count", and a
+                // pure insertion modifies no line - so IsFileCreation would wrongly admit
+                // insertions and suppress drift the sibling really did resolve.
                 if (hunk.OldCount > 0
                     && CloneDriftClassifier.HunkTouchesRegion(hunk, sibling.StartLine, sibling.EndLine))
                 {

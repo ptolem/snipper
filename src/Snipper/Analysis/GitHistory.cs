@@ -23,7 +23,8 @@ internal sealed record PatchHunk(
     int NewCount,
     string[] AddedLines,
     string[] RemovedLines,
-    int[]? ChangedNewLines = null);
+    int[]? ChangedNewLines = null,
+    bool IsFileCreation = false);
 
 /// <summary>The most recent commit to touch one path.</summary>
 /// <param name="Sha">Full commit SHA.</param>
@@ -213,6 +214,14 @@ internal static class GitHistory
         var added = new List<string>();
         var removed = new List<string>();
 
+        // Whether the section now being walked added its file. Set from git's own
+        // "new file mode" / "--- /dev/null" header rather than inferred from the hunk
+        // coordinates: a creation and a pure insertion both consume nothing from the
+        // pre-image ("@@ -0,0 +1,N @@" and "@@ -17,0 +18,4 @@"), so OldCount cannot
+        // tell them apart, and 4C needs to. Reset per file, on "diff --git" - which
+        // precedes "new file mode" and therefore "+++ b/" - and not on "+++ b/".
+        var isFileCreation = false;
+
         // Post-image lines the open hunk really changed, and the running post-image position as
         // the hunk body is walked. Context advances the position but changes nothing.
         var changed = new List<int>();
@@ -228,7 +237,7 @@ internal static class GitHistory
             {
                 if (open is { } previous && path is not null)
                 {
-                    Append(byPath, path, Build(previous, added, removed, changed));
+                    Append(byPath, path, Build(previous, added, removed, changed, isFileCreation));
                 }
 
                 added.Clear();
@@ -239,13 +248,28 @@ internal static class GitHistory
                 continue;
             }
 
+            if (line.StartsWith("new file mode", StringComparison.Ordinal)
+                || line.StartsWith("--- /dev/null", StringComparison.Ordinal))
+            {
+                isFileCreation = true;
+                continue;
+            }
+
             if (line.StartsWith("diff --git", StringComparison.Ordinal))
             {
                 // A deletion has no "+++ b/" line, so close the section on the header instead.
+                // Built *before* the flag is reset below: this hunk belongs to the section that
+                // is ending, so it must keep that section's creation verdict. Resetting first
+                // silently unmarked the last hunk of every added file.
                 if (open is { } closing && path is not null)
                 {
-                    Append(byPath, path, Build(closing, added, removed, changed));
+                    Append(byPath, path, Build(closing, added, removed, changed, isFileCreation));
                 }
+
+                // A new file section begins, so the previous section's verdict is void.
+                // Reset here rather than on "+++ b/": git emits "new file mode" *before*
+                // the "+++ b/" line, so clearing it there would lose the evidence.
+                isFileCreation = false;
 
                 added.Clear();
                 removed.Clear();
@@ -258,7 +282,7 @@ internal static class GitHistory
             {
                 if (open is { } finished && path is not null)
                 {
-                    Append(byPath, path, Build(finished, added, removed, changed));
+                    Append(byPath, path, Build(finished, added, removed, changed, isFileCreation));
                 }
 
                 added.Clear();
@@ -294,7 +318,7 @@ internal static class GitHistory
 
         if (open is { } last && path is not null)
         {
-            Append(byPath, path, Build(last, added, removed, changed));
+            Append(byPath, path, Build(last, added, removed, changed, isFileCreation));
         }
 
         return byPath.ToDictionary(
@@ -314,14 +338,16 @@ internal static class GitHistory
         list.Add(hunk);
     }
 
-    private static PatchHunk Build(
-        PatchHunk open, List<string> added, List<string> removed, List<int> changed) =>
-        open with
-        {
-            AddedLines = [.. added],
-            RemovedLines = [.. removed],
-            ChangedNewLines = changed.Count > 0 ? [.. changed] : null,
-        };
+        private static PatchHunk Build(
+            PatchHunk open, List<string> added, List<string> removed, List<int> changed,
+            bool isFileCreation) =>
+            open with
+            {
+                AddedLines = [.. added],
+                RemovedLines = [.. removed],
+                ChangedNewLines = changed.Count > 0 ? [.. changed] : null,
+                IsFileCreation = isFileCreation,
+            };
 
     /// <summary>Parses <c>@@ -old,count +new,count @@</c>, tolerating an omitted count of 1.</summary>
     private static bool TryParseHunkHeader(string line, out PatchHunk hunk)

@@ -44,6 +44,20 @@ public sealed class UnusedUsingDirectiveAnalyser(AnalysisExclusions? exclusions 
                 continue;
             }
 
+            // Roslyn can describe ONE directive with TWO diagnostics: when an ordinary using
+            // duplicates a project-level global one, CS8019 ("unnecessary") and CS8933
+            // ("duplicates a global using") both land on the same UsingDirectiveSyntax. Both
+            // were surfaced, so every such directive was reported twice - and because the two
+            // messages differ, BaselineService.ComputeFingerprint gave them different hashes,
+            // so a consumer acting on one saw the other resurface as new. 62 of 250 findings
+            // on the MILKRUN sweep were second copies of a directive already reported.
+            //
+            // Keyed on the directive, not on the diagnostic's own span: the two diagnostics do
+            // not share one, so neither a span nor a (file, line) key separates them. CS8933
+            // wins whichever order the two arrive in - and they do not arrive in a fixed
+            // order, since this loop walks GetDiagnostics().
+            var reported = new Dictionary<(DocumentId DocumentId, int DirectiveStart), (string DiagnosticId, SnipperFinding Finding)>();
+
             foreach (var diagnostic in compilation.GetDiagnostics(cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -74,8 +88,21 @@ public sealed class UnusedUsingDirectiveAnalyser(AnalysisExclusions? exclusions 
                     continue;
                 }
 
+                var directive = node as UsingDirectiveSyntax ?? node.FirstAncestorOrSelf<UsingDirectiveSyntax>();
+                if (directive is null)
+                {
+                    continue;
+                }
+
+                var key = (document.Id, directive.SpanStart);
+                if (reported.TryGetValue(key, out var alreadySeen)
+                    && (diagnostic.Id != "CS8933" || alreadySeen.DiagnosticId == "CS8933"))
+                {
+                    continue;
+                }
+
                 var lineSpan = diagnostic.Location.GetLineSpan();
-                findings.Add(new SnipperFinding(
+                reported[key] = (diagnostic.Id, new SnipperFinding(
                     RuleId: "SNP0019",
                     Title: "Unused Using Directive",
                     Message: BuildMessage(diagnostic.Id, node),
@@ -85,6 +112,11 @@ public sealed class UnusedUsingDirectiveAnalyser(AnalysisExclusions? exclusions 
                     LineNumber: lineSpan.StartLinePosition.Line + 1,
                     CharacterOffset: lineSpan.StartLinePosition.Character + 1,
                     Symbol: null));
+            }
+
+            foreach (var entry in reported.Values)
+            {
+                findings.Add(entry.Finding);
             }
         }
 

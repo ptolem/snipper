@@ -144,6 +144,57 @@ public sealed class CloneDriftShould : IDisposable
     }
 
     [Fact]
+    public void Keep_The_Creation_Verdict_Per_File_Section_In_A_Mixed_Commit()
+    {
+        // One commit that adds one file and modifies another. The flag has to be scoped to the
+        // section, and the section that a "diff --git" closes must be built *before* the flag is
+        // reset - otherwise the last hunk of every added file is unmarked and still reported.
+        var repo = NewRepo();
+        Write(repo, "Existing.cs", "one\n");
+        Commit(repo, "first");
+
+        Write(repo, "Existing.cs", "one\ntwo\n");
+        Write(repo, "Added.cs", "alpha\nbeta\n");
+        Commit(repo, "add a second file");
+        var mixed = Head(repo);
+
+        var patch = GitHistory.TryGetPatches(repo, [mixed])!.Single();
+
+        patch.HunksByPath["Added.cs"].Should().ContainSingle()
+            .Which.IsFileCreation.Should().BeTrue("this commit added that file");
+        patch.HunksByPath["Existing.cs"].Should().ContainSingle()
+            .Which.IsFileCreation.Should().BeFalse("this commit only modified that file");
+    }
+
+    [Fact]
+    public void Distinguish_A_Pure_Insertion_From_A_File_Creation()
+    {
+        // Both shapes consume nothing from the pre-image, so OldCount == 0 does not
+        // separate them - it would suppress the canonical guard-above-a-cloned-block
+        // shape along with file creation. "new file mode" is the only real evidence.
+        var repo = NewRepo();
+        Write(repo, "A.cs", "one\ntwo\nthree\n");
+        Commit(repo, "first");
+        Write(repo, "A.cs", "one\ntwo\nguard\nthree\n");
+        Commit(repo, "insert a guard");
+        var insertion = Head(repo);
+        Write(repo, "B.cs", "brand new\n");
+        Commit(repo, "add a new file");
+        var creation = Head(repo);
+
+        var patches = GitHistory.TryGetPatches(repo, [insertion, creation]);
+
+        patches.Should().NotBeNull();
+        var inserted = patches!.Single(p => p.Sha == insertion).HunksByPath["A.cs"].Should().ContainSingle().Subject;
+        inserted.OldCount.Should().Be(0, "git reports an insertion as consuming nothing from the pre-image");
+        inserted.IsFileCreation.Should().BeFalse("inserting into an existing file creates nothing");
+
+        var created = patches.Single(p => p.Sha == creation).HunksByPath["B.cs"].Should().ContainSingle().Subject;
+        created.OldCount.Should().Be(0, "a file creation has no pre-image either");
+        created.IsFileCreation.Should().BeTrue("git marks an added file with 'new file mode'");
+    }
+
+    [Fact]
     public void Attribute_Each_Hunk_To_Its_Own_File_In_A_Multi_File_Commit()
     {
         // The parser walks one text stream, so a multi-file patch is where a hunk could be
@@ -292,6 +343,57 @@ public sealed class CloneDriftShould : IDisposable
             finding.GetProperty("message").GetString().Should().Contain("guard empty label");
             finding.GetProperty("message").GetString().Should().Contain("CloneFixtures.cs",
                 "the message must name the copy that was left behind");
+        }
+        finally
+        {
+            Delete(workspace);
+        }
+    }
+
+    [Fact]
+    public async Task Report_No_Drift_For_A_Copy_Whose_Most_Recent_Commit_Created_The_File()
+    {
+        // The shape behind 58 of the 82 High findings in the MILKRUN sweep: the merge
+        // that *introduced* a clone set was reported as drift within it. A commit that
+        // creates a file cannot have left a sibling un-fixed - before it there was no
+        // copy at all, so "one-sided fix" and "one-sided change" are different claims.
+        var workspace = SampleWorkspace();
+        try
+        {
+            var seed = Path.Combine(workspace, "CoreLib", "CloneFixtures.cs");
+            var added = File.ReadAllText(seed).Replace("SeedPair", "SeedPairAdded", StringComparison.Ordinal);
+            Write(workspace, "CoreLib/CloneFixturesAdded.cs", added);
+            Commit(workspace, "feat: add a second copy of the pair");
+
+            using var document = await RunAsync(workspace);
+
+            DriftFindings(document).Should().BeEmpty(
+                "a commit whose only change is creating this copy cannot be a fix for its siblings");
+        }
+        finally
+        {
+            Delete(workspace);
+        }
+    }
+
+    [Fact]
+    public async Task Still_Report_Drift_For_A_Copy_Whose_Most_Recent_Commit_Only_Inserted_A_Guard()
+    {
+        // The counterweight to the test above, and the reason creation is keyed on
+        // "new file" rather than "no pre-image lines": inserting a guard consumes
+        // nothing from the pre-image, so it has the same OldCount as a creation. If
+        // the guard is ever widened to OldCount, this test is the one that catches it.
+        var workspace = SampleWorkspace();
+        try
+        {
+            SeedInconsistentFix(workspace);
+
+            using var document = await RunAsync(workspace);
+
+            var drift = DriftFindings(document);
+            drift.Should().ContainSingle(
+                "a guard inserted into one copy is exactly the drift this rule exists for");
+            drift[0].GetProperty("certainty").GetString().Should().Be("High");
         }
         finally
         {
