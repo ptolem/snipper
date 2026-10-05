@@ -91,11 +91,24 @@ Three consequences, all verified:
    and never correctness." It does not cost time. It costs correctness.
 
 Compounding it, `Normalize` collapses every identifier to `ID`, string literal to `STR` and number to
-`NUM`, so even a *verified* match is a shape match. Verified shapes still collide across unrelated
-domains — const tables, DI registration lists and DTO property lists all normalise to the same tokens.
+`NUM`, so even a *verified* match is a shape match.
 
-**Evidence** — `src/M60.BridgingServices.Client/ServiceHost/ArticleEventListenerServiceHostFactory.cs:15`
-vs `src/Metro60.CommerceTools.Utility.API/WebApplicationBuilderExtensions.cs:48`:
+> **Correction, recorded after 1.7.3 shipped.** The example originally given here was **not** a hash
+> collision. `services.AddSingleton<IGraphQLService, GraphQLService>();` and
+> `services.AddScoped<ICustomerServiceCommon, CustomerServiceCommon>();` normalise to the *same* tokens
+> - `ID . ID < ID , ID > ( ) ;` - so they are a genuine token-identity match and the rule behaved as
+> designed. That is the aggressive-normalisation problem, not the bucket problem, and no hash
+> verification removes it.
+>
+> A real collision, caught in the wild by 1.7.2 and fixed in 1.7.3: `EventHubPartitionStats.cs:34`, a
+> partition-stats `ToString()`, was reported as a 60-token clone of `EdrNZServiceShould.cs:744`,
+> which is `Substitute.For<Refit.IApiResponse>()`. No shared tokens - a shared 32-bit hash.
+>
+> **1.7.3 measured 232 SNP0031 findings removed and 0 added.** The DI/const-table family is the larger,
+> separate problem and is still open - see the E1 entry in [`plan_1_7_3.md`](plan_1_7_3.md).
+
+The DI-registration family, kept because the observation underneath it is sound even though the
+attribution was not:
 
 ```csharp
 services.AddSingleton<IGraphQLService, GraphQLService>();      // 10 tokens
@@ -555,7 +568,7 @@ variables cannot be deleted — they must become `_`. e.g.
 | 1 | **E2** — skip file-creation hunks in `Evaluate` | 90 whole-report | small | **shipped in 1.7.2** |
 | 2 | **F1** — dedupe SNP0019 per directive | 62 | tiny | **shipped in 1.7.2** |
 | 3 | **F4** — invert the SNP0012 gate | 29 | — | **withdrawn: not a false positive** |
-| 4 | **E1** — verify the window in `Extend` | 1 hard FP + a large share of the 53 benign | medium; will *reduce* SNP0031's count, so re-baseline | open |
+| 4 | **E1** - verify the window in `Extend` | 232 SNP0031 removed, 0 added (whole report) | medium | **shipped in 1.7.3** |
 | 5 | **F2 / F3** — serialisation-contract awareness for SNP0006/SNP0018 | 97 | large; needs the response-graph resolution to be principled | open |
 | 6 | **F5** — comment/string-aware markers, relocation detection | ~17 | small–medium | open |
 
@@ -573,8 +586,17 @@ Two corrections to this document, both found by implementing rather than reading
   existing lines count"). Switching it to `!IsFileCreation` suppressed 28 findings whose commit
   genuinely modified the file. Measured, reverted, and the reasoning left in the code.
 
-Item 4 is the one that changes an engine invariant and invalidates any SNP0031 baseline, so it should
-ship on its own with a fresh baseline rather than bundled with anything else.
+Item 4 shipped on its own as **1.7.3**, as planned, because it changes an engine invariant and
+invalidates any SNP0031 baseline. It removed **232 SNP0031 findings and added 0**; see
+[`plan_1_7_3.md`](plan_1_7_3.md). Its 24-word original estimate - "1 hard FP + a large share of the
+53 benign" - was wrong in an interesting direction: the hard FPs were undercounted and the benign
+count was a red herring, because the benign DI/const-table family is a *different* defect
+(over-aggressive normalisation) that E1 does not touch.
+
+1.7.3 also found and repaired a defect this document is only half responsible for: the `SampleApp`
+fixture had never compiled (8 distinct causes, 11 diagnostics), so a large part of this investigation
+- and every fixture-driven test in the suite - had been running against partial semantic information.
+`FixtureBuildShould` now pins that.
 
 Two consequences worth stating before anyone acts on this:
 

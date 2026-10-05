@@ -3,10 +3,11 @@ namespace CoreLib;
 // Stand-ins for the serialization attributes that demote SNP0021 to Moderate —
 // the analyser name-matches them, so the fixture needs no real serializer
 // packages (same pattern as FactAttribute in DeadCode.cs).
-public sealed class JsonIncludeAttribute : Attribute
-{
-}
-
+//
+// JsonIncludeAttribute is NOT declared here: PrivateSerializationPatterns.cs
+// already declares it for the same fixture purpose, and two declarations in one
+// namespace is CS0101. Do not "restore" it here — FixtureBuildShould fails the
+// suite if this fixture stops compiling.
 public sealed class DataMemberAttribute : Attribute
 {
 }

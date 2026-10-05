@@ -352,13 +352,42 @@ public sealed class DuplicateFragmentAnalyser(
     /// back up by different amounts, so each start offset is returned
     /// separately - sharing one index would misplace every fragment whose two
     /// sides are not aligned.
+    ///
+    /// The window is verified first, and that verification is load-bearing rather
+    /// than defensive. A bucket only says two windows hashed alike, and the key is
+    /// FNV-1a/32: at a million windows on a real codebase the birthday bound puts
+    /// collisions in the hundreds. The window is the very run a clone is made of,
+    /// so it has to be proven before it can seed anything. Previously the forward
+    /// scan simply began at <see cref="WindowTokens"/>, leaving offsets [0,60)
+    /// uncompared - so a collision produced a 60-token fragment between unrelated
+    /// files, and the caller's <c>length &lt; WindowTokens</c> check could never
+    /// fire because the returned length was always at least the window size.
     /// </summary>
-    private static (int LeftStart, int RightStart, int Length) Extend(
+    internal static (int LeftStart, int RightStart, int Length) Extend(
         IReadOnlyList<string> left,
         int leftStart,
         IReadOnlyList<string> right,
         int rightStart)
     {
+        // The index guarantees this on the CLI path, but Extend is reachable directly
+        // and must not read past either end to satisfy a caller it does not own.
+        if (leftStart < 0
+            || rightStart < 0
+            || leftStart + WindowTokens > left.Count
+            || rightStart + WindowTokens > right.Count)
+        {
+            return (leftStart, rightStart, 0);
+        }
+
+        for (var offset = 0; offset < WindowTokens; offset++)
+        {
+            if (!string.Equals(left[leftStart + offset], right[rightStart + offset], StringComparison.Ordinal))
+            {
+                return (leftStart, rightStart, 0);
+            }
+        }
+
+        // Verified, so the window is earned rather than assumed.
         var forward = WindowTokens;
         while (leftStart + forward < left.Count
             && rightStart + forward < right.Count

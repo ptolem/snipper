@@ -50,7 +50,7 @@ public static class RedundantTypeArgScenarios
         _ = EchoAmbiguous(7);
         _ = EchoNoArgs<int>();
         _ = EchoAnnotated<string?>("s");
-        return IdentityUninferrable<long>(5);
+        return (int)IdentityUninferrable<long>(5);
     }
 
     private static void RegisterViaFactory<TService>(Func<IServiceProvider, TService> factory)

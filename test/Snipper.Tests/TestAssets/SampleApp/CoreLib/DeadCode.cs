@@ -40,6 +40,9 @@ internal sealed class UnusedInternalType
     public void Nothing() { }
 }
 
+// Internal: App reaches this through RegisterInternalService below, because `internal`
+// does not cross an assembly boundary and App must not be a friend assembly of CoreLib -
+// HasFriendAssemblies would demote every SNP0005/SNP0023 in this project to Advisory.
 internal sealed class InternalRegisteredService
 {
     public int UnusedButRegistered() => 5;
@@ -146,12 +149,16 @@ public sealed class UnusedLocalAndParameterPatterns
     {
         var usedLocal = usedParam * 2;
         var unusedLocal = 42;
-        _ = int.TryParse("1", out var parsedOut);
-        _ = int.TryParse("2", out var usedOut);
+        // Discarded by leaving the call as a statement rather than `_ = call(...)`: the
+        // `var _ = 5;` below declares a real local named `_`, and in C# a lone `_` is a
+        // discard only while no such local is in scope. Assigning to it here was CS0841
+        // (use before declaration) and CS0029 (bool into int).
+        int.TryParse("1", out var parsedOut);
+        int.TryParse("2", out var usedOut);
         var (usedPart, unusedPart) = (1, 2);
         using var stream = new System.IO.MemoryStream();
         var _ = 5;
-        _ = int.TryParse("3", out _);
+        int.TryParse("3", out _);
         return usedLocal + usedPart + usedOut;
     }
 

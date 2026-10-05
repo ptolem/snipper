@@ -8,7 +8,10 @@ public static class JsonRoundTrip
 {
     public static string Echo(string value)
     {
-        var json = JsonSerializer.Serialize(value);
-        return JsonSerializer.Deserialize<string>(json) ?? string.Empty;
+        // Fully qualified, not `using System.Text.Json` alone: FrameworkPatterns.cs declares a
+        // stand-in `CoreLib.JsonSerializer`, and a type in the enclosing namespace beats one
+        // brought in by a using - so the unqualified name bound to the stand-in (CS0117 here).
+        var json = System.Text.Json.JsonSerializer.Serialize(value);
+        return System.Text.Json.JsonSerializer.Deserialize<string>(json) ?? string.Empty;
     }
 }

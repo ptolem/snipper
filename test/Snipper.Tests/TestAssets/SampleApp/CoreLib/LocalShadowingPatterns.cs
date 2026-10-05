@@ -9,16 +9,14 @@ namespace CoreLib;
 public sealed class LocalShadowingPatterns
 {
     /// <summary>
-    /// Inner <c>shadowed</c> is read; the outer one is not. The name appears in a
-    /// usage position either way, so only binding the identifier distinguishes them.
+    /// Inner <c>shadowed</c> is read; the outer one is not. Only a local function's parameter
+    /// may shadow an enclosing local (a block, loop or catch is CS0136), so the analyser must bind.
     /// </summary>
     public int OuterShadowedIsUnused(int value)
     {
         var shadowed = value;
-        {
-            var shadowed = value * 2;
-            return shadowed;
-        }
+        int Inner(int shadowed) => shadowed;
+        return Inner(value * 2);
     }
 
     /// <summary>Unread local whose name is spelled only inside a string literal.</summary>

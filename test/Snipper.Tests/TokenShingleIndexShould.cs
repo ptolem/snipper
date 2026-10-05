@@ -278,6 +278,96 @@ public sealed class TokenShingleIndexShould
         split.Should().NotBe(joined);
     }
 
+    // ---------- window verification ----------
+
+    /// <summary>
+    /// The smallest window the index will consider - 60 tokens, matching
+    /// <c>DuplicateFragmentAnalyser.WindowTokens</c>. Shape only; <see cref="Extend"/>
+    /// is driven on token text directly so no fixture has to reproduce a hash.
+    /// </summary>
+    private static List<string> Window(string lastToken = "tail")
+    {
+        var tokens = Enumerable.Repeat("ID", 59).ToList();
+        tokens.Add(lastToken);
+        return tokens;
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(29)]
+    [InlineData(58)]
+    [InlineData(59)]
+    public void Treat_A_Window_As_Unmatched_When_Any_Of_its_Tokens_Differs(int differingOffset)
+    {
+        // The defect this pins: Extend seeded its forward scan at WindowTokens, so the
+        // 60-token window it was handed was never compared. A pair that merely shared
+        // an FNV-1a/32 bucket therefore became a 60-token "clone" unverified - and
+        // offsets [0,60) are the very run a real clone is made of.
+        var left = Window();
+        var right = Window();
+        right[differingOffset] = "OTHER";
+
+        var (_, _, length) = DuplicateFragmentAnalyser.Extend(left, 0, right, 0);
+
+        length.Should().Be(0, "a bucket match is a hash collision until the window itself is proven");
+    }
+
+    [Fact]
+    public void Extend_A_Run_From_A_Window_That_Is_Actually_Equal()
+    {
+        // The counterweight. Proving the window must not cost one real clone.
+        var left = Window();
+        var right = Window();
+
+        var (leftStart, rightStart, length) = DuplicateFragmentAnalyser.Extend(left, 0, right, 0);
+
+        length.Should().Be(60, "an equal window is the minimum reportable fragment");
+        leftStart.Should().Be(0);
+        rightStart.Should().Be(0);
+    }
+
+    [Fact]
+    public void Treat_A_Real_Hash_Collision_As_No_Match()
+    {
+        // Proves the guard is load-bearing rather than theoretical: these two windows are
+        // genuinely indistinguishable to the index, and differ in content.
+        var prefix = Enumerable.Repeat("ID", 59).ToList();
+        var byHash = new Dictionary<int, string>();
+
+        List<string>? first = null;
+        List<string>? second = null;
+        for (var i = 0; i < 500_000 && second is null; i++)
+        {
+            var candidate = new List<string>(prefix) { "v" + i };
+            var hash = TokenShingleIndex.Hash(candidate, 0, 60);
+            if (byHash.TryGetValue(hash, out var prior))
+            {
+                first = [.. prefix, prior];
+                second = candidate;
+                break;
+            }
+
+            byHash[hash] = candidate[^1];
+        }
+
+        second.Should().NotBeNull("FNV-1a/32 collides well inside 500k 60-token windows");
+        first.Should().NotEqual(second, "otherwise this test would prove nothing about collisions");
+        TokenShingleIndex.Hash(first!, 0, 60).Should().Be(
+            TokenShingleIndex.Hash(second!, 0, 60),
+            "the whole point is that the index cannot tell these two apart");
+
+        DuplicateFragmentAnalyser.Extend(first!, 0, second!, 0).Length.Should().Be(0);
+    }
+
+    [Fact]
+    public void Treat_A_Window_That_Runs_Past_End_Of_Either_File_As_No_Match()
+    {
+        // Extend is reachable directly, so it must not trust its caller for bounds the
+        // index happens to guarantee on the CLI path.
+        DuplicateFragmentAnalyser.Extend(Window(), 0, Window(), 5).Length.Should().Be(0);
+    }
+
     private static int ReferenceHash(IReadOnlyList<string> tokens, int start, int length)
     {
         var hash = 2166136261u;

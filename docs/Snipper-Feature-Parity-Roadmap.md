@@ -87,6 +87,49 @@ representative findings rather than noise. The real driver is that the rule emit
 occurrence rather than per clone set (134,675 occurrences behind 4,373 findings); switching to per-set
 reporting would cut roughly 73% but changes the rule's contract, and with it baseline-churn and entropy
 rate semantics. Deferred to its own plan rather than smuggled into a patch release.
+
+### 1.7.2 and 1.7.3 released 2026-10-06 - false positives found by a first-800 sweep of the monorepo
+
+Two patch releases from one investigation. Full detail and measurements in
+[`1_7_1_false_positives_investigation.md`](1_7_1_false_positives_investigation.md) (the sweep),
+[`plan_1_7_2.md`](plan_1_7_2.md) and [`plan_1_7_3.md`](plan_1_7_3.md).
+
+**1.7.1's "no-go" was half wrong, and finding out why was the point.** The sweep read the first 800
+findings of the monorepo report against source: **265 false positives of 800** (33%), of which 482
+were real. Two engine-level defects accounted for 75.
+
+- **1.7.2 - SNP0032 was blaming file creations.** 90 of 302 findings said a commit that *created* a
+  file was a "one-sided defensive fix" - the merge that *introduced* a clone set, reported as drift
+  within it. Now skipped, keyed on git's `new file mode` header rather than `OldCount`, because a
+  guard inserted above a cloned block has the identical hunk header and is the shape the rule exists
+  to report. **High 82 -> 29.**
+- **1.7.2 - SNP0019 reported one directive twice.** Roslyn emits CS8019 *and* CS8933 on the same
+  `using` when it duplicates a global; both were surfaced, and because the messages differ both
+  hashed differently into the baseline. **250 -> 188**, with all 62 surviving CS8933 findings
+  byte-identical.
+- **1.7.3 - SNP0031 never verified the window it was handed.** `Extend` seeded its forward scan at
+  `WindowTokens`, leaving offsets `[0,60)` uncompared, so a FNV-1a/32 collision became a 60-token
+  clone. Caught in the wild: an interpolated `ToString()` reported as a clone of
+  `Substitute.For<Refit.IApiResponse>()`. **232 removed, 0 added.** This also revived a dead
+  `length < WindowTokens` guard and falsified a code comment that claimed collisions "cost time and
+  never correctness".
+- **1.7.3 - the SampleApp fixture had never compiled.** 8 distinct defects / 11 diagnostics,
+  invisible because Snipper reports findings rather than requiring a clean build. `FixtureBuildShould`
+  now pins it. Repairing it needed a public `InternalFixtureBridge` rather than `InternalsVisibleTo`,
+  because a friend assembly correctly demotes every SNP0005/SNP0023 on the project from Moderate to
+  Advisory - which broke five tests until reverted.
+
+**Two proposals were withdrawn on evidence, not shipped.** SNP0012 (29 findings) looked like the same
+class of defect until an isolated repro showed removing the direct `Serilog` reference still compiles:
+the findings are true, and the rule is correctly tiered Moderate. And the investigation's own E1
+evidence example was mis-attributed - the DI-registration family it used is a *normalisation* problem
+(every registration normalises to `ID . ID < ID , ID > ( ) ;`), not a hash collision. Both corrections
+are recorded in place.
+
+**What this changes for the roadmap.** The 1.7.1 SNP0031 no-go stands for *thresholds* - there is
+genuinely no trimmable tail - but the count it measured (4,373) included ~232 collisions and a
+large real-but-worthless bootstrap/const-table family. Per-set reporting is still the right lever for
+the latter, and it still needs its own plan.
 ### 4D added 2026-10-04 — performance and correctness increment (not a roadmap story)
 
 Surfaced while validating 4C for release, and shipped in the same 1.7.0 because two of its

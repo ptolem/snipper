@@ -193,9 +193,11 @@ internal static class TokenShingleIndex
 
     /// <summary>
     /// FNV-1a over the window's normalized token texts, folded character by
-    /// character. Collisions are possible at this scale; every candidate is
-    /// re-verified token by token during extension, so a collision costs time
-    /// and never correctness.
+    /// character. Collisions are possible at this scale, which is why a bucket
+    /// match is only a candidate: <c>DuplicateFragmentAnalyser.Extend</c> proves
+    /// the window token by token before extending it, so a collision costs time
+    /// and never correctness. <b>Do not "optimise" that verification away</b> -
+    /// it is the only thing standing between a 32-bit hash and a reported clone.
     ///
     /// This must hash the token TEXT, never <see cref="string.GetHashCode()"/>.
     /// .NET randomizes string hashing per process, so folding those values would
@@ -206,7 +208,7 @@ internal static class TokenShingleIndex
     /// identical input. FNV-1a over characters is stable for the life of the
     /// binary, which is what deterministic output requires.
     /// </summary>
-    private static int Hash(IReadOnlyList<string> tokens, int start, int length)
+    internal static int Hash(IReadOnlyList<string> tokens, int start, int length)
     {
         const uint offsetBasis = 2166136261;
         const uint prime = 16777619;

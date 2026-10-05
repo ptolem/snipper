@@ -1,6 +1,7 @@
 namespace App;
 
 using CoreLib;
+using Serilog;
 using static CoreLib.ViaUsingStatic;
 
 // Minimal stand-ins for the framework contracts Snipper recognizes by name,
@@ -22,7 +23,7 @@ public static class Worker
     public static int Run()
     {
         ServiceCollection.AddSingleton<IGreeter, Greeter>();
-        ServiceCollection.AddSingleton<InternalRegisteredService>();
+        InternalFixtureBridge.RegisterInternalService();
         ServiceCollection.AddOptions<AppOptions>();
         ServiceCollection.AddOptions<Excluded.Fake.ExcludedOptions>();
 
@@ -41,14 +42,16 @@ public static class Worker
         _ = "hello".Shout();
         _ = Triple(2);
         _ = JsonRoundTrip.Echo("ping");
-        _ = new LegacyHelper().StillUsedApi();
+        // Called, not discarded: StillUsedApi returns void, and "_ = void" is CS8209.
+        // What matters here is that the call is a real reference, so SNP0018 leaves it alone.
+        new LegacyHelper().StillUsedApi();
         _ = new WriteOnlyFieldScenarios(21).Exercise(3);
         _ = RedundantInvocationScenarios.ExerciseRedundancies();
         _ = RedundantTypeArgScenarios.ExerciseTypeArgs();
         _ = HierarchyScenarios.Exercise();
         _ = TighteningExercise.Run(3);
-        _ = CanBePrivateConsumer.Consume();
-        new CanBePrivateScenarios().Exercise();
+        _ = InternalFixtureBridge.ConsumeCanBePrivate();
+        InternalFixtureBridge.ExerciseCanBePrivate();
         _ = RedundantCastScenarios.Exercise();
         _ = UpcastScenarios.Exercise();
         _ = UpcastScenarios.ReturnUpcast();
@@ -60,11 +63,9 @@ public static class Worker
         _ = LoadBearingCtorScenario.Create();
         _ = new NonEmptyCtorScenario();
         _ = typeof(StaticCtorScenario);
-        _ = new FamilyRoot().UsedFamilyMethod();
-        _ = new FamilyDerived().UsedFamilyMethod();
-        var eventScenarios = new EventScenarios();
-        EventConsumer.Subscribe(eventScenarios);
-        eventScenarios.Fire();
+        _ = InternalFixtureBridge.UseFamilyRoot();
+        _ = InternalFixtureBridge.UseFamilyDerived();
+        InternalFixtureBridge.ExerciseEvents();
         _ = ConditionalAccessScenarios.Exercise(new ConditionalReceiver());
 
         // Plugin host loads this assembly by name at runtime — name evidence for SNP0011.
