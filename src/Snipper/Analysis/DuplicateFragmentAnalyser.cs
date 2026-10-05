@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Diagnostics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
@@ -30,6 +31,19 @@ public sealed class DuplicateFragmentAnalyser(
     private const int WindowTokens = 60;
     private const int MinimumFragmentLines = 4;
     private const string GlobalNamespaceMarker = "<global>";
+
+    /// <summary>
+    /// Hard ceiling on how many locations one shingle window may compare.
+    ///
+    /// This is the termination guarantee. Same-path pairs are skipped, so a repeated window
+    /// contributes one pairing per cross-path combination, and the pair loop is quadratic in
+    /// bucket size; capping the locations caps the work. Set well above any plausible real
+    /// clone set, because a window occurring hundreds of times is boilerplate rather than a
+    /// clone - the same shape as the Program.cs using-list collisions documented on
+    /// <see cref="WindowTokens"/>. Windows reduced by this cap are reported through
+    /// <see cref="Trace.TraceWarning(string, object?[])"/>, never silently.
+    /// </summary>
+    private const int MaxLocationsPerBucket = 512;
 
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
@@ -81,7 +95,16 @@ public sealed class DuplicateFragmentAnalyser(
             cancellationToken);
 
         progress?.Invoke("DuplicateFragmentAnalyser: extending matches");
-        var (fragments, matches) = FindFragments(index.Windows, files, cancellationToken);
+        var (fragments, matches, droppedWindows) = FindFragments(index.Windows, files, cancellationToken);
+
+        if (droppedWindows > 0)
+        {
+            // Reported, not swallowed. Trace alone is not enough: the CLI installs no listener,
+            // so a window dropped by the cap has to reach the console to count as "not silent".
+            progress?.Invoke(
+                $"DuplicateFragmentAnalyser: {droppedWindows} shingle window(s) exceeded the "
+                + $"{MaxLocationsPerBucket}-location cap and were compared on a deterministic subset");
+        }
 
         progress?.Invoke($"DuplicateFragmentAnalyser: grouping {fragments.Count} fragments");
         var (duplicateFindings, cloneSets) = BuildFindings(fragments, matches, files);
@@ -152,13 +175,14 @@ public sealed class DuplicateFragmentAnalyser(
     /// keep one maximal fragment per (path, tokenIndex) so a long clone is
     /// reported once rather than once per window that straddles it.
     /// </summary>
-    private static (List<Fragment> Fragments, List<CloneMatch> Matches) FindFragments(
+    private static (List<Fragment> Fragments, List<CloneMatch> Matches, int DroppedWindowCount) FindFragments(
         IReadOnlyDictionary<int, List<TokenShingleIndex.Location>> windows,
         IReadOnlyList<SourceFile> files,
         CancellationToken cancellationToken)
     {
         var byPath = files.ToDictionary(f => f.Path, StringComparer.Ordinal);
         var matchIndex = new Dictionary<(string, string, int, int), CloneMatch>();
+        var droppedWindowCount = 0;
 
         foreach (var bucket in windows.Values)
         {
@@ -169,12 +193,49 @@ public sealed class DuplicateFragmentAnalyser(
                 continue;
             }
 
-            for (var i = 0; i < bucket.Count; i++)
+// Same-path pairs are skipped below, so a bucket holding one window 500 times in a
+            // single file pairs 500 locations against every location in every other file, and
+            // each surviving pair calls Extend, which walks tokens in both directions. The pass
+            // is therefore O(K^2 * L) in the raw bucket size K: generated DTO/entity layers put
+            // thousands of locations in a single bucket, and on a measured 182-file solution this
+            // loop did not terminate in 20 minutes while every other analyser finished inside
+            // 5 seconds.
+            //
+            // The fix is a cap, not a rewrite. Collapsing each bucket to one location per path
+            // was tried first and is faster still, but it can lose clones: when one repeated
+            // window seeds two distinct clone regions between the same pair of files, only the
+            // earliest offset is kept and the second region is never offered to Extend. That
+            // variant is not adopted. Buckets at or below the cap are compared exactly as
+            // before, so the cap only changes behaviour where the old code did not finish.
+            IReadOnlyList<TokenShingleIndex.Location> candidates;
+            if (bucket.Count <= MaxLocationsPerBucket)
             {
-                for (var j = i + 1; j < bucket.Count; j++)
+                candidates = bucket;
+            }
+            else
+            {
+                // Deterministic order, so two runs on the same tree compare the same locations.
+                droppedWindowCount++;
+                candidates =
+                [
+                    .. bucket
+                        .OrderBy(static location => location.Path, StringComparer.Ordinal)
+                        .ThenBy(static location => location.TokenIndex)
+                        .Take(MaxLocationsPerBucket)
+                ];
+            }
+
+            for (var i = 0; i < candidates.Count; i++)
+            {
+                for (var j = i + 1; j < candidates.Count; j++)
                 {
-                    var left = bucket[i];
-                    var right = bucket[j];
+                    // The only exit from this loop for a long pass. On the CLI path the token is
+                    // CancellationToken.None and this is a no-op, but FindFragments is reachable
+                    // with a real token and the inner loop has no other yield point.
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var left = candidates[i];
+                    var right = candidates[j];
 
                     if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
                     {
@@ -202,7 +263,19 @@ public sealed class DuplicateFragmentAnalyser(
             }
         }
 
-        return KeepMaximalMatches(matchIndex.Values.ToList());
+        if (droppedWindowCount > 0)
+        {
+            Trace.TraceWarning(
+                "DuplicateFragmentAnalyser: {0} shingle window(s) exceeded the {1}-location cap and were "
+                + "compared on a deterministic subset. A window shared by more locations than this is "
+                + "boilerplate rather than a clone; raise "
+                + "DuplicateFragmentAnalyser.MaxLocationsPerBucket if a real clone is being missed.",
+                droppedWindowCount,
+                MaxLocationsPerBucket);
+        }
+
+        var (keptFragments, keptMatches) = KeepMaximalMatches(matchIndex.Values.ToList());
+        return (keptFragments, keptMatches, droppedWindowCount);
     }
 
     /// <summary>

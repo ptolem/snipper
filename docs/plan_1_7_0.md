@@ -1053,56 +1053,94 @@ Everything above is **implemented and verified but unreleased**. `<Version>` is 
 | 2 | `dotnet pack` | **done** — `Snipper.1.7.0.nupkg`, 11.34 MB, README + `TieredPGO: false` verified inside |
 | 3 | Global tool install | **done** — 1.7.0 installed from the packed nupkg |
 | 4 | Self-run against the *installed* tool | **done** — version, exit codes, JSON schema, dogfood, and packaged-vs-local byte parity |
-| 5 | Monorepo A/B on the 4C High tier | **BLOCKED — see below** |
+| 5 | Monorepo A/B on the 4C High tier | **BLOCKED — nondeterministic SNP0031/SNP0032 output, see below** |
 | 6 | Commit | **done** (4 commits) + this release commit |
 
 Packaged-artifact verification worth recording: the installed tool and the local Release build produce a
 **byte-identical** `findings` array on a real 3-project solution (hash `44ECC0D24FB21294`, 19 findings), so
 the packaging step introduces no behavioural difference.
 
-## BLOCKER found during release validation — SNP0031 does not terminate at scale
+## RESOLVED — SNP0031 did not terminate at scale (fixed)
 
-The monorepo A/B (gate 5) cannot be run, because the duplicate/clone pass does not complete on a
-**182-file** solution. Measured on `CardanoSharp.Wallet.sln`, same machine, assets warm:
+The duplicate/clone pass did not complete on a **182-file** solution. Measured on
+`CardanoSharp.Wallet.sln`, same machine, assets warm:
 
 | Run | Result |
 |---|---|
 | plain (installed 1.7.0) | **10.6 s**, 809 findings, all analysers ≤ 4.5 s |
-| `--duplicate-detection --clone-drift` | **did not finish in 20 minutes** |
+| `--duplicate-detection --clone-drift`, before the fix | **did not finish in 20 minutes** |
+| `--duplicate-detection --clone-drift`, after the fix | **8.7–9.0 s** across three runs |
 
-The log localises it precisely: every other analyser completes in ≤4.5 s, and the last line emitted is
-`DuplicateFragmentAnalyser: shingling 209 files` followed by `extending matches`. It never returns.
+**Root cause.** `DuplicateFragmentAnalyser.FindFragments` compared **every pair** of locations in each
+60-token shingle bucket (`for i` / `for j`), and each surviving pair called `Extend`, which walks tokens
+forward and backward: O(K²·L) in the raw bucket size K. Same-path pairs are skipped, so a window repeated
+500 times in one file pairs 500 locations against every location in every other file. Generated DTO/entity
+layers put thousands of locations in a single bucket.
 
-**Root cause.** `DuplicateFragmentAnalyser.FindFragments` compares **every pair** of locations in each
-60-token shingle bucket (`for i` / `for j`), and each surviving pair calls `Extend`, which itself walks
-tokens forward and backward. That is O(K²·L) in the size K of the largest bucket. There is no cap on
-bucket size and no cancellation check inside the inner pair loop. A codebase with heavy boilerplate —
-exactly what generated DTO/entity layers produce — puts thousands of locations in a single bucket, and
-the pair loop becomes billions of operations.
+**Fix.** Cap the locations considered per window (`MaxLocationsPerBucket = 512`), selected in a
+deterministic `(path, tokenIndex)` order. Windows above the cap are reported, not silently dropped.
+Buckets at or below the cap — every clone on a normal codebase — are compared exactly as before. The
+cancellation token is now also checked inside the pair loop, which previously had no yield point.
 
-This is the same cost model the roadmap already flagged for SNP0031 (52.6 s marginal on a 3,070-file
-monorepo, 3.5× over its own ≤15 s budget). The release run shows the problem is worse than "over budget":
-on this target it does not finish at all.
+A **per-path collapse** (one location per path per bucket) was tried first and rejected: it is faster still
+but loses clones, because when one repeated window seeds two distinct clone regions between the same pair
+of files only the earliest offset survives and the second region is never offered to `Extend`.
 
-**Why this blocks gate 5 rather than merely qualifying it.** 4C's clone sets are produced by SNP0031, so
-`--clone-drift` cannot be exercised on a large repository until this is addressed. The Wave 4 exit
-criterion for 4C therefore cannot be evaluated, and it stays **unmet**.
+Engagement of the cap was verified by A/B, not by the progress line: cap `512` → 8.9 s, cap `2,000,000` →
+over 30 minutes. The console progress message is not captured when output is redirected, which is a
+minor observability weakness in its own right.
 
-**Not fixed in this release, deliberately.** The obvious mitigation is to keep only one location per path
-per bucket before pairing (same-path pairs are already skipped, so bucket size becomes bounded by the file
-count). That is a small change, but it alters which alignments are discovered, so it is a detection-
-semantics decision rather than a release-mechanics one, and it is the user's call rather than a silent
-late fix. SNP0031 and `--clone-drift` remain **opt-in**, and the opt-in default means no existing pipeline
-is affected.
+## OPEN — SNP0031/SNP0032 output is nondeterministic (pre-existing, blocks gate 5)
 
-**Also found during validation, unrelated to 4C.** Snipper surfaces a raw unhandled
-`System.Xml.XmlDocument` stack trace when handed a malformed `.slnx` (hit by hand-writing one). There is
-no try/catch around `OpenSolutionAsync`, so bad input produces a crash dump instead of a diagnostic. Worth
-a follow-up; it is a robustness gap against the "degrade gracefully" tenet, not a regression from this work.
+**Same binary, same input, different results.** Four consecutive runs of the *unmodified* build on
+Snipper's own solution:
+
+```
+run 1: SNP0031=2  SNP0032=1
+run 2: SNP0031=0  SNP0032=0
+run 3: SNP0031=0  SNP0032=0
+run 4: SNP0031=0  SNP0032=0
+```
+
+On `CardanoSharp.Wallet.sln` the same build varies between 181 and 183 SNP0031 findings across runs.
+This reproduces **before** the cap fix, so the cap did not cause it.
+
+Why it matters more than a usual flaky test: it breaks the repo's "deterministic sorted output" tenet, and
+it breaks the premise of the features shipped in this same wave. A finding that appears in one run and
+vanishes in the next is exactly the baseline churn 4A-2 exists to eliminate, and 4B's entropy ledger
+would be measuring noise. It also invalidates any single-run measurement of SNP0031 counts — including the
+one in this document written before the bug was found.
+
+**Not yet root-caused.** Two candidates, both consistent with the evidence:
+
+1. `TokenShingleIndex.Hash` folds `string.GetHashCode(StringComparison.Ordinal)` into the window hash.
+   .NET randomizes string hashing **per process**, so bucket partitioning differs on every run. Bucket
+   *contents* are sorted for determinism, but the hash values themselves are not stable across processes.
+2. `CollectFiles` takes the **first** document seen for a path and skips later ones. With a multi-targeted
+   project the same `FilePath` appears once per TFM, so which instance wins depends on `solution.Projects`
+   enumeration order — and a different TFM resolves `#if` differently, producing a different token stream.
+
+Candidate 2 is the more likely cause of *large* swings (a different token stream changes which windows
+exist at all); candidate 1 explains smaller variation in match collapsing. Both are cheap to test.
+
+**Gate 5 remains blocked on this**, not on the cap. The 4C High tier cannot be signed off while the
+finding set moves between runs on identical input: a High-tier false-positive rate measured from one run
+is not a measurement.
+
+**Suggested next step:** sort `files` by path before shingling and assert stability over repeated runs in a
+test. If that closes it, candidate 1 can be addressed by hashing token text through a stable
+(non-randomized) function such as a fixed-seed FNV over the characters.
+
+## Also found during validation, unrelated to 4C
+
+Snipper surfaces a raw unhandled `System.Xml.XmlDocument` stack trace when handed a malformed `.slnx` (hit
+by hand-writing one). There is no try/catch around `OpenSolutionAsync`, so bad input produces a crash dump
+instead of a diagnostic. Worth a follow-up; it is a robustness gap against the "degrade gracefully" tenet,
+not a regression from this work.
 
 ## Open items that gate or qualify the release
 
-**4C's High tier has never run against a large repository.** The roadmap's own Wave 4 exit
+**4C's High tier cannot be signed off: the finding set is not stable between runs on identical input.** The roadmap's own Wave 4 exit
 criterion — "4C's High tier produces zero false positives on the monorepo or drops a tier" — is
 **not met**. It is verified on the SampleApp fixture and on the author's own repository only. This
 is the single most important thing left, because 4C is the one story that emits *correctness*
