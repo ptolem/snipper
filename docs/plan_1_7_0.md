@@ -1,8 +1,8 @@
 # Plan — Snipper 1.7.0: Wave 4 (4A, 4A-2, 4B, 4C) + the perf/correctness increment
 
-**Status: ALL FOUR STORIES IMPLEMENTED, UNRELEASED** (2026-10-05). **565 tests green** (353 at 1.6.3 → 469 at 4C → 520 after the `CliRunner` refactor → 527 with the perf increment → 533 with the determinism fixes → 565 with the 4C High-tier corrections). Dogfood at the 1.6.3 baseline of 3 pre-existing findings, **zero contributed** by any of this work. Fifteen of my own defects were caught by dogfood runs, mutation testing, A/B comparison or gate review and fixed rather than suppressed — recorded per story, and in [Gate 5](#gate-5--monorepo-ab-on-the-4c-high-tier-runs-high-tier-quality-bar-now-met) for the four High-tier defects.
+**Status: ALL FOUR STORIES IMPLEMENTED AND SHIPPED as 1.7.0** (2026-10-05). **565 tests green** (353 at 1.6.3 → 469 at 4C → 520 after the `CliRunner` refactor → 527 with the perf increment → 533 with the determinism fixes → 565 with the 4C High-tier corrections). Dogfood at the 1.6.3 baseline of 3 pre-existing findings, **zero contributed** by any of this work. Fifteen of my own defects were caught by dogfood runs, mutation testing, A/B comparison or gate review and fixed rather than suppressed — recorded per story, and in [Gate 5](#gate-5--monorepo-ab-on-the-4c-high-tier-runs-high-tier-quality-bar-now-met) for the four High-tier defects.
 
-**`<Version>` is still `1.6.3`, the work is uncommitted, and nothing is published.** Per this repo's convention (`plan_1_6_3.md` reserves "SHIPPED" for after pack + `dotnet tool update`), 1.7.0 is not shipped. See [What is left for 1.7.0](#what-is-left-for-170) for the release gate.
+**`<Version>` is `1.7.0`, everything is committed, and the tool is packed and installed.** Per this repo's convention (`plan_1_6_3.md` reserves "SHIPPED" for after pack + `dotnet tool update`), 1.7.0 counts as shipped: `Snipper.1.7.0.nupkg` is built and installed globally, `snipper --version` reports `1.7.0`, and self-run against the *installed* tool was verified (see the release gate). There is no git tag and no NuGet publish pipeline in this repo — a release here is a commit plus a pack and a tool install. See [What is left for 1.7.0](#what-is-left-for-170) for the gate.
 
 **Corrections to the original roadmap design, all established by measurement:** 4A was budgeted at ~2× analysis time and measured ~10%; 4B's per-pull-request denominator was measured to be dominated by commit size (a 400× spread) and replaced; 4C's present-tense framing was not expressible, because a copy that receives a fix *leaves* the clone set. **Two of my own performance hypotheses were also measured and rejected** — Server GC and disabling tiered JIT — see the perf section.
 
@@ -1043,7 +1043,7 @@ as the oracle).
 
 # What is left for 1.7.0
 
-Everything above is **implemented and verified but unreleased**. `<Version>` is `1.6.3`.
+Everything above is **implemented, verified, and shipped as 1.7.0** (2026-10-05). `<Version>` is `1.7.0`, the work is committed, and the tool is packed and installed.
 
 ## Release gate
 
@@ -1053,8 +1053,34 @@ Everything above is **implemented and verified but unreleased**. `<Version>` is 
 | 2 | `dotnet pack` | **done** — `Snipper.1.7.0.nupkg`, 11.34 MB, README + `TieredPGO: false` verified inside |
 | 3 | Global tool install | **done** — 1.7.0 installed from the packed nupkg |
 | 4 | Self-run against the *installed* tool | **done** — version, exit codes, JSON schema, dogfood, and packaged-vs-local byte parity |
-| 5 | Monorepo A/B on the 4C High tier | **ran and deterministic**; 4 High-tier defects open, see below |
-| 6 | Commit | **done** (4 commits) + this release commit |
+| 5 | Monorepo A/B on the 4C High tier | **done** — deterministic, budget met, four High-tier defects found and fixed, High 111 → 82; see below |
+| 6 | Commit | **done** — 5 commits, `171be60` .. `c84c5b0` |
+| 7 | Monorepo A/B vs 1.6.3, per rule (1.4.2 precedent) | **done** — every rule count-identical, 2,137 findings both |
+
+  **Release verification against the installed tool, 2026-10-05:** `snipper --version` → `1.7.0`;
+  dogfood on `Snipper.slnx` → exit 0, 3 findings; SARIF 2.1.0 with driver `Snipper 1.7.0` and 3
+  results; JSON top-level keys `toolVersion`, `commitSha`, `generatedAtUtc`, `findings`;
+  `--fail-on High` → exit 1; nonexistent target → exit 1.
+
+  **The 1.4.2 blocking gate, which had never actually been measured for this release.** The precedent
+  says any SNP0005/0006 increase on the owner's monorepo blocks the cut, and this document asserted it
+  without ever running the comparison — the only output-neutrality evidence was the 4D increment across
+  six local targets of ≤119 files. Measured properly, by building 1.6.3 from `853625b` into a detached
+  worktree and installing it side by side so the global 1.7.0 install was never disturbed:
+
+  | | 1.6.3 | 1.7.0 | Δ |
+  |---|---|---|---|
+  | total findings | 2,137 | 2,137 | 0 |
+  | SNP0005 | 15 | 15 | 0 |
+  | SNP0006 | 847 | 847 | 0 |
+
+  All 19 rule IDs are **count-identical** across the whole wave — 4A, 4A-2, 4B, 4C and 4D together.
+  The gate passes, and the earlier claim that monorepo-scale performance was unvalidated for everything
+  in this document is now closed for the plain analyser set.
+
+  Wall clock for that pair was 168.4 s vs 111.4 s, but it is a single non-interleaved pair and this
+  document's own method note says such a number carries no information. It is recorded as observed, not
+  claimed.
 
 Packaged-artifact verification worth recording: the installed tool and the local Release build produce a
 **byte-identical** `findings` array on a real 3-project solution (hash `44ECC0D24FB21294`, 19 findings), so
@@ -1287,9 +1313,10 @@ looked wrong were verified against `git show` and are correct, and the other 78 
 inspected. The accepted residual — a commit that both renames and refactors still reads High — is
 documented in Gate 5.
 
-**Monorepo-scale performance is unvalidated for everything else in this document.** Every local target
-is ≤119 files. The 1.4.2 precedent applies: the user's monorepo A/B is the acceptance test, and
-per locked decision on that wave, **any SNP0005/0006 finding increase blocks**.
+**The 1.4.2 monorepo gate is now measured, and it passes.** Every rule is count-identical between 1.6.3
+and 1.7.0 on `MILKRUN.slnx` — 2,137 findings both, all 19 rule IDs unchanged, so no SNP0005/0006
+increase. That is recorded in full in the release gate above. What remains unvalidated at monorepo
+scale is only the opt-in 4C tier's behaviour under multi-targeting (below).
 
 **Also open, carried forward from the individual stories:**
 
