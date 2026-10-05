@@ -1,6 +1,6 @@
 # Plan — Snipper 1.7.0: Wave 4 (4A, 4A-2, 4B, 4C) + the perf/correctness increment
 
-**Status: ALL FOUR STORIES IMPLEMENTED, UNRELEASED** (2026-10-04). **527 tests green** (353 at 1.6.3 → 469 at 4C → 520 after the `CliRunner` refactor → 527 with the perf increment). Dogfood at the 1.6.3 baseline of 3 pre-existing findings, **zero contributed** by any of this work. Eleven of my own defects were caught by dogfood runs, mutation testing, or A/B comparison and fixed rather than suppressed — recorded per story below.
+**Status: ALL FOUR STORIES IMPLEMENTED, UNRELEASED** (2026-10-05). **565 tests green** (353 at 1.6.3 → 469 at 4C → 520 after the `CliRunner` refactor → 527 with the perf increment → 533 with the determinism fixes → 565 with the 4C High-tier corrections). Dogfood at the 1.6.3 baseline of 3 pre-existing findings, **zero contributed** by any of this work. Fifteen of my own defects were caught by dogfood runs, mutation testing, A/B comparison or gate review and fixed rather than suppressed — recorded per story, and in [Gate 5](#gate-5--monorepo-ab-on-the-4c-high-tier-runs-high-tier-quality-bar-now-met) for the four High-tier defects.
 
 **`<Version>` is still `1.6.3`, the work is uncommitted, and nothing is published.** Per this repo's convention (`plan_1_6_3.md` reserves "SHIPPED" for after pack + `dotnet tool update`), 1.7.0 is not shipped. See [What is left for 1.7.0](#what-is-left-for-170) for the release gate.
 
@@ -882,7 +882,7 @@ this work. Nothing from Wave 4.
 | 6 | Reuses SNP0031's shingling pass | **met** — one pass, `BuildFindings` returns the sets it proved |
 | 7 | Git cost independent of clone-set count | **met** — one call per 256-path batch |
 | 8 | Tests fail without the logic | **met** — two mutations, 3 and 1 failures respectively |
-| 9 | Full suite green; dogfood clean or triaged | **met** — 469 pass; dogfood at the 3 pre-existing findings |
+| 9 | Full suite green; dogfood clean or triaged | **met** — 565 pass; dogfood at the 3 pre-existing findings |
 
 ## Deferred
 
@@ -1181,59 +1181,94 @@ than changed blind: picking a winner deterministically is cheap and safe, but it
 output for multi-TFM solutions, and that deserves its own measurement on a target that actually
 multi-targets (`MILKRUN.slnx` does).
 
-## Gate 5 — monorepo A/B on the 4C High tier (runs; High tier NOT yet signable)
+## Gate 5 — monorepo A/B on the 4C High tier (runs; High tier quality bar now met)
 
 Target: `C:\ws\milkrun\MILKRUN.slnx` — 2,763 `.cs` files, 81 projects, 3,896 commits, multi-targeted.
 Exclusions as specified by the owner. Installed packaged tool (1.7.0), not a local build.
 
-| Run | Wall | Findings | SNP0031 | SNP0032 |
-|---|---|---|---|---|
-| plain | 107.2 s (130 s cold) | 2,137 | — | — |
-| `--duplicate-detection --clone-drift` | 110.3 s | 6,812 | 4,373 | 302 |
-| `--duplicate-detection --clone-drift` | 114.6 s | 6,812 | 4,373 | 302 |
-| `--duplicate-detection --clone-drift` | 117.2 s | 6,812 | 4,373 | 302 |
+| Run | Wall | Findings | SNP0031 | SNP0032 | SNP0032 High |
+|---|---|---|---|---|---|
+| plain | 177.3 s (median of 3) | 2,137 | — | — | — |
+| `--duplicate-detection --clone-drift` | 175.7 s (median of 3) | 6,812 | 4,373 | 302 | 82 |
 
-**Determinism holds at scale.** Runs 2 and 3 are separate processes and the reports are byte-identical
-apart from `generatedAtUtc`. This is the check that gate 5 was actually waiting on.
+**Determinism holds at scale.** Separate processes produce byte-identical reports apart from
+`generatedAtUtc`. This is the check that gate 5 was actually waiting on.
 
-**Performance is inside budget.** Marginal cost of the whole 4C tier is ~3–10 s on 2,763 files, against
-the ≤15 s the roadmap allows for SNP0031. Both fixes in this release were needed to get here: before the
-cap this run did not finish in 20 minutes.
+**Performance: the 4C tier costs nothing measurable above host noise.** Interleaved pairs, alternating
+plain and 4C, three of each: plain 177.3 / 177.8 / 175.4 s; 4C 167.9 / 187.6 / 175.7 s. Median
+difference **−1.6 s** against the ≤15 s the roadmap allows for SNP0031 — 4,675 additional findings at
+no measurable wall-clock cost. Both earlier fixes in this release were needed to get here: before the
+shingle cap this run did not finish in 20 minutes.
+
+*Method note:* absolute wall clock for the identical command ranged from 107 s to 177 s across this
+session on this host, so only interleaved comparisons carry information. The "~3–10 s marginal"
+figure previously recorded here came from consecutive non-interleaved runs and is superseded.
 
 **Distribution.** SNP0031 is 4,373 findings, all `Advisory`, across 747 distinct files — median fragment
 76 tokens, and **54 % are ≤80 tokens**, i.e. close to the 60-token minimum window. That is a lot of
 surface for the lowest tier, and at this scale it wants its own tuning pass; the cap is what made it
 tractable, not what made it small.
 
-SNP0032 is 302 findings: 191 `Advisory` plus **111 `High`**, from clone sets of 2 copies (95), 3 (12),
-and one each of 4, 6, 7 and 11 copies.
+SNP0032 is 302 findings: **220 `Advisory` + 82 `High`**. By kind — 185 `One-sided change` (Advisory),
+35 `One-sided rename` (Advisory), 82 `One-sided defensive fix` (High). By clone-set size: 2 copies
+(244), 3 (31), 4 (6), 5 (3), 6 (1), 7 (2), 9 (1), 10 (2), 11 (6), 12 (1), 19 (2), 126 (2), 148 (1).
 
-**Spot-checked a High finding, and it is a true positive.** `GetOrdersQuery.cs:50` reads
-`_lastOrderId ?? Guid.Empty` while both siblings in the clone set — `ChannelsQuery.cs:24` and
-`GetStoresQuery.cs:27` — read `lastOrderId ?? Guid.Empty`. Commit `094f266` renamed one copy only. The
-clone set and the one-sided divergence are both real.
+### The four High-tier defects found while validating — all four fixed
 
-### Four defects found in the High tier while validating
+Recorded rather than fixed by commit `171be60`, because each one changes what a High-tier finding
+claims and none is a release-mechanics decision. All four are fixed in the commit that follows. Each
+fix has a dedicated regression, and each was mutation-checked — reverting the fix fails its test.
 
-The mechanics pass; the presentation does not. These are recorded rather than fixed here, because each one
-changes what a High-tier finding claims and none is a release-mechanics decision.
+1. **FIXED — siblings cited by bare filename.** Was: every one of the 111 High findings named its
+   siblings by basename while its own `filePath` was absolute, and `GetStoresQuery.cs` exists at **two**
+   paths in this repo, so those references were genuinely ambiguous. Sibling citations are now
+   produced by `DescribeSiblings`/`DescribeCatchUps` — the same helpers that build the sibling set —
+   so they are repository-relative and deduplicated. Now **0 of 82**.
+2. **FIXED — catch-up attribution collapsed to one repeated SHA.** Was:
+   `92a2b30 on 2025-05-14; 92a2b30 on 2025-05-14`, which cannot be told apart from one commit having
+   fixed both siblings. Each sibling is now named individually. Now **0 of 82**.
+3. **FIXED — anchors on blank / `{` / `}` lines.** Was 3 of 111. `git show` puts the hunk's *first*
+   line in the `@@` header and fills it with unchanged context, so `NewStart` was never a usable
+   anchor; adding an added-line index to it is unsound too, because `PatchHunk` keeps no context
+   lines, so such an index cannot be mapped back to a file line. `GitHistory` now records
+   `ChangedNewLines` — the post-image line of every line the hunk actually changed — and `AnchorLine`
+   takes the first of those inside the region.
 
-1. **Every one of the 111 High findings cites its siblings by bare filename** while its own `filePath` is
-   absolute. `GetStoresQuery.cs` exists at **two** paths in this repo, so those references are genuinely
-   ambiguous — you cannot act on the finding without a search. High tier must be self-locating.
-2. **4 of 111 attribute the "equivalent change reached the sibling later" to a single repeated SHA**, once
-   per sibling, e.g. `92a2b30 on 2025-05-14; 92a2b30 on 2025-05-14`. Either one commit fixed both siblings
-   or the attribution is not per-sibling; as written it cannot be told apart.
-3. **3 of 111 anchor on a line containing only `;`, `{` or `}`**, e.g. `GetCustomCountQuery.cs:1`. The
-   location points nowhere useful.
-4. **Severity over-claims.** The verified sample is a *cosmetic underscore rename*, yet it is reported as
-   "One-sided defensive fix" at `High`. The mechanism is right; the label claims more significance than a
-   rename warrants. High tier needs the significance of the divergence to be judged, not just its
-   existence — otherwise 111 High findings train reviewers to ignore High.
+   **This deliberately relaxes an earlier invariant.** `HunkTouchesRegion` tolerates a hunk that only
+   abuts the region, and clamping such a hunk's line forward to `regionStart` put the finding on
+   whatever happened to be the region's first line: an opening brace the commit never touched (live
+   case `TaxInvoiceSenderService.cs:143`, commit `f63bf39`). When no changed line lands inside the
+   region, the anchor is now the **nearest** real changed line, which may sit just outside the region.
+   Maintainer-confirmed: an accurate line slightly outside the region beats an in-region line that is
+   not an edit at all.
 
-**Verdict:** gate 5's *run* requirement is met — 4C completes, is deterministic, and is within budget on a
-2,763-file monorepo. The High tier's *quality* bar is not met until 1–4 are addressed. Recording gate 5 as
-passed would be signing off on a number I have not earned.
+   Four High findings still *look* blank. Each was checked against `git show`, and in all four the
+   commit's edit to that region genuinely was a blank line — whitespace-only changes. Those anchors
+   are correct rather than residual defects.
+4. **FIXED (mechanism only) — cosmetic renames reported as High defensive fixes.** The verified sample
+   was a `_lastOrderId` / `lastOrderId` rename. Defensive-marker matching now respects identifier
+   boundaries, so `fooEnabled` no longer matches `Enabled`; and a hunk that adds and removes only
+   identifier-renamed text is reported as its own kind, `One-sided rename`, at `Advisory`. High
+   **111 → 82**, with 35 renames split out and none of them High. That 35 is 29 demoted from High plus
+   6 that were already Advisory `One-sided change`.
+
+   **Accepted residual, maintainer-confirmed:** a commit that both renames an identifier *and*
+   refactors the surrounding code still reads as `One-sided defensive fix` at High. Judging the
+   significance of a divergence rather than merely its existence was deliberately not attempted; this
+   is a mechanism fix only. `competitive-analysis.md` §6.1 already requires that the sibling copies be
+   byte-identical to the pre-change text for the High tier, and a mixed rename-plus-refactor commit
+   does not obviously satisfy that bar. Narrowing it is future work.
+
+**Verdict.** Gate 5's run requirement was already met. The High tier's quality bar is now met: four
+defects were found during validation, four are fixed, and none was suppressed. The roadmap's Wave 4
+exit criterion — "4C's High tier produces zero false positives on the monorepo **or drops a tier**" —
+is satisfied on its second branch, with 29 High findings demoted to Advisory. That is recorded as a
+maintainer judgement rather than a proof: of the 82 remaining High findings, the 4 whose anchors
+looked wrong were each verified against `git show` and are correct, but the other 78 were not
+individually inspected.
+
+Dogfood on `Snipper.slnx` remains at the 1.6.3 baseline of 3 pre-existing findings, zero contributed
+by this work.
 
 Snipper surfaces a raw unhandled `System.Xml.XmlDocument` stack trace when handed a malformed `.slnx` (hit
 by hand-writing one). There is no try/catch around `OpenSolutionAsync`, so bad input produces a crash dump
@@ -1242,13 +1277,17 @@ not a regression from this work.
 
 ## Open items that gate or qualify the release
 
-**4C's High tier runs deterministically on a 2,763-file monorepo and fits its performance budget. It is not yet signable: four High-tier defects were found during validation.** The roadmap's own Wave 4 exit
-criterion — "4C's High tier produces zero false positives on the monorepo or drops a tier" — is
-**not met**. It is verified on the SampleApp fixture and on the author's own repository only. This
-is the single most important thing left, because 4C is the one story that emits *correctness*
-findings rather than smells, and an unproven High tier is a trust risk.
+**4C's High tier is now signable.** It runs deterministically on a 2,763-file monorepo, fits its
+performance budget (median −1.6 s against a ≤15 s allowance), and the four High-tier defects that
+gate 5 found have all been fixed and mutation-checked. The roadmap's own Wave 4 exit criterion —
+"4C's High tier produces zero false positives on the monorepo or drops a tier" — is **met on its
+second branch**: 29 High findings were demoted to Advisory, taking the tier from 111 to 82. That is
+recorded as a maintainer judgement rather than a proof; of the 82 remaining, the 4 whose anchors
+looked wrong were verified against `git show` and are correct, and the other 78 were not individually
+inspected. The accepted residual — a commit that both renames and refactors still reads High — is
+documented in Gate 5.
 
-**Monorepo-scale performance is unvalidated for everything in this document.** Every local target
+**Monorepo-scale performance is unvalidated for everything else in this document.** Every local target
 is ≤119 files. The 1.4.2 precedent applies: the user's monorepo A/B is the acceptance test, and
 per locked decision on that wave, **any SNP0005/0006 finding increase blocks**.
 

@@ -9,12 +9,21 @@ using System.Globalization;
 /// <param name="NewStart">First line in the post-image (1-based).</param>
 /// <param name="NewCount">Lines produced in the post-image.</param>
 /// <param name="AddedLines">Lines the change introduces, without the leading '+'.</param>
+/// <param name="RemovedLines">Lines the change deletes, without the leading '-'. Used to tell a
+/// rename apart from a behavioural change.</param>
+/// <param name="ChangedNewLines">Post-image lines the hunk actually changed, in order.
+/// <paramref name="NewStart"/> points at the hunk's first line, which git fills with unchanged
+/// context, so it is not a usable anchor. Every changed line is kept rather than only the first: a
+/// hunk can begin just before the region a finding is about, and the caller needs to be able to
+/// choose the change that lands inside it. Null when the hunk changed nothing.</param>
 internal sealed record PatchHunk(
     int OldStart,
     int OldCount,
     int NewStart,
     int NewCount,
-    string[] AddedLines);
+    string[] AddedLines,
+    string[] RemovedLines,
+    int[]? ChangedNewLines = null);
 
 /// <summary>The most recent commit to touch one path.</summary>
 /// <param name="Sha">Full commit SHA.</param>
@@ -202,6 +211,13 @@ internal static class GitHistory
         var byPath = new Dictionary<string, List<PatchHunk>>(StringComparer.Ordinal);
         string? path = null;
         var added = new List<string>();
+        var removed = new List<string>();
+
+        // Post-image lines the open hunk really changed, and the running post-image position as
+        // the hunk body is walked. Context advances the position but changes nothing.
+        var changed = new List<int>();
+        var newImageLine = 0;
+
         PatchHunk? open = null;
 
         foreach (var raw in patchText.Split('\n'))
@@ -212,10 +228,12 @@ internal static class GitHistory
             {
                 if (open is { } previous && path is not null)
                 {
-                    Append(byPath, path, Build(previous, added));
+                    Append(byPath, path, Build(previous, added, removed, changed));
                 }
 
                 added.Clear();
+                removed.Clear();
+                changed.Clear();
                 open = null;
                 path = line["+++ b/".Length..].Trim();
                 continue;
@@ -226,10 +244,12 @@ internal static class GitHistory
                 // A deletion has no "+++ b/" line, so close the section on the header instead.
                 if (open is { } closing && path is not null)
                 {
-                    Append(byPath, path, Build(closing, added));
+                    Append(byPath, path, Build(closing, added, removed, changed));
                 }
 
                 added.Clear();
+                removed.Clear();
+                changed.Clear();
                 open = null;
                 continue;
             }
@@ -238,23 +258,43 @@ internal static class GitHistory
             {
                 if (open is { } finished && path is not null)
                 {
-                    Append(byPath, path, Build(finished, added));
+                    Append(byPath, path, Build(finished, added, removed, changed));
                 }
 
                 added.Clear();
+                removed.Clear();
+                changed.Clear();
                 open = TryParseHunkHeader(line, out var hunk) ? hunk : null;
+                newImageLine = open?.NewStart ?? 0;
                 continue;
             }
 
-            if (open is not null && line.StartsWith('+') && !line.StartsWith("+++", StringComparison.Ordinal))
+            if (open is null)
+            {
+                continue;
+            }
+
+            if (line.StartsWith('+') && !line.StartsWith("+++", StringComparison.Ordinal))
             {
                 added.Add(line[1..]);
+                changed.Add(newImageLine);
+                newImageLine++;
+            }
+            else if (line.StartsWith('-') && !line.StartsWith("---", StringComparison.Ordinal))
+            {
+                removed.Add(line[1..]);
+                changed.Add(newImageLine);
+            }
+            else if (line.StartsWith(' '))
+            {
+                // Context advances the post-image position but changes nothing.
+                newImageLine++;
             }
         }
 
         if (open is { } last && path is not null)
         {
-            Append(byPath, path, Build(last, added));
+            Append(byPath, path, Build(last, added, removed, changed));
         }
 
         return byPath.ToDictionary(
@@ -274,13 +314,19 @@ internal static class GitHistory
         list.Add(hunk);
     }
 
-    private static PatchHunk Build(PatchHunk open, List<string> added) =>
-        open with { AddedLines = [.. added] };
+    private static PatchHunk Build(
+        PatchHunk open, List<string> added, List<string> removed, List<int> changed) =>
+        open with
+        {
+            AddedLines = [.. added],
+            RemovedLines = [.. removed],
+            ChangedNewLines = changed.Count > 0 ? [.. changed] : null,
+        };
 
     /// <summary>Parses <c>@@ -old,count +new,count @@</c>, tolerating an omitted count of 1.</summary>
     private static bool TryParseHunkHeader(string line, out PatchHunk hunk)
     {
-        hunk = new PatchHunk(0, 0, 0, 0, []);
+        hunk = new PatchHunk(0, 0, 0, 0, [], []);
 
         var close = line.IndexOf("@@", 2, StringComparison.Ordinal);
         if (close < 0)
@@ -296,7 +342,7 @@ internal static class GitHistory
             return false;
         }
 
-        hunk = new PatchHunk(oldStart, oldCount, newStart, newCount, []);
+        hunk = new PatchHunk(oldStart, oldCount, newStart, newCount, [], []);
         return true;
     }
 

@@ -189,7 +189,7 @@ public sealed class CloneDriftShould : IDisposable
     public void Treat_A_Hunk_Inside_The_Region_As_Touching_It()
     {
         CloneDriftClassifier.HunkTouchesRegion(
-            new PatchHunk(OldStart: 20, OldCount: 2, NewStart: 20, NewCount: 4, AddedLines: []),
+            new PatchHunk(OldStart: 20, OldCount: 2, NewStart: 20, NewCount: 4, AddedLines: [], RemovedLines: []),
             regionStart: 10, regionEnd: 30).Should().BeTrue();
     }
 
@@ -199,7 +199,7 @@ public sealed class CloneDriftShould : IDisposable
         // A guard inserted immediately above a copied block is the canonical drift shape, and
         // git reports it as adjacent to the region rather than inside it.
         CloneDriftClassifier.HunkTouchesRegion(
-            new PatchHunk(OldStart: 9, OldCount: 1, NewStart: 9, NewCount: 5, AddedLines: []),
+            new PatchHunk(OldStart: 9, OldCount: 1, NewStart: 9, NewCount: 5, AddedLines: [], RemovedLines: []),
             regionStart: 10, regionEnd: 30).Should().BeTrue();
     }
 
@@ -207,7 +207,7 @@ public sealed class CloneDriftShould : IDisposable
     public void Treat_A_Hunk_Far_From_The_Region_As_Unrelated()
     {
         CloneDriftClassifier.HunkTouchesRegion(
-            new PatchHunk(OldStart: 400, OldCount: 3, NewStart: 400, NewCount: 5, AddedLines: []),
+            new PatchHunk(OldStart: 400, OldCount: 3, NewStart: 400, NewCount: 5, AddedLines: [], RemovedLines: []),
             regionStart: 10, regionEnd: 30).Should().BeFalse();
     }
 
