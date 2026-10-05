@@ -1053,7 +1053,7 @@ Everything above is **implemented and verified but unreleased**. `<Version>` is 
 | 2 | `dotnet pack` | **done** — `Snipper.1.7.0.nupkg`, 11.34 MB, README + `TieredPGO: false` verified inside |
 | 3 | Global tool install | **done** — 1.7.0 installed from the packed nupkg |
 | 4 | Self-run against the *installed* tool | **done** — version, exit codes, JSON schema, dogfood, and packaged-vs-local byte parity |
-| 5 | Monorepo A/B on the 4C High tier | **BLOCKED — nondeterministic SNP0031/SNP0032 output, see below** |
+| 5 | Monorepo A/B on the 4C High tier | pending — determinism now fixed, re-run required |
 | 6 | Commit | **done** (4 commits) + this release commit |
 
 Packaged-artifact verification worth recording: the installed tool and the local Release build produce a
@@ -1090,7 +1090,7 @@ Engagement of the cap was verified by A/B, not by the progress line: cap `512` �
 over 30 minutes. The console progress message is not captured when output is redirected, which is a
 minor observability weakness in its own right.
 
-## OPEN — SNP0031/SNP0032 output is nondeterministic (pre-existing, blocks gate 5)
+## RESOLVED — SNP0031/SNP0032 output was nondeterministic (two independent causes, both fixed)
 
 **Same binary, same input, different results.** Four consecutive runs of the *unmodified* build on
 Snipper's own solution:
@@ -1102,34 +1102,84 @@ run 3: SNP0031=0  SNP0032=0
 run 4: SNP0031=0  SNP0032=0
 ```
 
-On `CardanoSharp.Wallet.sln` the same build varies between 181 and 183 SNP0031 findings across runs.
-This reproduces **before** the cap fix, so the cap did not cause it.
+It mattered more than a flaky test would have: it breaks the "deterministic sorted output" tenet, and it
+breaks the premise of the features shipped in the same wave. A finding present in one run and absent in
+the next is exactly the baseline churn 4A-2 exists to eliminate, and 4B's entropy ledger would have been
+measuring noise. It also invalidated every single-run SNP0031 count recorded in this document before the
+bug was found.
 
-Why it matters more than a usual flaky test: it breaks the repo's "deterministic sorted output" tenet, and
-it breaks the premise of the features shipped in this same wave. A finding that appears in one run and
-vanishes in the next is exactly the baseline churn 4A-2 exists to eliminate, and 4B's entropy ledger
-would be measuring noise. It also invalidates any single-run measurement of SNP0031 counts — including the
-one in this document written before the bug was found.
+There were **two independent causes**, and each was found by measurement rather than by reading alone.
 
-**Not yet root-caused.** Two candidates, both consistent with the evidence:
+### Cause 1 — the window hash was seeded from a per-process random value
 
-1. `TokenShingleIndex.Hash` folds `string.GetHashCode(StringComparison.Ordinal)` into the window hash.
-   .NET randomizes string hashing **per process**, so bucket partitioning differs on every run. Bucket
-   *contents* are sorted for determinism, but the hash values themselves are not stable across processes.
-2. `CollectFiles` takes the **first** document seen for a path and skips later ones. With a multi-targeted
-   project the same `FilePath` appears once per TFM, so which instance wins depends on `solution.Projects`
-   enumeration order — and a different TFM resolves `#if` differently, producing a different token stream.
+`TokenShingleIndex.Hash` documented itself as "FNV-1a over the window's normalized token texts" but folded
+`string.GetHashCode(StringComparison.Ordinal)` into the accumulator. .NET randomizes string hashing **per
+process**, so bucket partitioning differed on every run. Bucket *contents* were already sorted, which is
+why this hid so well: the code looked deterministic at every layer it had been checked at, and the
+randomness was one operator away in the only place ordering was assumed rather than enforced.
 
-Candidate 2 is the more likely cause of *large* swings (a different token stream changes which windows
-exist at all); candidate 1 explains smaller variation in match collapsing. Both are cheap to test.
+Because candidate pairs were generated in bucket-iteration order, match collapsing then chose different
+maximal fragments — hence a run reporting 2 SNP0031 findings and a run reporting 0.
 
-**Gate 5 remains blocked on this**, not on the cap. The 4C High tier cannot be signed off while the
-finding set moves between runs on identical input: a High-tier false-positive rate measured from one run
-is not a measurement.
+`Hash` is now real FNV-1a over the token characters, with a terminator per token so that `("ab","c")` and
+`("a","bc")` cannot fold together. `CSharpCompilationOptions.ConcurrentBuild` is deliberately left at its
+default: pinning it `false` to force source order would tax every compilation, so ordering is made
+explicit in code instead.
 
-**Suggested next step:** sort `files` by path before shingling and assert stability over repeated runs in a
-test. If that closes it, candidate 1 can be addressed by hashing token text through a stable
-(non-randomized) function such as a fixed-seed FNV over the characters.
+### Cause 2 — SNP0019 inherited a parallel producer-completion order
+
+With cause 1 fixed, SNP0031/SNP0032 counts went stable but the reports still differed. The remaining
+difference was **not** in the clone pass at all: it was SNP0019 findings appearing in a *different order*
+(same set, permuted). Two compounding causes:
+
+- `UnusedUsingDirectiveAnalyser` is the only analyser that does not walk syntax positionally — it iterates
+  `compilation.GetDiagnostics()`, whose enumeration order is a producer-completion order, not a positional
+  contract. `ConcurrentBuild` is never pinned false anywhere in the repo, despite 13 comments asserting
+  it as a precondition, so Roslyn merges diagnostics as parallel producers complete.
+- Both report writers sorted by `(Certainty, FilePath)` alone. That is a *stable* sort, so every finding
+  sharing a pair — all unused usings in one file — kept whatever order the analyser produced. SARIF was
+  worse: it sorted by nothing at all, while its own documentation claimed it sorted.
+
+Fixed at both layers: `UnusedUsingDirectiveAnalyser` now sorts on exit, and `ReportWriter` imposes one
+**total** order (`SortDeterministically`) shared by JSON and SARIF, breaking every remaining tie including
+`RuleId`, `Message` and `Category`. The report writer is the right place for that guarantee because
+determinism previously rested entirely on an unenforced convention — "each analyser owns its own ordering" —
+that 15 of 17 analysers satisfied only incidentally, their loops happening to be sequential.
+
+### Verification
+
+Byte-identical reports, ignoring `generatedAtUtc`, across **separate processes**:
+
+| Target | Format | Runs | Result |
+|---|---|---|---|
+| `CardanoSharp.Wallet.sln` | JSON | 3 | identical (994 findings, SNP0031=181, SNP0032=4) |
+| `CardanoSharp.Wallet.sln` | SARIF | 3 | identical |
+| `Snipper.slnx` | JSON | 3 | identical |
+| `Snipper.slnx` | SARIF | 3 | identical |
+
+Six regression tests added, and each was confirmed to **fail** when its bug is reintroduced, because a
+test that cannot fail is worse than no test:
+
+- `Bucket_Hashes_Are_Process_Independent` pins golden bucket keys. An in-process test alone cannot catch
+  per-process randomization — every call inside one process agrees — so this asserts constants that only a
+  process-independent hash can produce.
+- `Bucket_Hashes_Match_An_Independent_Fnv_Over_Token_Text` re-derives the keys from an independent
+  FNV-1a sharing no code with the engine, so re-seeding from `GetHashCode` cannot pass it.
+- `Token_Boundaries_Are_Significant_To_The_Hash` pins the per-token terminator.
+- `Json_Is_Identical_Whatever_Order_The_Analyser_Produced` and its SARIF twin feed one finding set in two
+  orders and demand identical output, targeting the exact `(Certainty, FilePath)` tie that leaked.
+
+533 tests pass (527 + 6). No performance cost: CardanoSharp stays at 9.1–9.2 s against 8.7–9.0 s before.
+
+### Not done: multi-TFM project selection is still latent, not exercised here
+
+`CollectFiles` keeps the **first** document seen for a path. For a multi-targeted project the same
+`FilePath` appears once per TFM, so which instance wins depends on `solution.Projects` enumeration order —
+and a different TFM resolves `#if` differently, producing a genuinely different token stream. Snipper
+targets `net10.0` only, so these runs never exercised it, and no test covers it. It is left alone rather
+than changed blind: picking a winner deterministically is cheap and safe, but it would change reported
+output for multi-TFM solutions, and that deserves its own measurement on a target that actually
+multi-targets (`MILKRUN.slnx` does).
 
 ## Also found during validation, unrelated to 4C
 
@@ -1140,7 +1190,7 @@ not a regression from this work.
 
 ## Open items that gate or qualify the release
 
-**4C's High tier cannot be signed off: the finding set is not stable between runs on identical input.** The roadmap's own Wave 4 exit
+**4C's High tier could not be signed off: the finding set was not stable between runs on identical input. Both causes are now fixed (see below), so this gate needs re-running rather than re-litigating.** The roadmap's own Wave 4 exit
 criterion — "4C's High tier produces zero false positives on the monorepo or drops a tier" — is
 **not met**. It is verified on the SampleApp fixture and on the author's own repository only. This
 is the single most important thing left, because 4C is the one story that emits *correctness*

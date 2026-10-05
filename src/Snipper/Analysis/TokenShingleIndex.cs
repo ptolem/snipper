@@ -192,19 +192,38 @@ internal static class TokenShingleIndex
     }
 
     /// <summary>
-    /// FNV-1a over the window's normalized token texts. Collisions are possible
-    /// at this scale; every candidate is re-verified token by token during
-    /// extension, so a collision costs time and never correctness.
+    /// FNV-1a over the window's normalized token texts, folded character by
+    /// character. Collisions are possible at this scale; every candidate is
+    /// re-verified token by token during extension, so a collision costs time
+    /// and never correctness.
+    ///
+    /// This must hash the token TEXT, never <see cref="string.GetHashCode()"/>.
+    /// .NET randomizes string hashing per process, so folding those values would
+    /// give a different bucket partitioning on every run: the same window would
+    /// land in a different bucket, candidate pairs would be generated in a
+    /// different order, and match collapsing would then pick different maximal
+    /// fragments. That made SNP0031/SNP0032 output vary between runs on
+    /// identical input. FNV-1a over characters is stable for the life of the
+    /// binary, which is what deterministic output requires.
     /// </summary>
     private static int Hash(IReadOnlyList<string> tokens, int start, int length)
     {
         const uint offsetBasis = 2166136261;
         const uint prime = 16777619;
+        const uint tokenTerminator = 0x1F;
 
         var hash = offsetBasis;
         for (var index = start; index < start + length; index++)
         {
-            hash ^= (uint)tokens[index].GetHashCode(StringComparison.Ordinal);
+            foreach (var character in tokens[index])
+            {
+                hash ^= character;
+                hash *= prime;
+            }
+
+            // Terminator per token, so ("ab","c") and ("a","bc") cannot fold to
+            // the same value and pull unrelated windows into one bucket.
+            hash ^= tokenTerminator;
             hash *= prime;
         }
 

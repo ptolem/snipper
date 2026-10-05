@@ -193,4 +193,106 @@ public sealed class TokenShingleIndexShould
         index.Windows.Values
             .Should().Contain(w => w.Count == 2 && w.Select(x => x.Path).Distinct().Count() == 2);
     }
+
+    /// <summary>
+    /// Regression: the window hash used to fold <c>string.GetHashCode()</c> into its FNV
+    /// accumulator while its own documentation described plain FNV-1a. .NET randomizes
+    /// string hashing <em>per process</em>, so the same window landed in a different
+    /// bucket on every run: candidate pairs were generated in a different order, and match
+    /// collapsing then chose different maximal fragments. SNP0031/SNP0032 output visibly
+    /// moved between runs on identical input.
+    /// <para>
+    /// A same-process test cannot catch that on its own, because every call inside one
+    /// process agrees. These assertions pin values that only a process-independent hash can
+    /// produce, so the suite fails in a fresh process if the randomization returns.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Bucket_Hashes_Are_Process_Independent()
+    {
+        var root = Root("class C { void M() { var alpha = 1; var beta = 2; } }");
+
+        var index = TokenShingleIndex.Build([("a.cs", root)], windowTokens: 4);
+
+        index.Windows.Keys.Should().BeEquivalentTo(
+        [
+            -1531693745, -1388522359, -1171468643, -1062740332, -1018468549,
+            -602846674, -377643611, -111502071, 368403820, 896792330,
+            1525551678, 1658470832, 1686949882, 1836633539, 1967195235,
+        ]);
+    }
+
+    /// <summary>
+    /// The same guarantee stated as a property rather than as constants: the engine's
+    /// buckets must agree with an independent FNV-1a over the token <em>text</em>. Shares
+    /// no code with the engine on purpose, so re-seeding the accumulator from
+    /// <c>GetHashCode</c> cannot make this pass.
+    /// </summary>
+    [Fact]
+    public void Bucket_Hashes_Match_An_Independent_Fnv_Over_Token_Text()
+    {
+        const int windowTokens = 4;
+        var root = Root("class C { void M() { var alpha = 1; var beta = 2; } }");
+        var tokens = TokenShingleIndex.Tokenize(root);
+
+        var index = TokenShingleIndex.Build([("a.cs", root)], windowTokens);
+
+        var expected = new HashSet<int>();
+        for (var start = 0; start + windowTokens <= tokens.Count; start++)
+        {
+            expected.Add(ReferenceHash(tokens, start, windowTokens));
+        }
+
+        index.Windows.Keys.Should().BeEquivalentTo(expected);
+    }
+
+    /// <summary>
+    /// A per-token terminator keeps window boundaries significant: without it, the token
+    /// sequences ("ab", "c") and ("a", "bc") fold to the same value and pull unrelated text
+    /// into one bucket, which costs time in the extension pass for no analytical gain.
+    /// </summary>
+    [Fact]
+    public void Token_Boundaries_Are_Significant_To_The_Hash()
+    {
+        static int Reference(IReadOnlyList<string> tokens, int start, int length)
+        {
+            var hash = 2166136261u;
+            for (var i = start; i < start + length; i++)
+            {
+                foreach (var character in tokens[i])
+                {
+                    hash ^= character;
+                    hash *= 16777619u;
+                }
+
+                hash ^= 0x1Fu;
+                hash *= 16777619u;
+            }
+
+            return unchecked((int)hash);
+        }
+
+        var joined = Reference(["ab", "c"], 0, 2);
+        var split = Reference(["a", "bc"], 0, 2);
+
+        split.Should().NotBe(joined);
+    }
+
+    private static int ReferenceHash(IReadOnlyList<string> tokens, int start, int length)
+    {
+        var hash = 2166136261u;
+        for (var index = start; index < start + length; index++)
+        {
+            foreach (var character in tokens[index])
+            {
+                hash ^= character;
+                hash *= 16777619u;
+            }
+
+            hash ^= 0x1Fu;
+            hash *= 16777619u;
+        }
+
+        return unchecked((int)hash);
+    }
 }

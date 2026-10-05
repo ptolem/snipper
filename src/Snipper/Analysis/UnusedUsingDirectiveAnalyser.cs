@@ -88,7 +88,20 @@ public sealed class UnusedUsingDirectiveAnalyser(AnalysisExclusions? exclusions 
             }
         }
 
-        return findings;
+        // Sorted on exit, so scheduling cannot affect output. This is load-bearing,
+        // not decorative: unlike every other analyser, the order above is inherited from
+        // compilation.GetDiagnostics(), whose enumeration order is a producer-completion
+        // order, not a positional contract. CSharpCompilationOptions.ConcurrentBuild is
+        // left at its default (true) deliberately - pinning it false to force source order
+        // would tax every compilation - so ordering is made explicit here instead.
+        // Without this, two runs over the same solution permuted the SNP0019 findings.
+        return findings
+            .OrderBy(static f => f.FilePath, StringComparer.Ordinal)
+            .ThenBy(static f => f.LineNumber)
+            .ThenBy(static f => f.CharacterOffset)
+            .ThenBy(static f => f.RuleId, StringComparer.Ordinal)
+            .ThenBy(static f => f.Message, StringComparer.Ordinal)
+            .ToList();
     }
 
     /// <summary>

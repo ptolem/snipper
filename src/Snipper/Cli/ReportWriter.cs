@@ -81,13 +81,15 @@ internal static class ReportWriter
         ArgumentNullException.ThrowIfNull(findings);
 
         var lineCache = new SourceLineCache();
+        // Total order, so the report is byte-identical across runs whatever order the
+        // analysers emitted in, and so the JSON and SARIF writers agree with each other.
+        var ordered = SortDeterministically(findings);
+
         var report = new SnipperReport(
             ToolVersion: ToolVersion.Current,
             CommitSha: commitSha,
             GeneratedAtUtc: DateTimeOffset.UtcNow,
-            Findings: findings
-                .OrderBy(static f => f.Certainty)
-                .ThenBy(static f => f.FilePath)
+            Findings: ordered
                 .Select(f => new FindingReportEntry(
                     RuleId: f.RuleId,
                     Title: f.Title,
@@ -103,6 +105,36 @@ internal static class ReportWriter
             EntropyRate: entropyRate);
 
         return JsonSerializer.Serialize(report, JsonReportSerializerContext.Default.SnipperReport);
+    }
+
+    /// <summary>
+    /// One total order over findings, shared by every output format.
+    /// <para>
+    /// Certainty and path alone are not enough. Those two keys were the whole sort once,
+    /// and being a stable sort they left every finding sharing a (certainty, path) pair -
+    /// all unused usings in one file, say - inheriting whatever order the analyser produced.
+    /// SNP0019 inherited a *parallel producer-completion* order from
+    /// <c>compilation.GetDiagnostics()</c>, so two runs over the same solution permuted those
+    /// findings. Breaking every remaining tie here makes this the last line of defence, and
+    /// means a future analyser cannot reintroduce that class of bug.
+    /// </para>
+    /// </summary>
+    private static List<SnipperFinding> SortDeterministically(IEnumerable<SnipperFinding> findings)
+    {
+        ArgumentNullException.ThrowIfNull(findings);
+
+        return
+        [
+            .. findings
+                .OrderBy(static f => f.Certainty)
+                .ThenBy(static f => f.FilePath, StringComparer.Ordinal)
+                .ThenBy(static f => f.LineNumber)
+                .ThenBy(static f => f.CharacterOffset)
+                .ThenBy(static f => f.RuleId, StringComparer.Ordinal)
+                .ThenBy(static f => f.Message, StringComparer.Ordinal)
+                .ThenBy(static f => f.Category)
+                .ThenBy(static f => f.Title, StringComparer.Ordinal)
+        ];
     }
 
     /// <summary>
@@ -123,15 +155,21 @@ internal static class ReportWriter
         var toolVersion = ToolVersion.Current;
         var lineCache = new SourceLineCache();
 
+        var ordered = SortDeterministically(findings);
+
+        // Same total order as the JSON report, so both formats are stable and agree with
+        // each other. GroupBy preserves first-appearance order, so the rule table needs
+        // its own ordinal sort on RuleId.
         var rules = findings
             .GroupBy(static f => f.RuleId, StringComparer.Ordinal)
+            .OrderBy(static g => g.Key, StringComparer.Ordinal)
             .Select(static g => new SarifReportingDescriptor(
                 Id: g.Key,
                 Name: g.First().Title,
                 ShortDescription: new SarifMultiformatMessageString(g.First().Title)))
             .ToArray();
 
-        var results = findings
+        var results = ordered
             .Select(f => new SarifResult(
                 RuleId: f.RuleId,
                 Level: f.Certainty switch
