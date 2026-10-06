@@ -279,101 +279,99 @@ environmental rather than a regression.** Interleave the two builds, or re-run a
 attributing a difference to a code change. The alternative - assuming any mismatch is your fault -
 would send the next person hunting a bug that is not there.
 
-## NEXT CHANGE (not started): block-scoped occurrence gate for SNP0009
+## ATTEMPTED AND REVERTED: block-scoped occurrence gate for SNP0009
 
-Everything below is the specification for the next piece of work, written down so it can be picked
-up without re-deriving the analysis. **Version is undecided**: 1.7.5 is not yet packed or
-version-bumped, so this could fold into it or ship as 1.7.6. It is a distinct change with its own
-tests either way.
+Implemented, measured, and reverted. Recorded because the reasoning behind it was wrong in an
+instructive way, and the arithmetic below disproves it in four lines — cheaper than re-running it.
 
-### The task
+### What was built
 
-In `UnusedLocalVariableAnalyser.AnalyzeAsync`, the slow path is entered 18,494 times out of 18,534
-candidates and costs 72.4 s of the pass's 76.2 s. Add a **block-scoped** syntactic occurrence test in
-front of it.
+`DocumentIdentifierIndex.HasOccurrenceWithin(name, container)` — a span-containment test over the
+already-built `_positionsByName` bucket, no binding. In `UnusedLocalVariableAnalyser` the fast path
+was switched from the document-scoped `SolutionUsageIndex.IsNameUsedInDocument` to this test
+against a new `GetEnclosingScope` helper, which walks ancestors to the nearest
+`BaseMethodDeclarationSyntax` / `AccessorDeclarationSyntax` / `LocalFunctionStatementSyntax` and
+falls back to the compilation root for top-level statements.
 
-### Why block scope, and why it is sound
+The soundness argument held up. Every form a reference can take is a `SimpleNameSyntax` (`x`, the
+`Expression` of `x.Y` / `x?.Y`, `await x`, the operand of `nameof(x)`), and declaration identifiers
+are `SyntaxToken`s so a declaration never counts as a use of itself. The member boundary is a
+**superset** of a local's true scope, and the test only ever proves absence, so it cannot lose a
+finding. The `out`-var trap was real and was designed around: an inner-block boundary would have
+wrongly reported `v` in `if (Try(out var v)) { Use(v); }` as unused.
 
-A local cannot be referenced from outside the subtree that declares it - that is the premise the
-rule's own class comment already rests on ("a local cannot be referenced from outside its declaring
-method, by reflection, or from another file"). The existing fast path is **document**-scoped, so a
-`count` in method A forces semantic binding for an unrelated `count` in method B, which is why it
-fires 31 times in 18,534.
+One thing the design had to check that the original spec missed: in an extended property pattern,
+`is { Length: len }` is a `SingleVariableDesignationSyntax` that binds to the **property** and is not
+a local at all — `{ Length: len }` is not even valid C# (CS0103). `is { Length: var len }` *does*
+declare a local, and `len` is then in scope. So the `symbol is not ILocalSymbol` guard is defensive
+rather than load-bearing, and the gate cannot silently claim a property binding as a dead local.
 
-Every syntactic form of a reference to a local is an `IdentifierNameSyntax`, which is what
-`DocumentIdentifierIndex` already buckets by name:
+**Correctness was never in question.** A purpose-built probe of 14 scope shapes (out-var, nested
+closures, local functions, lambdas, accessors, top-level statements, deconstruction, case patterns,
+property patterns, ref/using declarations, unreachable code, sibling name reuse) produced **7
+findings before and 7 after**, byte-identical. Full suite 590/590. On milkrun, SNP0009 emitted
+**56 findings in all four A/B runs** and the report total was 2,777 every time.
 
-- bare `x` -> `IdentifierNameSyntax`
-- `x.Y` -> the `Expression` of the `MemberAccessExpressionSyntax`
-- `nameof(x)` -> `IdentifierNameSyntax`
+### Why it did not pay
 
-So "no indexed position for this name inside the declaring member" **proves** absence, and a test
-built on it can only ever convert work, never lose a finding. Anything it cannot clear falls through
-to the existing slow path unchanged.
+| | old | new |
+|---|---|---|
+| SNP0009 pass, round 1 | 76.1s | 69.3s |
+| SNP0009 pass, round 2 | 70.5s | 71.8s |
+| whole run, round 2 (warm) | 132.1s | 135.8s |
 
-### Design constraints
+Round 1's "old" figure is a cold-cache outlier — it was the first run after a rebuild. The honest
+warm comparison is round 2, where the gate was **2.8% slower on the whole run**. Not a win.
 
-- **Container choice matters and must be conservative.** Use the enclosing **member**
-  (`BaseMethodDeclarationSyntax`, `AccessorDeclarationSyntax`, `LocalFunctionStatementSyntax`),
-  falling back to the compilation unit for top-level statements. Do **not** use the innermost
-  `BlockSyntax`: for `if (TryGet(out var v)) { Use(v); }`, `v`'s scope is the enclosing block, so an
-  inner block would be too narrow and could wrongly report `v` as unused. A member is a superset of
-  every block inside it, so it is always sound.
-- **Verify the declaration itself is not in the index.** `VariableDeclaratorSyntax.Identifier` is a
-  `SyntaxToken`, not a `SimpleNameSyntax`, so it should not appear - confirm this rather than assume,
-  and exclude its span explicitly if it does.
-- The check is a span-containment test over already-built data, so it should be a loop over
-  `_positionsByName[name]` testing `position.SpanStart` against the container's `FullSpan`. No
-  binding, no allocation.
-- New API belongs on `DocumentIdentifierIndex` (it owns `_positionsByName`), named for what it
-  proves, e.g. `HasOccurrenceWithin(string name, SyntaxNode container)`.
+The reason is arithmetic, and it should have been done before writing the code:
 
-### Verification, in order
+```
+candidates in the pass                 18,534
+SNP0009 findings (unread locals)           56
+=> read locals                        18,478
 
-1. `dotnet build Snipper.slnx --nologo` - 0 errors.
-2. `dotnet test Snipper.slnx --nologo` - 590/590, the current baseline.
-3. **SNP0009 must still emit exactly 56 findings on MILKRUN**, unchanged. This is the load-bearing
-   correctness check; the harness hash guard also covers it.
-4. Measure the pass wall clock from the analyser's own progress line
-   (`UnusedLocalVariableAnalyser: N finding(s) in X.Xs`). Baseline **76.2 s**; the analysis phase is
-   **152.7 s** and the next-longest analyser is ~51 s, so this pass sets the critical path.
-5. Self-analysis must stay at the 3 pre-existing findings, none in changed files.
+A read local has at least one occurrence inside its declaring
+member BY DEFINITION. So HasOccurrenceWithin returns TRUE for all
+18,478 of them and every one still takes the slow path.
 
-### Measurement commands
+The gate can therefore only ever fire for the 56 unread locals.
+The old document-scoped gate already caught 31 of those.
 
-```console
-# baseline capture (do this immediately before changing anything - see the drift caveat below)
-.\scripts\measure-run.ps1 -Target C:\ws\milkrun\MILKRUN.slnx -Iterations 3 -MaxDop 8 `
-    -OutputPath artifacts\perf-before.json -ResultPath artifacts\perf-before.result.json
-
-# after the change, guarded by the baseline hash
-.\scripts\measure-run.ps1 -Target C:\ws\milkrun\MILKRUN.slnx -Iterations 3 -MaxDop 8 `
-    -BaselineHash <hash from before> -OutputPath artifacts\perf-after.json
+=> binding calls eliminated: 25 of 18,494   (0.1%)
+   25 x 3.3ms = ~82ms, against a 70s pass.
 ```
 
-Set `SNIPPER_PROFILE=localvar` to re-enable profiling if the file is restored from history; as
-committed it is **deleted**, deliberately, because it is scaffolding rather than a product feature.
+**The error in the original analysis.** "The fast path fires 31 times in 18,534, so 99.8% of
+candidates are wasted work" conflated *taking the slow path* with *needing binding*. A slow-path
+candidate is a local that **is** read, and confirming that a read is a read of *this* local — rather
+than of a same-named parameter, field, or sibling declaration — is precisely what binding is for.
+The slow path is where the correct answers come from, not where the waste is.
 
-### Traps already hit in this wave - do not re-walk them
+### What this pins down about the real cost
 
-| Assumption | Reality |
-|---|---|
-| `SyntaxToken.ValueSpan`, `SyntaxToken.GetLinePosition()` | Neither exists in Roslyn 5.9. Check the API surface before designing around it. |
-| `MemoryExtensions.Split` on `ReadOnlySpan<char>` | Takes a **caller-supplied `Span<Range>`** and truncates **silently** on overflow. A short buffer would stop matching a nested path. |
-| Profiler counters via `ref` to another class's fields | Printed all zeros while still looking plausible. |
-| One `Interlocked` counter **per node** | Made the pass **2.7x slower**; tens of millions of contended writes on one cache line. |
-| A hash mismatch means the change broke output | It may be **environmental drift**. Re-run a baseline before blaming the code. |
+`GetDeclaredSymbol` at ~3.3 ms is not per-candidate; the semantic model caches a method-body binder
+per method. So the pass pays **one binder build for each method that declares a local** — roughly
+15,500 of them — and every readable local in that method rides along on it. That is the cost, it is
+inherent to confirming reads, and it cannot be gated away syntactically.
+
+The only remaining lever is to skip binding for locals that are *obviously* read, and the obvious
+case is unsound on its own: "the name occurs exactly once in this member, so that occurrence is the
+read" is **wrong** when an inner block or an outer field shadows the name —
+`int x = 1; if (b) { int x = 2; Console.Write(x); }` would hide a genuinely dead outer `x`. Making
+that safe requires counting same-named declarations in the member, which is most of the work the
+gate was supposed to avoid. Not attempted.
 
 ## Not done, and why
 
 - **`MSBuildWorkspace.Create()` tuning - rejected on measurement.** Workspace load is 14.6% of a
   run, so this cannot be where the time is. Attempting it would have been optimising a phase that
   has to happen anyway.
-- **`UnusedLocalVariableAnalyser` - profiled, fix identified, not implemented.** 94.7 s, 53% of the
-  analysis phase. `GetDeclaredSymbol` is 97% of it, at 3.3 ms per call because it builds a
-  method-body binder, and the document-scoped fast path in front of it fires 31 times in 18,534.
-  The fix is a block-scoped occurrence test. See "SNP0009 attribution" above. Not implemented here
-  because it changes what the rule proves and needs its own tests.
+- **`UnusedLocalVariableAnalyser` - profiled, attempted, reverted.** 94.7 s, 53% of the analysis
+  phase, and `GetDeclaredSymbol` is 97% of it at 3.3 ms per call. A block-scoped occurrence gate was
+  built and measured: correct on every check, but **2.8% slower warm**, because the gate can only
+  fire for the 56 unread locals out of 18,534 candidates. The pass pays one method-body binder per
+  method declaring a local, and that is inherent to confirming reads. See "ATTEMPTED AND REVERTED"
+  above - the four-line arithmetic there is worth more than re-running the experiment.
 - **A pre-existing caveat, now documented:** report output is not stable across sessions on a target
   whose restore state can move under the tool. See "output is not stable across time" above.
 - **`ConfigurationBindingAnalyser.FindKeyLocation`** re-reads the whole file per unbound JSON key -
