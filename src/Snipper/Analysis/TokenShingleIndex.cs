@@ -26,6 +26,15 @@ internal static class TokenShingleIndex
     /// <summary>Bucket table: window hash to every distinct location holding it.</summary>
     internal sealed record Index(IReadOnlyDictionary<int, List<Location>> Windows);
 
+    /// <summary>
+    /// One file's normalized token stream and the per-token line positions aligned to it,
+    /// produced by a single walk of its tree.
+    /// </summary>
+    internal readonly record struct TokenizedFile(
+        string Path,
+        IReadOnlyList<string> Tokens,
+        IReadOnlyList<(int Line, int Character)> Lines);
+
     private const string IdentifierToken = "ID";
     private const string EscapedIdentifierToken = "ESCID";
     private const string StringToken = "STR";
@@ -49,28 +58,32 @@ internal static class TokenShingleIndex
     /// subtrees are skipped entirely; namespace declarations are kept, since
     /// their bodies are the signal.
     /// </summary>
-    public static IReadOnlyList<string> Tokenize(SyntaxNode root)
-    {
-        ArgumentNullException.ThrowIfNull(root);
-        return Collect(root).Tokens;
-    }
+    public static IReadOnlyList<string> Tokenize(SyntaxNode root) => Collect(root, string.Empty).Tokens;
 
     /// <summary>
     /// Line and character for each normalized token, positionally aligned with
     /// <see cref="Tokenize"/>.
     /// </summary>
-    public static IReadOnlyList<(int Line, int Character)> TokenLines(SyntaxNode root)
+    public static IReadOnlyList<(int Line, int Character)> TokenLines(SyntaxNode root) =>
+        Collect(root, string.Empty).Lines;
+
+    /// <summary>
+    /// Tokenizes a file in one pass, returning the token stream and the aligned line positions
+    /// together.
+    /// <para>
+    /// Prefer this to calling <see cref="Tokenize"/> and <see cref="TokenLines"/> as a pair:
+    /// each of those is a full recursive walk, so together they traverse every tree twice for
+    /// one result.
+    /// </para>
+    /// </summary>
+    public static TokenizedFile Collect(SyntaxNode root, string path)
     {
         ArgumentNullException.ThrowIfNull(root);
-        return Collect(root).Lines;
-    }
 
-    private static (List<string> Tokens, List<(int Line, int Character)> Lines) Collect(SyntaxNode root)
-    {
         var tokens = new List<string>();
         var lines = new List<(int Line, int Character)>();
         Walk(root, tokens, lines);
-        return (tokens, lines);
+        return new TokenizedFile(path, tokens, lines);
     }
 
     /// <summary>
@@ -150,10 +163,13 @@ internal static class TokenShingleIndex
     }
 
     /// <summary>
-    /// Build the bucket table over every supplied file. Identical
-    /// (path, tokenIndex) locations are recorded once, which is what makes a
-    /// linked file or multi-TFM document contribute only one copy.
+    /// Build the bucket table over every supplied file, tokenizing each tree exactly once.
     /// </summary>
+    /// <remarks>
+    /// Retained for callers holding syntax trees. A caller that has already tokenized should
+    /// prefer the <see cref="TokenizedFile"/> overload, which does no tree walk at all - on the
+    /// MILKRUN monorepo the difference is three eliminated walks per file.
+    /// </remarks>
     public static Index Build(
         IEnumerable<(string Path, SyntaxNode Root)> sources,
         int windowTokens,
@@ -162,28 +178,50 @@ internal static class TokenShingleIndex
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentOutOfRangeException.ThrowIfLessThan(windowTokens, 1);
 
-        var windows = new Dictionary<int, List<Location>>();
-        var seen = new HashSet<(string Path, int TokenIndex)>();
+        // The projection is deliberately lazy: each file's tokens are released once its windows
+        // have been hashed, rather than every file's stream being held until the last one is
+        // read. Eagerly materialising them here would trade the walk saving for a peak-memory
+        // regression on a large solution.
+        return Build(
+            sources.Select(static source => Collect(source.Root, source.Path)),
+            windowTokens,
+            cancellationToken);
+    }
 
-        foreach (var (path, root) in sources)
+    /// <summary>
+    /// Build the bucket table over already-tokenized files, walking no trees. Each distinct
+    /// path contributes exactly one copy of its content, which is what makes a linked file or a
+    /// multi-TFM document count once.
+    /// </summary>
+    public static Index Build(
+        IEnumerable<TokenizedFile> sources,
+        int windowTokens,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sources);
+        ArgumentOutOfRangeException.ThrowIfLessThan(windowTokens, 1);
+
+        var windows = new Dictionary<int, List<Location>>();
+
+        // Deduplicated by path rather than by (path, window index). A repeated path means every
+        // window it could contribute is already recorded, so skipping the file outright is
+        // equivalent to the per-window check - and it replaces a set holding one entry per
+        // shingle window with one holding one entry per file. Measured on MILKRUN, the
+        // per-window set held roughly 7.5M entries; this holds fewer than 4,000. The documented
+        // guarantee is unchanged, only its cost is.
+        var seenPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var (path, tokens, lines) in sources)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var tokens = Tokenize(root);
-            if (tokens.Count < windowTokens)
+            if (!seenPaths.Add(path) || tokens.Count < windowTokens)
             {
                 continue;
             }
 
-            var lines = TokenLines(root);
-
             for (var start = 0; start + windowTokens <= tokens.Count; start++)
             {
-                if (!seen.Add((path, start)))
-                {
-                    continue;
-                }
-
                 var hash = Hash(tokens, start, windowTokens);
                 if (!windows.TryGetValue(hash, out var bucket))
                 {

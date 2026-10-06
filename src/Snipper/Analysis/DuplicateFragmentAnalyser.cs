@@ -88,8 +88,11 @@ public sealed class DuplicateFragmentAnalyser(
         }
 
         progress?.Invoke($"DuplicateFragmentAnalyser: shingling {files.Count} files");
+
+        // SourceFile already holds each file's tokens and line positions from CollectFiles, so
+        // they are handed over rather than recomputed from the roots.
         var index = TokenShingleIndex.Build(
-            files.Select(f => (f.Path, Root: (SyntaxNode)f.Unit)),
+            files.Select(f => new TokenShingleIndex.TokenizedFile(f.Path, f.Tokens, f.Lines)),
             WindowTokens,
             cancellationToken);
 
@@ -158,11 +161,13 @@ public sealed class DuplicateFragmentAnalyser(
                 }
 
                 var unit = (CompilationUnitSyntax)root;
-                byPath[path] = new SourceFile(
-                    path,
-                    unit,
-                    TokenShingleIndex.Tokenize(unit),
-                    TokenShingleIndex.TokenLines(unit));
+
+                // One walk per file. CollectFiles used to call Tokenize and TokenLines, which are
+                // each a full recursive traversal, and then hand Build the bare roots so it could
+                // re-derive both from the same tree - four walks per file to produce one result.
+                // The token stream collected here is the one Build consumes.
+                var tokenized = TokenShingleIndex.Collect(unit, path);
+                byPath[path] = new SourceFile(path, unit, tokenized.Tokens, tokenized.Lines);
             }
         }
 
