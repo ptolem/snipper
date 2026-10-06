@@ -5,7 +5,7 @@ pipeline recipes and gating strategies see [CI integration](ci-integration.md). 
 *means* see the [rule catalogue in the README](../README.md#rules); this document covers *how to run
 and filter it*.
 
-Every behaviour here was verified against the running tool on this repository (Snipper 1.7.3, 53
+Every behaviour here was verified against the running tool on this repository (Snipper 1.7.4, 53
 commits). Where something is a limitation rather than a feature, it says so. Numbers quoted for a
 larger codebase come from an 81-project / ~3,000-file / 3,896-commit monorepo measured with the same
 flags across the 1.7.x series.
@@ -421,22 +421,30 @@ Verified: excluding `Snipper.Analysis` removed `DuplicateFragmentAnalyser.cs:109
 `DuplicateFragmentAnalyser.cs:5` (SNP0019, unused using) in place.
 
 If you exclude a large generated tree, expect residual SNP0019/SNP0020/SNP0002 findings at file
-scope. Add a path glob for those files — accepting that the analysis cost is still paid.
+scope **unless you exclude `<global>`** — add it alongside the namespace.
 
-**SNP0031 is the exception.** The duplication rule resolves its namespace syntactically through the
-enclosing *namespace* declaration, and supports a special marker for fragments at file scope:
+**File-scope code needs the `<global>` marker.** A file that declares no namespace at all — a
+top-level-statements `Program.cs`, a file of global usings — has no namespace name that can match
+`Company.Something`, so a namespace exclusion never covered it. `<global>` is the documented way to
+exclude it, and since **1.7.4** it works from the command line as well as the config file:
+
+```console
+snipper --exclude-namespaces "<global>"
+snipper --exclude-namespaces "Company.Something,<global>"
+```
 
 ```json
 { "version": 1, "exclude": { "namespaces": ["<global>"] } }
 ```
 
-`<global>` suppresses file-scope clone fragments. It works **only through the config file** — the
-CLI flag's syntax check rejects it (see below).
+`<global>` is honoured by every namespace-aware rule, not only SNP0031. It suppresses findings in
+file-scope code; like every namespace exclusion, it retains usage evidence.
 
 ### ⚠ The CLI validates namespace syntax; the config file does not
 
 `--exclude-namespaces` checks each entry: every dot-separated segment must start with a letter or
-`_` and contain only letters, digits, and `_`. Anything else warns and is skipped.
+`_` and contain only letters, digits, and `_`. Anything else warns and is skipped. `<global>` is the
+one deliberate exception to that grammar — it is not a namespace name, and it is accepted.
 
 The config file applies **no syntax validation at all**. Verified — all three of these are accepted
 silently:
@@ -449,11 +457,10 @@ silently:
 
 Two consequences:
 
-- **`<global>` is config-only.** `--exclude-namespaces "<global>"` prints
-  `Warning: ignoring malformed namespace '<global>'.` and excludes nothing.
 - **A typo in the config is silent.** Since a misspelled namespace matches nothing rather than
   erroring, it looks exactly like a working exclusion that happens to have no findings. The
-  `obsolete[]` audit array is the only way to detect it.
+  `obsolete[]` audit array is the only way to detect it. (`<global>` is exempt from this: the audit
+  reports it stale only when no analysed file declares no namespace.)
 
 ### Cost
 
@@ -674,6 +681,7 @@ What changes for you when you upgrade, and whether it disturbs a baseline.
 | `1.7.2` | SNP0019 reports one using directive once. Roslyn emits CS8019 *and* CS8933 for the same directive, and both were reported. | Fewer duplicate findings; same fix is still identified. |
 | `1.7.3` | SNP0031 verifies all 60 window tokens before confirming a clone. The index is keyed on a 32-bit hash, so two unrelated files could collide into a finding. | Findings removed are the collisions — they were never real clones. |
 | `1.7.3` | The `SampleApp` test fixture compiles. This changes **no** production rule behaviour; it changes what the tests prove. | None. |
+| `1.7.4` | `--exclude-namespaces "<global>"` is accepted (it was rejected as malformed) and now suppresses file-scope findings for **every** namespace-aware rule, not just SNP0031. Findings in files declaring no namespace — top-level-statements `Program.cs`, files of global usings — were never suppressible by a namespace name. | None unless you configure `<global>`. Suppressed findings are recorded in the baseline as resolved; deleting the exclusion later does not resurface them as new. |
 
 **Finding-count changes are the only thing that moves a baseline.** Fingerprints are derived from the
 finding's identity, not from a version stamp, so a rule that emits the same finding produces the same
@@ -696,14 +704,15 @@ Verified against the running tool. Listed so they are not discovered the hard wa
    `**/src/Generated/**`. Detect dead globs with `--audit-suppressions` and check `obsolete[]`.
 3. **Namespace exclusion covers sub-namespaces to any depth,** with no wildcard. Excluding `Company`
    silences the entire codebase.
-4. **File-scope findings escape namespace exclusion,** because the lookup goes through the enclosing
-   type declaration. SNP0031 is the exception and accepts a special `<global>` marker — config file
-   only, since the CLI's syntax check rejects it.
+4. **Namespace exclusion needs `<global>` for file-scope code.** A file declaring no namespace has no
+   name to match, so excluding `Company.Something` never covered a top-level-statements `Program.cs`.
+   Exclude `<global>` as well — it is accepted by every namespace-aware rule and, since 1.7.4, by the
+   CLI flag as well as the config file.
 5. **Namespace exclusion retains usage evidence,** so it cannot be used to hide a public API surface
    from the unused-member rules.
 6. **The CLI validates namespace syntax; the config file does not.** `--exclude-namespaces` rejects
-   `9bad-name`, `has space` and `<global>`; the same entries in `exclude.namespaces` are accepted
-   silently and match nothing.
+   `9bad-name` and `has space`; the same entries in `exclude.namespaces` are accepted silently and
+   match nothing. (`<global>` is accepted by both.)
 7. **Configs do not merge.** The nearest ancestor `snipper.json` wins outright; narrowing the target
    path can change the rule set.
 8. **A misspelled rule id is a warning, not an error,** and does nothing. Audit `obsolete[]` catches it.
@@ -743,6 +752,7 @@ Verified against the running tool. Listed so they are not discovered the hard wa
 - [CI integration](ci-integration.md) — pipeline recipes, gating strategies, monorepo sharding.
 - [Code architecture](code_architecture.md) - for contributors: how the tool loads code, runs analysers, and produces findings.
 - [README](../README.md) — installation, quick start, and the rule catalogue.
+- [`1_7_4_plan.md`](history/1_7_4_plan.md) — namespace exclusion reaching file-scope code via `<global>`.
 - [`1_7_3_plan.md`](history/1_7_3_plan.md) — clone-window verification, and the fixture that had never compiled.
 - [`1_7_2_plan.md`](history/1_7_2_plan.md) — clone drift no longer blaming file creations; SNP0019 dedupe.
 - [`1_7_1_plan.md`](history/1_7_1_plan.md) — unopenable targets, and an SNP0031 tuning pass measured as a no-go.

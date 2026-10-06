@@ -527,9 +527,10 @@ The things most likely to cost you time. Each is a real, verified behaviour, not
    Exclude the most specific namespace that covers generated code.
 6. **Namespace exclusions retain usage evidence.** You cannot hide a public API surface with one and
    still get unused-member findings for the rest of the repo.
-7. **File-scope findings escape namespace exclusion.** Expect residual unused-`using` findings in
-   excluded trees; add a path glob for those files. SNP0031 is the exception — use the `<global>`
-   marker in the **config file** (the CLI flag rejects it).
+7. **File-scope findings need `<global>` to be excluded.** A file that declares no namespace — a
+   top-level-statements `Program.cs`, a file of global usings — cannot match a namespace name at all,
+   so excluding a project by namespace left its namespace-less files unexcluded. Exclude `<global>`
+   alongside it; since 1.7.4 the CLI flag accepts the marker as well as the config file.
 8. **Namespace exclusions are not validated in the config file.** `9bad-name` and `has space` are
    accepted silently and match nothing. Only the CLI flag checks syntax.
 9. **The baseline grows when you add suppressions.** By design. Do not regenerate it to hide the diff.
@@ -563,6 +564,7 @@ The things most likely to cost you time. Each is a real, verified behaviour, not
 - [README](../README.md) — installation and the rule catalogue.
 - [`1_7_0_plan.md`](history/1_7_0_plan.md) — the entropy gate, suppression audit, and clone-drift design
   rationale, with measurements.
+- [`1_7_4_plan.md`](history/1_7_4_plan.md) — why `--exclude-namespaces` needed `<global>` for file-scope code.
 - [`1_7_3_plan.md`](history/1_7_3_plan.md) — the clone-window fix that removed ~232 false SNP0031 findings.
 - [`1_7_2_plan.md`](history/1_7_2_plan.md) — clone drift no longer blaming file creations, and SNP0019 dedupe.
 - [`1_7_1_false_positives_investigation.md`](history/1_7_1_false_positives_investigation.md) — the monorepo

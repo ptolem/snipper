@@ -321,14 +321,25 @@ public class CommandLineParserShould : IDisposable
     }
 
     [Fact]
-    public void Reject_The_Global_Marker_On_The_Command_Line()
+    public void Accept_The_Global_Marker_On_The_Command_Line()
     {
-        // Documented asymmetry: <global> works in snipper.json but not here, because the CLI
-        // validates namespace syntax and the config file does not.
+        // 1.7.4: <global> is no longer config-only. It was rejected here purely because
+        // the CLI validates namespace syntax and the config file does not — an accident of
+        // which path validated, not a safety property. Excluding file-scope code from the
+        // command line works exactly as it does from snipper.json.
         var options = ParseOk(_projectPath, "--exclude-namespaces", "<global>");
 
-        options.ExcludedNamespaces.Should().BeEmpty();
-        options.MalformedNamespaces.Should().BeEquivalentTo(["<global>"]);
+        options.ExcludedNamespaces.Should().BeEquivalentTo(["<global>"]);
+        options.MalformedNamespaces.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Accept_The_Global_Marker_Mixed_With_Real_Namespaces()
+    {
+        var options = ParseOk(_projectPath, "--exclude-namespaces", "<global>,Company.A");
+
+        options.ExcludedNamespaces.Should().BeEquivalentTo(["<global>", "Company.A"]);
+        options.MalformedNamespaces.Should().BeEmpty();
     }
 
     [Fact]

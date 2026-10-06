@@ -1,6 +1,9 @@
 namespace Snipper.Tests;
 
 using FluentAssertions;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Text;
 using Snipper.Analysis;
 using Snipper.Models;
 using Xunit;
@@ -101,5 +104,73 @@ public sealed class UnusedUsingDirectiveAnalyserShould(SampleSolutionFixture fix
 
         findings.Should().NotContain(f => f.RuleId == "SNP0019" && f.FilePath.EndsWith("DeadCode.cs", StringComparison.Ordinal));
         findings.Should().NotContain(f => f.RuleId == "SNP0019" && f.FilePath.EndsWith("Worker.cs", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Flag_Global_Using_Consumed_Only_By_Another_File_For_AnalyzeAsync()
+    {
+        // The SampleApp App/GlobalUsings.cs fixture said CS8019 "fires on the global
+        // using exactly as it does for ordinary ones", but it only ever proved the
+        // unused case - nothing in App consumed System.Text anywhere. That left the
+        // cross-file case untested, which is the one that matters: a global using is
+        // project-wide, so the directive's own file is not where its usage can appear.
+        //
+        // CS8019 is confirmed compilation-wide (the analyser calls
+        // compilation.GetDiagnostics()), so System.Text - used only from Consumer.cs -
+        // must not be reported. Pinned here so a future change to how SNP0019 harvests
+        // diagnostics cannot silently start flagging needed global usings.
+        var solution = GlobalUsingScopeSolution();
+
+        var findings = await new UnusedUsingDirectiveAnalyser().AnalyzeAsync(solution, CancellationToken.None);
+
+        findings.Should().NotContain(f => f.RuleId == "SNP0019" && f.Message.Contains("System.Text", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Flag_Global_Using_Never_Consumed_Anywhere_In_The_Project_For_AnalyzeAsync()
+    {
+        // The other half of the same pair: a global using no file in the project
+        // consumes IS unnecessary, and must still be reported. Without this the test
+        // above would also pass if SNP0019 stopped reporting global usings altogether.
+        var solution = GlobalUsingScopeSolution();
+
+        var findings = await new UnusedUsingDirectiveAnalyser().AnalyzeAsync(solution, CancellationToken.None);
+
+        findings.Should().ContainSingle(f => f.RuleId == "SNP0019"
+            && f.Certainty == CertaintyTier.Guaranteed
+            && f.Message.Contains("System.Diagnostics", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Two-file project: GlobalUsings.cs declares System.Text (consumed only from
+    /// Consumer.cs) and System.Diagnostics (consumed nowhere). Both namespaces resolve
+    /// from corlib, so no package reference is needed to build the fixture.
+    /// </summary>
+    private static Solution GlobalUsingScopeSolution()
+    {
+        using var workspace = new AdhocWorkspace();
+        var projectId = ProjectId.CreateNewId("Scope");
+
+        return workspace.CurrentSolution
+            .AddProject(ProjectInfo.Create(projectId, VersionStamp.Create(), "Scope", "Scope", LanguageNames.CSharp,
+                filePath: @"C:\repo\Scope\Scope.csproj",
+                compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)))
+            .AddMetadataReference(projectId, MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
+            .AddDocument(DocumentId.CreateNewId(projectId), "GlobalUsings.cs", SourceText.From(
+                """
+                global using System.Text;
+                global using System.Diagnostics;
+                """),
+                filePath: @"C:\repo\Scope\GlobalUsings.cs")
+            .AddDocument(DocumentId.CreateNewId(projectId), "Consumer.cs", SourceText.From(
+                """
+                namespace Scope.Support;
+
+                public static class Consumer
+                {
+                    public static int Len() => new StringBuilder().Length;
+                }
+                """),
+                filePath: @"C:\repo\Scope\Consumer.cs");
     }
 }

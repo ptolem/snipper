@@ -112,29 +112,29 @@ public static class ExclusionEngine
         ArgumentNullException.ThrowIfNull(symbol);
         ArgumentNullException.ThrowIfNull(exclusions);
 
-        if (exclusions.Namespaces.Count == 0 || symbol.ContainingNamespace is not { IsGlobalNamespace: false })
+        if (exclusions.Namespaces.Count == 0)
         {
             return false;
         }
 
-        var name = symbol.ContainingNamespace.ToDisplayString();
-        while (name.Length > 0)
+        if (symbol.ContainingNamespace is not { IsGlobalNamespace: false })
         {
-            if (exclusions.Namespaces.Contains(name))
-            {
-                return true;
-            }
-
-            var lastDot = name.LastIndexOf('.');
-            name = lastDot < 0 ? string.Empty : name[..lastDot];
+            // Top-level-statements Program.cs and file-scope declarations bind to the
+            // global namespace, which no real namespace name can match. Reachable only
+            // through the <global> sentinel - previously this returned false outright,
+            // so such files were silently unexcludable.
+            return exclusions.IsGlobalNamespaceExcluded;
         }
 
-        return false;
+        return exclusions.Covers(symbol.ContainingNamespace.ToDisplayString());
     }
 
     /// <summary>
     /// Namespace exclusion for findings that carry no symbol (unreachable
-    /// statements, unread locals): resolved through the enclosing type declaration.
+    /// statements, unread locals, using directives): resolved through the enclosing type
+    /// declaration, then the enclosing namespace declaration, then — for file-scope code
+    /// that declares no namespace at all — the <see cref="AnalysisExclusions.GlobalNamespaceMarker"/>
+    /// sentinel.
     /// </summary>
     public static bool IsNamespaceExcluded(
         SyntaxNode node,
@@ -152,8 +152,52 @@ public static class ExclusionEngine
         }
 
         var typeDeclaration = node.FirstAncestorOrSelf<TypeDeclarationSyntax>();
-        var typeSymbol = typeDeclaration is null ? null : semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken);
-        return typeSymbol is not null && IsNamespaceExcluded(typeSymbol, exclusions);
+        if (typeDeclaration is not null)
+        {
+            var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken);
+            if (typeSymbol is not null)
+            {
+                return IsNamespaceExcluded(typeSymbol, exclusions);
+            }
+        }
+
+        var namespaceName = ResolveFileScopeNamespace(node);
+        return namespaceName is null
+            ? exclusions.IsGlobalNamespaceExcluded
+            : exclusions.Covers(namespaceName);
+    }
+
+    /// <summary>
+    /// The namespace a file-scope node belongs to, or null when it declares none.
+    /// <para>
+    /// The enclosing <see cref="BaseNamespaceDeclarationSyntax"/> is tried first, which is
+    /// exact for anything inside a block-scoped namespace. It cannot serve file-scope
+    /// code, though: a file-scoped <c>namespace N;</c> and both forms of file-level
+    /// <c>using</c> are *siblings* of the using directive, not ancestors, so an ancestor
+    /// walk returns null for <c>using System.Text;</c> in a file that does declare
+    /// <c>namespace N;</c>. Those files therefore fall back to the unit's own namespace
+    /// declaration. Classifying them as global instead would make <c>&lt;global&gt;</c>
+    /// suppress usings in every namespaced file.
+    /// </para>
+    /// </summary>
+    private static string? ResolveFileScopeNamespace(SyntaxNode node)
+    {
+        var ancestor = node.FirstAncestorOrSelf<BaseNamespaceDeclarationSyntax>();
+        if (ancestor is not null)
+        {
+            return ancestor.Name.ToString();
+        }
+
+        var unit = node.AncestorsAndSelf().OfType<CompilationUnitSyntax>().FirstOrDefault();
+        foreach (var member in unit?.Members ?? default)
+        {
+            if (member is BaseNamespaceDeclarationSyntax declaration)
+            {
+                return declaration.Name.ToString();
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

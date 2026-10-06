@@ -2,6 +2,7 @@ namespace Snipper.Tests;
 
 using System.Collections.Frozen;
 using FluentAssertions;
+using Snipper.Analysis;
 using Snipper.Cli;
 using Snipper.Models;
 using Xunit;
@@ -307,14 +308,34 @@ public sealed class SuppressionAuditShould
     [Fact]
     public void Treat_A_Namespace_As_Existing_When_Only_A_Child_Of_It_Is_Declared()
     {
-        // Prefix semantics must mirror ExclusionEngine.IsNamespaceExcluded, otherwise the
+        // Prefix semantics must mirror AnalysisExclusions.Covers, otherwise the
         // audit would call a live exclusion stale.
         var probe = NamespaceInventory.ExistenceProbe(
-            FrozenSet.ToFrozenSet(["Acme.Domain.Models"], StringComparer.Ordinal));
+            Inventory(["Acme.Domain.Models"], hasFileScopeCode: false));
 
         probe("Acme.Domain").Should().BeTrue();
         probe("Acme.Domain.Models").Should().BeTrue();
         probe("Acme.Other").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Treat_The_Global_Sentinel_As_Existing_Only_When_Some_File_Declares_No_Namespace()
+    {
+        // "<global>" matches no declaration, so the prefix walk cannot see it. Without
+        // its own answer the audit would report it stale while it was suppressing
+        // findings in file-scope code.
+        var withFileScopeCode = NamespaceInventory.ExistenceProbe(
+            Inventory(["Acme.Domain"], hasFileScopeCode: true));
+        var namespacedThroughout = NamespaceInventory.ExistenceProbe(
+            Inventory(["Acme.Domain"], hasFileScopeCode: false));
+
+        withFileScopeCode(AnalysisExclusions.GlobalNamespaceMarker).Should().BeTrue();
+        namespacedThroughout(AnalysisExclusions.GlobalNamespaceMarker).Should().BeFalse();
+    }
+
+    private static NamespaceInventoryResult Inventory(string[] declared, bool hasFileScopeCode)
+    {
+        return new NamespaceInventoryResult(declared.ToFrozenSet(StringComparer.Ordinal), hasFileScopeCode);
     }
 
     private static SnipperConfig Config(

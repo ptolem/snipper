@@ -2,6 +2,7 @@ namespace Snipper.Cli;
 
 using System.Collections.Frozen;
 using System.Globalization;
+using Snipper.Analysis;
 using Snipper.Models;
 
 /// <summary>
@@ -275,10 +276,22 @@ internal static class CommandLineParser
     /// starting with a letter or underscore and continuing with letters, digits or
     /// underscores. Deliberately not applied to config-file entries, which are validated by
     /// a different (absent) path — see the usage guide's namespace section.
+    /// <para>
+    /// The <c>&lt;global&gt;</c> sentinel is accepted here too, even though it is not a
+    /// valid namespace by this grammar (angle brackets), because it is the documented way
+    /// to exclude file-scope code and was previously reachable only from the config file.
+    /// That asymmetry was not a deliberate safety property — the config file skips this
+    /// grammar entirely — so it only made the feature harder to discover and use.
+    /// </para>
     /// </summary>
     private static bool IsValidNamespace(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
+
+        if (string.Equals(value, AnalysisExclusions.GlobalNamespaceMarker, StringComparison.Ordinal))
+        {
+            return true;
+        }
 
         foreach (var segment in value.Split('.'))
         {

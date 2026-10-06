@@ -30,7 +30,6 @@ public sealed class DuplicateFragmentAnalyser(
 
     private const int WindowTokens = 60;
     private const int MinimumFragmentLines = 4;
-    private const string GlobalNamespaceMarker = "<global>";
 
     /// <summary>
     /// Hard ceiling on how many locations one shingle window may compare.
@@ -610,30 +609,9 @@ public sealed class DuplicateFragmentAnalyser(
         var name = tokens[ordinal].Parent?
             .FirstAncestorOrSelf<BaseNamespaceDeclarationSyntax>()?.Name.ToString();
 
-        if (string.IsNullOrEmpty(name))
-        {
-            // File-scope code: no enclosing namespace declaration.
-            return exclusions.Namespaces.Contains(GlobalNamespaceMarker);
-        }
-
-        var candidate = name;
-        while (candidate.Length > 0)
-        {
-            if (exclusions.Namespaces.Contains(candidate))
-            {
-                return true;
-            }
-
-            var lastDot = candidate.LastIndexOf('.');
-            if (lastDot < 0)
-            {
-                break;
-            }
-
-            candidate = candidate[..lastDot];
-        }
-
-        return false;
+        // File-scope fragments report no name, which Covers resolves against the shared
+        // <global> sentinel — the same marker every other namespace-aware rule uses.
+        return exclusions.Covers(name);
     }
 
     private static int Find(int[] parent, int index)

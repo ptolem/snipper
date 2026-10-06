@@ -4,12 +4,13 @@ A map of the codebase for people who want to contribute to it. It explains how S
 memory, how analysers run, and how findings become a report — and, importantly, which invariants you
 must not break when adding to it.
 
-Written against the 1.7.3 tree, ~14,990 lines of C# across 80 files in `src/Snipper` (19 registered
-analysers, 28 rule IDs, 581 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
+Written against the 1.7.4 tree, ~14,990 lines of C# across 80 files in `src/Snipper` (19 registered
+analysers, 28 rule IDs, 590 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
 Spectre.Console.
 
 For *using* the tool see the [usage guide](usage.md). For *why* the design is the way it is see
-[`1_7_0_plan.md`](history/1_7_0_plan.md) and [`1_7_3_plan.md`](history/1_7_3_plan.md).
+[`1_7_0_plan.md`](history/1_7_0_plan.md), [`1_7_3_plan.md`](history/1_7_3_plan.md) and
+[`1_7_4_plan.md`](history/1_7_4_plan.md).
 
 ---
 
@@ -360,6 +361,7 @@ classDiagram
         +ShouldSkipDocument(path, root, roots) bool
         +IsNamespaceExcluded(symbol, exclusions) bool
         +IsNamespaceExcluded(node, model, exclusions, ct) bool
+        +ResolveFileScopeNamespace(node) string~          // type → namespace → <global>
         +IsGeneratedDocument(path) bool
         +GetAnalysisRootDirectories(solution) IReadOnlyList~string~
     }
@@ -884,9 +886,13 @@ Five things to know:
 - **One pass, two outputs.** `BuildFindings` returns both the findings *and* the clone sets it proved.
   `CloneDriftDetector` consumes those sets, which is why `--clone-drift` costs no extra analysis and
   why `--clone-drift` implies `--duplicate-detection`.
-- **It uses `<global>` for file-scope fragments.** Because it resolves namespaces syntactically through
-  the enclosing namespace declaration rather than through a type, it can exclude file-scope clones —
-  which the symbol-based rules cannot.
+- **It was the first rule to use `<global>`.** Because it resolves namespaces syntactically through
+  the enclosing namespace declaration rather than through a type, it could exclude file-scope clones
+  when the symbol-based rules could not. Since 1.7.4 that marker is shared: it lives on
+  `AnalysisExclusions.GlobalNamespaceMarker`, is honoured by every namespace-aware rule, and is
+  accepted by the CLI flag as well as the config file. `DuplicateFragmentAnalyser` keeps its own
+  syntactic resolution (binding a semantic model would contradict the rule's syntax-only design) but
+  delegates the matching itself to `AnalysisExclusions.Covers`, so the ancestor walk exists once.
 - **It uses union-find** (`Find`/`Union` with path compression) to group overlapping maximal matches
   into clone sets.
 
@@ -1030,6 +1036,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | 7 | Cheap syntactic filtering before `GetDeclaredSymbol` and before evidence gathering. | This ordering is the performance budget. |
 | 8 | All `AnsiConsole`/`StatusContext` writes go through the runner's lock. | Spectre's status is process-wide exclusive and not thread-safe. |
 | 9 | Namespace exclusion suppresses **findings**, never usage evidence. | Otherwise excluding a generated tree makes real references disappear. |
+| 9a | Namespace matching lives in exactly one place — `AnalysisExclusions.Covers` — and resolves a file-scope node as type → namespace declaration → `<global>`. | The walk was duplicated in `ExclusionEngine` and `DuplicateFragmentAnalyser`, and a file-scoped `namespace N;` is a *sibling* of its file-level `using` directives, so an ancestor-only walk classifies them as global and `<global>` then suppresses usings in every namespaced file. |
 | 10 | Baseline classification reads visible findings; baseline writing reads the suppression-independent set. | Otherwise a config toggle churns the baseline. |
 | 11 | `FindingFilter.Classify` is shared with the audit. | The audit must not be able to disagree with report behaviour. |
 | 12 | Evidence is never a finding. | A reference to a member is not a reason to flag it. |
@@ -1079,7 +1086,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 
 ## Testing conventions
 
-- `test/Snipper.Tests/`, xUnit + FluentAssertions. 581 tests, ~2 min per run. ~10,600 lines across 95
+- `test/Snipper.Tests/`, xUnit + FluentAssertions. 590 tests, ~2 min per run. ~10,600 lines across 95
   files, including the `TestAssets/SampleApp` fixture.
 - **The fixture must compile, and that is asserted.** `FixtureBuildShould` builds every project in
   `SampleApp` and fails on any diagnostic. Before it existed, `SampleApp` carried 8 compile defects
@@ -1146,6 +1153,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 - [Usage guide](usage.md) — options, filtering semantics, and the analyser→rule catalogue.
 - [CI integration](ci-integration.md) — running this in a pipeline.
 - [`1_7_3_plan.md`](history/1_7_3_plan.md) — the clone-window verification fix, and the guard that the test fixture compiles.
+- [`1_7_4_plan.md`](history/1_7_4_plan.md) — namespace exclusion reaching file-scope code, and a suspected SNP0019 defect withdrawn by a fixture.
 - [`1_7_0_plan.md`](history/1_7_0_plan.md) — design rationale and measurements for the 1.7.0 wave.
 - [Feature parity roadmap](Snipper-Feature-Parity-Roadmap.md) — what is planned next.
 - [Documentation history](history/README.md) — superseded release plans and wave specs. Invariants

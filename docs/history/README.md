@@ -7,7 +7,7 @@ maintained; each file describes the state of the world at the version it is name
 
 | Document | Covers |
 | --- | --- |
-| [README](../README.md) | Install, usage, the rule catalogue, and what changed in each release. |
+| [README](../../README.md) | Install, usage, the rule catalogue, and what changed in each release. |
 | [Usage guide](../usage.md) | Every option in depth, filtering semantics, performance, known limitations. |
 | [CI integration](../ci-integration.md) | Gating strategies, baselines, entropy budget, pipeline recipes. |
 | [Code architecture](../code_architecture.md) | For contributors: run sequence, invariants, adding a rule. |
@@ -50,6 +50,7 @@ mid-name or absent. `git mv` was used throughout so history follows the rename.
 | 1.7.1 | [`1_7_1_plan.md`](1_7_1_plan.md) | Unopenable targets exit `1`; an SNP0031 tuning pass measured as a no-go. |
 | 1.7.2 | [`1_7_2_plan.md`](1_7_2_plan.md) | Clone drift no longer blaming file creations; SNP0019 dedupe; one enhancement withdrawn. |
 | 1.7.3 | [`1_7_3_plan.md`](1_7_3_plan.md) | Clone-window verification, and a test fixture that had never compiled. |
+| 1.7.4 | [`1_7_4_plan.md`](1_7_4_plan.md) | Namespace exclusion reaching file-scope code via the shared `<global>` marker; **and a suspected second defect withdrawn before any code was written.** |
 
 ### Specs, by wave
 
@@ -80,6 +81,8 @@ of a project's history that gets quietly rewritten:
 - `1_7_1_plan.md` — an SNP0031 tuning pass that measured as unnecessary.
 - `1_6_2_fp_review.md` — challenged findings upheld rather than demoted.
 - `1_7_2_plan.md` — a planned enhancement withdrawn after an isolated build disproved it.
+- `1_7_4_plan.md` — a suspected SNP0019 defect disproved by a two-file fixture before any code was
+  written; the planned fix would have suppressed 103 true positives.
 - `1_7_1_false_positives_investigation.md` — a study whose own headline conclusions were wrong,
   corrected in place rather than deleted.
 

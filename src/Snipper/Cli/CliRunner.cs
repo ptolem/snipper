@@ -355,7 +355,7 @@ public static class CliRunner
             }
 
             var fileInventory = NamespaceInventory.CollectFiles(solution);
-            var namespaceProbe = NamespaceInventory.ExistenceProbe(NamespaceInventory.CollectDeclaredNamespaces(solution));
+            var namespaceProbe = NamespaceInventory.ExistenceProbe(NamespaceInventory.Collect(solution));
 
             suppressionAudit = SuppressionAuditBuilder.Build(
                 analysedFindings: allFindings,
