@@ -194,7 +194,7 @@ findings gate the cut. Full detail, measurements and honest gaps in
 
 ### 4A implemented — three findings that changed the design
 
-> **Release state:** 4A, 4A-2, 4B and 4C **SHIPPED as 1.7.0** on 2026-10-05. `<Version>` is now `1.7.4` (1.7.1 exit-code fix, 1.7.2 clone-drift + SNP0019 correctness, 1.7.3 clone-window soundness, 1.7.4 namespace-exclusion reach; 590 tests). `Snipper.1.7.4.nupkg` is packed. **Not yet installed as a global tool** — `dotnet tool update --global Snipper` has not been run for 1.7.4, so the installed tool still reports `1.7.3` and this release does not yet meet the repo's own convention (`1_6_3_plan.md` uses "SHIPPED" only after pack + `dotnet tool update`). There is no git tag and no NuGet publish pipeline here, so a release is a commit plus a pack and a tool install.
+> **Release state:** 4A, 4A-2, 4B and 4C **SHIPPED as 1.7.0** on 2026-10-05. `<Version>` is now `1.7.4` (1.7.1 exit-code fix, 1.7.2 clone-drift + SNP0019 correctness, 1.7.3 clone-window soundness, 1.7.4 namespace-exclusion reach; 590 tests). `Snipper.1.7.4.nupkg` is packed, committed as `c9bdfb8`, and **installed as a global tool** — `snipper --version` reports `1.7.4`. The install needed `--add-source src/Snipper/bin/Release`, because the only configured package sources are nuget.org and the VS offline folder, so a bare `dotnet tool update --global` would look on nuget.org and not find an unpublished build. There is no git tag and no NuGet publish pipeline here, so a release is a commit plus a pack and a tool install.
 
 Recorded because two of them contradict this roadmap's own 4A row, which is left above as originally written:
 
