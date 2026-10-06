@@ -98,6 +98,12 @@ internal static class TokenShingleIndex
             foreach (var token in child.ChildTokens())
             {
                 tokens.Add(Normalize(token));
+                // Left as GetLocation().GetLineSpan(). There is no SyntaxToken.GetLinePosition in
+                // Roslyn 5.9 and no ValueSpan either, so the span route this wanted does not
+                // exist; SourceText.Lines.GetLinePosition(token.SpanStart) would work but needs a
+                // Parent hop to reach the SourceText, which is not obviously cheaper. The real
+                // win at this site is not micro-optimising the accessor but walking the tree once
+                // instead of four times - see TokenShingleIndex.Build and DuplicateFragmentAnalyser.
                 var start = token.GetLocation().GetLineSpan().StartLinePosition;
                 lines.Add((start.Line + 1, start.Character + 1));
             }
@@ -112,7 +118,14 @@ internal static class TokenShingleIndex
         {
             // Verbatim and \u-escaped identifiers still denote a user-chosen name,
             // so they normalize the same as plain identifiers.
-            return token.Text.StartsWith('@') || token.Text.StartsWith("\\u", StringComparison.Ordinal)
+            //
+            // Read once into a local: the old expression called token.Text once per operand and
+            // discarded both results, so it allocated two strings to answer a two-way question.
+            // SyntaxToken has no ValueSpan in Roslyn 5.9, so the string read cannot be avoided
+            // entirely here - only halved. Eliminating it means not calling Normalize per token
+            // at all, which is the four-walks fix.
+            var text = token.Text;
+            return text.StartsWith('@') || text.StartsWith("\\u", StringComparison.Ordinal)
                 ? EscapedIdentifierToken
                 : IdentifierToken;
         }
@@ -126,7 +139,13 @@ internal static class TokenShingleIndex
             SyntaxKind.InterpolatedStringTextToken => StringToken,
             SyntaxKind.CharacterLiteralToken => CharToken,
             SyntaxKind.NumericLiteralToken => NumberToken,
-            _ => token.Text,
+            // Keywords and punctuation - the majority of tokens in any file - have a fixed
+            // spelling per kind, and SyntaxFacts hands back the cached literal for it. That makes
+            // this the single largest allocation site in the pass disappear. token.Text stays as
+            // the fallback for a kind with no fixed text, so normalization is unchanged either
+            // way; if a kind ever rendered differently from its canonical spelling the report
+            // hash would move, which the measurement harness treats as a failure.
+            _ => SyntaxFacts.GetText(token.Kind()) ?? token.Text,
         };
     }
 

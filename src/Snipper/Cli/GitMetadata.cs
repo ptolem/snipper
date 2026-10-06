@@ -83,8 +83,12 @@ internal static class GitMetadata
                 continue;
             }
 
-            var addedText = line[..firstTab].Trim();
-            var deletedText = line[(firstTab + 1)..secondTab].Trim();
+            // The two count columns are sliced as spans and handed to int.TryParse's span
+            // overload, so neither needs a Trim() string. Only the path is materialised, because
+            // it is the one field that outlives this loop.
+            var lineSpan = line.AsSpan();
+            var addedText = lineSpan[..firstTab].Trim();
+            var deletedText = lineSpan[(firstTab + 1)..secondTab].Trim();
 
             // Binary entries are "-" in both columns; skipping them is the point.
             if (!int.TryParse(addedText, out var added) || !int.TryParse(deletedText, out var deleted))
@@ -92,7 +96,7 @@ internal static class GitMetadata
                 continue;
             }
 
-            var path = line[(secondTab + 1)..].Trim();
+            var path = lineSpan[(secondTab + 1)..].Trim().ToString();
             if (path.Length > 0)
             {
                 entries.Add(new GitNumstatEntry(path, added, deleted));

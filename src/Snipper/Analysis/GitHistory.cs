@@ -381,9 +381,12 @@ internal static class GitHistory
             return false;
         }
 
-        var comma = token.IndexOf(',', StringComparison.Ordinal);
-        var startText = comma < 0 ? token[1..] : token[1..comma];
-        var countText = comma < 0 ? "1" : token[(comma + 1)..];
+        // int.TryParse has a ReadOnlySpan<char> overload, so the two fields are sliced as spans
+        // instead of being cut into strings first. The strings existed only to be parsed.
+        var span = token.AsSpan();
+        var comma = span.IndexOf(',');
+        var startText = comma < 0 ? span[1..] : span[1..comma];
+        var countText = comma < 0 ? "1".AsSpan() : span[(comma + 1)..];
 
         return int.TryParse(startText, NumberStyles.Integer, CultureInfo.InvariantCulture, out start)
             && int.TryParse(countText, NumberStyles.Integer, CultureInfo.InvariantCulture, out count);

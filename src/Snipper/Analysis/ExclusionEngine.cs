@@ -8,6 +8,15 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 public static class ExclusionEngine
 {
+    // Hoisted out of IsGeneratedDocument, which runs once per document from fifteen analysers.
+    // Interpolated inline they were rebuilt on every one of those calls; as literals the
+    // framework builds them once.
+    private static readonly string ObjSegment =
+        $"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}";
+
+    private static readonly string ObjSegmentAltForm =
+        $"{Path.AltDirectorySeparatorChar}obj{Path.AltDirectorySeparatorChar}";
+
     // Frozen: built once at type initialization, queried for the entire process lifetime.
     private static readonly FrozenSet<string> ExcludedAttributeNames = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -295,8 +304,21 @@ public static class ExclusionEngine
         }
 
         // MSBuild intermediate output (protobuf/gRPC codegen, compiled codegen, etc.).
-        var normalizedPath = filePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
-        if (normalizedPath.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        //
+        // Tested as spans against both separator spellings rather than by normalising the path
+        // first. The old code copied the whole path - a 120-character allocation - on every call
+        // just to turn one separator into another, then built a fresh "\obj\" literal to search
+        // for. On Unix the two separators are the same character and the second test is skipped;
+        // on Windows there are genuinely two spellings, and checking for both as spans answers it
+        // without the copy. Semantics are unchanged: OrdinalIgnoreCase, same pattern.
+        var path = filePath.AsSpan();
+        if (path.Contains(ObjSegment, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (Path.DirectorySeparatorChar != Path.AltDirectorySeparatorChar
+            && path.Contains(ObjSegmentAltForm, StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }

@@ -58,6 +58,12 @@ internal static class PackageAssemblyUsage
 
     private static string? ExtractPackageId(string referencePath)
     {
+        // Left as Split deliberately. The obvious replacement is MemoryExtensions.Split, but on
+        // .NET 10 that overload takes a caller-supplied Span<Range> destination and reports only
+        // how many entries it managed to write - a too-small buffer truncates silently rather
+        // than throwing, which would quietly stop matching a deeply nested path. Avoiding that
+        // needs a separator count pass plus a sized buffer, which is more machinery than the
+        // allocation it saves is worth on a path that runs once per package reference.
         var segments = referencePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         for (var i = 0; i < segments.Length - 2; i++)
         {
