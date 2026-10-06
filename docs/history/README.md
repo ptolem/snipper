@@ -51,6 +51,7 @@ mid-name or absent. `git mv` was used throughout so history follows the rename.
 | 1.7.2 | [`1_7_2_plan.md`](1_7_2_plan.md) | Clone drift no longer blaming file creations; SNP0019 dedupe; one enhancement withdrawn. |
 | 1.7.3 | [`1_7_3_plan.md`](1_7_3_plan.md) | Clone-window verification, and a test fixture that had never compiled. |
 | 1.7.4 | [`1_7_4_plan.md`](1_7_4_plan.md) | Namespace exclusion reaching file-scope code via the shared `<global>` marker; **and a suspected second defect withdrawn before any code was written.** |
+| 1.7.5 | [`1_7_5_plan.md`](1_7_5_plan.md) | Data-structure and allocation audit, measured on the 3,864-file MILKRUN monorepo. **Contains an extrapolation caught by measurement, and three suggested fixes rejected against the real API.** |
 
 ### Specs, by wave
 
@@ -83,6 +84,9 @@ of a project's history that gets quietly rewritten:
 - `1_7_2_plan.md` — a planned enhancement withdrawn after an isolated build disproved it.
 - `1_7_4_plan.md` — a suspected SNP0019 defect disproved by a two-file fixture before any code was
   written; the planned fix would have suppressed 103 true positives.
+- `1_7_5_plan.md` — an audit whose allocation estimates were extrapolated from an 800-file target to
+  3,900 files and overstated by roughly an order of magnitude when finally measured on a real
+  monorepo. Read this before quoting any allocation figure from the other documents.
 - `1_7_1_false_positives_investigation.md` — a study whose own headline conclusions were wrong,
   corrected in place rather than deleted.
 

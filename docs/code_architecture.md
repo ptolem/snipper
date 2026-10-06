@@ -852,9 +852,43 @@ Verified output-neutral: the `findings` array is byte-identical on all six targe
   files. A synthetic 40-project / 800-file / 172k-line target was generated to test the per-symbol
   and per-node memos, which are scale-dependent: they measured as *neutral* on small targets and
   **-2.9% wall / -3.0% CPU** at scale. Small-target measurements will under-report these.
+  **Superseded 2026-10-06:** `scripts\measure-run.ps1` now measures `C:\ws\milkrun\MILKRUN.slnx`
+  (3,864 `.cs` files, 82 projects) directly, and the 1.7.5 wave used it for every number it
+  quotes. See "Performance measurement" below.
 - `TieredPGO=0` is a global JIT knob shipped in `runtimeconfig.json`, so it applies to every
   consumer. It is validated on one 16-core x64 box only; re-measure on ARM or older x86 before
   trusting it broadly.
+
+### Performance measurement
+
+`scripts\measure-run.ps1` runs the locally built tool N times against a target and reports wall
+clock, **total allocated bytes**, GC collection counts and peak working set as min/median.
+Setting `SNIPPER_PERF=1` makes the process print one `SNIPPER-PERF` line on stderr at exit;
+nothing else observes the variable, so report bytes are identical whether or not it is set.
+
+```console
+.\scripts\measure-run.ps1 -Target C:\ws\milkrun\MILKRUN.slnx -Iterations 3 -MaxDop 8
+.\scripts\measure-run.ps1 -Target C:\ws\milkrun\MILKRUN.slnx -ExtraArgs @('--duplicate-detection')
+```
+
+Three things about it are load-bearing:
+
+- **It fails on changed output.** Each run's report is normalised for its one volatile field,
+  `generatedAtUtc`, and hashed; a mismatch between iterations or against `-BaselineHash` exits 1.
+  A performance change that moves findings is a regression, not a win, and this is what makes that
+  checkable rather than a promise.
+- **Two counters, because they answer different questions.** Peak working set settles whether too
+  much was held at once; the allocated-bytes counter settles whether the heap was churned. A run
+  can be allocation-neutral and still spike, so quoting one and calling it the cost is how the
+  wrong optimisation gets chosen.
+- **Wall clock is only comparable within a profile.** Repeat runs share warm MSBuild and NuGet
+  caches. Measured on MILKRUN, the clone profile reported *lower* wall clock than the default
+  profile purely because it ran second. Compare two code versions inside one profile, interleaved
+  when in doubt.
+
+Run-to-run spread is 5-25 s on a ~200 s MILKRUN run, so **a difference smaller than the spread is
+noise and must be reported as noise** rather than as a speedup. Baseline figures and the full
+before/after comparison are in `docs\history\1_7_5_plan.md`.
 
 ---
 
