@@ -361,6 +361,83 @@ read" is **wrong** when an inner block or an outer field shadows the name —
 that safe requires counting same-named declarations in the member, which is most of the work the
 gate was supposed to avoid. Not attempted.
 
+## SNP0019 investigated and left alone: the cost is the compiler's, not ours
+
+`UnusedUsingDirectiveAnalyser` was the second-largest analyser at 51.4 s, so it was profiled the
+same way. The scaffolding is deleted and the analyser is **unchanged**. What the profile showed is
+worth recording, because it closes the question and because the first measurement of it was wrong.
+
+### It is one call, and it is 98% of the pass
+
+| Region | MILKRUN |
+|---|---|
+| `project.GetCompilationAsync` (81 projects) | **0.0 s** |
+| `compilation.GetDiagnostics` | **43.9 s** of a 44.0 s pass |
+| everything after it (1,372 flagged diagnostics) | **0.1 s** |
+
+The post-processing is free: 1,372 flagged diagnostics, each resolved to a document, syntax root,
+node and semantic model, plus the CS8019/CS8933 dedupe and message building, total 0.1 s. Nothing
+to win there. `GetCompilationAsync` is 0.0 s because other analysers already materialised every
+compilation through their semantic models.
+
+**The first profile run reported `GetDiagnostics` at 0.2 s, which was wrong by 200x.** The
+instrumentation called it once untimed and then a second time inside the timer; the second call hit
+Roslyn's compilation-level cache and returned in 0.2 s while the first absorbed the whole cost. This
+is the same failure mode as the all-zeros profiler earlier in the session, wearing a different hat:
+**a cached second call is not a measurement of the first.** Any timing of a Roslyn call that caches
+must time the first call, and there must not be a warm-up call in the same breath.
+
+### The class comment was right, and now there are numbers for it
+
+The comment claims CS8019's verdict needs whole-file binding, so declaration-phase diagnostics
+cannot see it. That is exactly what happens:
+
+| Phase | Time | Diagnostics | CS8019+CS8933 | **Findings** |
+|---|---|---|---|---|
+| `GetDeclarationDiagnostics` | **5.6 s** | 383 | 341 | **62** of 202 |
+| `GetMethodBodyDiagnostics` | **48.4 s** | 2,572 | 1,031 | **202** of 202 |
+| `GetDiagnostics` (full) | **53.5 s** | 2,955 | 1,372 | **202** of 202 |
+
+Three things follow.
+
+1. **Declaration-phase diagnostics see only 62 of 202 findings.** Switching to
+   `GetDeclarationDiagnostics` would have been a 9x speedup and would have silently dropped **69% of
+   the rule's findings** — all of them the ones where the namespace is used nowhere in a method body.
+   The comment's warning is load-bearing and this is why.
+2. **The full call costs exactly the sum of the phases it must run**: 5.6 + 48.4 = 54.0 against a
+   measured 53.5 s. There is no incidental work, no duplicated binding, and nothing to trim.
+3. **Method-body diagnostics alone already contain all 202 findings** — the declaration phase
+   contributes no finding the method-body phase does not also produce.
+
+### The one available lever, and why it was not taken
+
+Point 3 invites the change: call `GetMethodBodyDiagnostics()` instead of `GetDiagnostics()` and stop
+paying for the declaration phase. That is a measured **5.1 s**, 9.5% of the pass, roughly 2.6% of
+end-to-end.
+
+It was declined. `Compilation.GetMethodBodyDiagnostics` carries no guarantee about which phase owns
+CS8019 — the fact that all 202 arrived through it on *one* codebase is an observation, not a
+contract, and milkrun may simply not contain a shape where the verdict is declaration-only. SNP0019
+is Tier 1 *because* it surfaces a compiler-computed Hidden diagnostic instead of re-deriving it;
+trading that guarantee for 2.6% end-to-end is a bad exchange, and the regression would be silent —
+fewer findings, no error, nothing in the tests to catch it unless a fixture happens to cover the
+lost shape. Recorded here as a deliberate decision rather than an oversight, so the next person does
+not rediscover it as if it were new.
+
+## Traps hit in this wave — do not re-walk them
+
+| Assumption | Reality |
+|---|---|
+| `SyntaxToken.ValueSpan`, `SyntaxToken.GetLinePosition()` | Neither exists in Roslyn 5.9. Check the API surface before designing around it. |
+| `MemoryExtensions.Split` on `ReadOnlySpan<char>` | Takes a **caller-supplied `Span<Range>`** and truncates **silently** on overflow. A short buffer would stop matching a nested path. |
+| Profiler counters via `ref` to another class's fields | Printed all zeros while still looking plausible. |
+| One `Interlocked` counter **per node** | Made the pass **2.7x slower**; tens of millions of contended writes on one cache line. |
+| Timing a Roslyn call that caches | `GetDiagnostics` measured **0.2 s instead of 43.9 s** — an untimed warm-up call absorbed the cost, and the timed second call hit the compilation-level cache. Time the **first** call and never warm it up first. |
+| Accumulators and printer on different storage | Instance fields were accumulated while never-assigned **statics** were printed, so two phases reported `0 ms`. Keep a counter and its printer on the same storage. |
+| An early `continue` ahead of the timing line | ~50 s of real work fell into an "other" bucket because the timer was recorded *after* a `continue` that thousands of items took. Account on every path. |
+| A hash mismatch means the change broke output | It may be **environmental drift**. Re-run a baseline before blaming the code. |
+| A slow-path candidate is wasted work | Not necessarily. For SNP0009, 18,478 of 18,534 candidates were locals that **were** read, and binding is exactly how a read is confirmed. The gate idea died on this. |
+
 ## Not done, and why
 
 - **`MSBuildWorkspace.Create()` tuning - rejected on measurement.** Workspace load is 14.6% of a
@@ -372,6 +449,12 @@ gate was supposed to avoid. Not attempted.
   fire for the 56 unread locals out of 18,534 candidates. The pass pays one method-body binder per
   method declaring a local, and that is inherent to confirming reads. See "ATTEMPTED AND REVERTED"
   above - the four-line arithmetic there is worth more than re-running the experiment.
+- **`UnusedUsingDirectiveAnalyser` - profiled, left unchanged.** 51.4 s, and **43.9 s of a 44.0 s
+  pass is the single `compilation.GetDiagnostics` call** — the compiler's own work, which is what
+  makes the rule Tier 1. Declaration-phase diagnostics see only 62 of its 202 findings, and the full
+  call costs exactly the 5.6 s + 48.4 s of the two phases it must run. The only lever is worth
+  2.6% end-to-end and would bet a compiler-proved rule on an undocumented phase split. See
+  "SNP0019 investigated and left alone" above.
 - **A pre-existing caveat, now documented:** report output is not stable across sessions on a target
   whose restore state can move under the tool. See "output is not stable across time" above.
 - **`ConfigurationBindingAnalyser.FindKeyLocation`** re-reads the whole file per unbound JSON key -
