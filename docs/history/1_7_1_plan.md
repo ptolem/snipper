@@ -1,7 +1,7 @@
 # Plan — Snipper 1.7.1: unopenable-target handling, and an SNP0031 tuning pass measured as a no-go
 
 **Status: IMPLEMENTED** (2026-10-05). A patch release, one behavioural fix and one documented
-non-change. Follows [`plan_1_7_0.md`](plan_1_7_0.md), which recorded both of these as open.
+non-change. Follows [`1_7_0_plan.md`](1_7_0_plan.md), which recorded both of these as open.
 
 **567 tests green** (565 at 1.7.0 + 2). Dogfood on `Snipper.slnx` at the 1.6.3 baseline of 3
 pre-existing findings, zero contributed.
@@ -16,7 +16,7 @@ could newly do, so a minor bump would overstate it.
 
 # 1. A malformed `.slnx` crashed the process
 
-## What `plan_1_7_0.md` said, and why it was half right
+## What `1_7_0_plan.md` said, and why it was half right
 
 The 1.7.0 plan recorded this as a known follow-up, in these words:
 
@@ -122,7 +122,7 @@ enumerate the newly-covered cases instead of saying "unopenable solution".
 
 # 2. SNP0031 volume — measured, and deliberately not changed
 
-`plan_1_7_0.md` recorded 4,373 SNP0031 findings on `MILKRUN.slnx` across 747 files, median fragment 76
+`1_7_0_plan.md` recorded 4,373 SNP0031 findings on `MILKRUN.slnx` across 747 files, median fragment 76
 tokens, 54 % at or below 80 tokens, and said the rule "wants its own tuning pass". This section is that
 pass. **It concluded there is nothing to tune, and the count was left alone.**
 
@@ -202,7 +202,7 @@ follow-up it is.
 
 ## Recommendation to the maintainer, recorded rather than assumed
 
-`plan_1_7_0.md` framed the tuning pass as necessary because 4,373 sounds like a defect. It is not one.
+`1_7_0_plan.md` framed the tuning pass as necessary because 4,373 sounds like a defect. It is not one.
 It is the honest answer for Type-1/Type-2 clone detection over 2,763 files containing heavy DTO
 copy-paste. Lowering it by discarding the mode would make the rule find less while making the number
 look better, which is the failure mode the whole certainty-tier system exists to prevent.
@@ -219,7 +219,7 @@ look better, which is the failure mode the whole certainty-tier system exists to
 | 4 | Monorepo A/B vs 1.7.0, per rule, incl. the 1.4.2 SNP0005/0006 precedent | done — see below |
 | 5 | Determinism across processes | done |
 | 6 | `dotnet pack` + global install + self-run against the installed tool | done |
-| 7 | Docs updated | done — this file, `code_architecture.md`, `README.md`, `usage.md`, `plan_1_7_0.md`, roadmap |
+| 7 | Docs updated | done — this file, `code_architecture.md`, `README.md`, `usage.md`, `1_7_0_plan.md`, roadmap |
 
 ## Expected shape of the A/B, and why
 

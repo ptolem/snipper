@@ -8,7 +8,7 @@ Repo constraints (standing): no dynamic; no exceptions for flow control; FrozenS
 
 ## Phase 0 — reconcile the working tree (prerequisite, no behaviour change)
 
-**Ship tree: `C:\pp\snipper`.** Not `C:\ws\trimmer` as `plan_1_6_2.md` states.
+**Ship tree: `C:\pp\snipper`.** Not `C:\ws\trimmer` as `1_6_2_plan.md` states.
 
 Measured: `fc5bbd8` ("First commit, hello world") has tree `e3ba1337`, **byte-identical to trimmer's `b8cdc07` tree**. So `fc5bbd8` is a content-exact squash of trimmer's entire history, and `8c63af6` is the performance work sitting on top of it. There is nothing to merge or reconcile — only a rebase.
 

@@ -1,6 +1,6 @@
 # Phase 3 — Wave 2 Team Spec (2A SNP0021; 2B design-sketch only, DEFERRED)
 
-**Target release:** 1.3.0 (2A) / 1.3.1 (2B) · **Roadmap:** [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md) · **Baseline:** 1.2.0 (16 rules, 127 tests)
+**Target release:** 1.3.0 (2A) / 1.3.1 (2B) · **Roadmap:** [`Snipper-Feature-Parity-Roadmap.md`](../Snipper-Feature-Parity-Roadmap.md) · **Baseline:** 1.2.0 (16 rules, 127 tests)
 **Status:** 2A SHIPPED 2026-09-18 as 1.3.0 (17 rules, 141 tests). 2B SHIPPED 2026-09-18 as 1.3.1 (19 rules, 158 tests). Merge order was: **2A → cross-cutting → 1.3.0 → 2B → cross-cutting → 1.3.1.**
 
 ## Spike results (speculation APIs — resolved 2026-09-18)

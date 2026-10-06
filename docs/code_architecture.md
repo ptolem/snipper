@@ -9,7 +9,7 @@ analysers, 28 rule IDs, 581 tests), zero third-party runtime dependencies beyond
 Spectre.Console.
 
 For *using* the tool see the [usage guide](usage.md). For *why* the design is the way it is see
-[`plan_1_7_0.md`](plan_1_7_0.md) and [`plan_1_7_3.md`](plan_1_7_3.md).
+[`1_7_0_plan.md`](history/1_7_0_plan.md) and [`1_7_3_plan.md`](history/1_7_3_plan.md).
 
 ---
 
@@ -1145,6 +1145,9 @@ Each of these is load-bearing, and several exist because breaking them was measu
 
 - [Usage guide](usage.md) — options, filtering semantics, and the analyser→rule catalogue.
 - [CI integration](ci-integration.md) — running this in a pipeline.
-- [`plan_1_7_3.md`](plan_1_7_3.md) — the clone-window verification fix, and the guard that the test fixture compiles.
-- [`plan_1_7_0.md`](plan_1_7_0.md) — design rationale and measurements for the 1.7.0 wave.
+- [`1_7_3_plan.md`](history/1_7_3_plan.md) — the clone-window verification fix, and the guard that the test fixture compiles.
+- [`1_7_0_plan.md`](history/1_7_0_plan.md) — design rationale and measurements for the 1.7.0 wave.
 - [Feature parity roadmap](Snipper-Feature-Parity-Roadmap.md) — what is planned next.
+- [Documentation history](history/README.md) — superseded release plans and wave specs. Invariants
+  22–24 and the `FixtureBuildShould` guidance above were added from the 1.7.3 release; the plan
+  documents they came from are filed there.

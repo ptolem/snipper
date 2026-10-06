@@ -2,7 +2,7 @@
 
 **Status: ALL FOUR STORIES IMPLEMENTED AND SHIPPED as 1.7.0** (2026-10-05). **565 tests green** (353 at 1.6.3 → 469 at 4C → 520 after the `CliRunner` refactor → 527 with the perf increment → 533 with the determinism fixes → 565 with the 4C High-tier corrections). Dogfood at the 1.6.3 baseline of 3 pre-existing findings, **zero contributed** by any of this work. Fifteen of my own defects were caught by dogfood runs, mutation testing, A/B comparison or gate review and fixed rather than suppressed — recorded per story, and in [Gate 5](#gate-5--monorepo-ab-on-the-4c-high-tier-runs-high-tier-quality-bar-now-met) for the four High-tier defects.
 
-**`<Version>` is `1.7.0`, everything is committed, and the tool is packed and installed.** Per this repo's convention (`plan_1_6_3.md` reserves "SHIPPED" for after pack + `dotnet tool update`), 1.7.0 counts as shipped: `Snipper.1.7.0.nupkg` is built and installed globally, `snipper --version` reports `1.7.0`, and self-run against the *installed* tool was verified (see the release gate). There is no git tag and no NuGet publish pipeline in this repo — a release here is a commit plus a pack and a tool install. See [What is left for 1.7.0](#what-is-left-for-170) for the gate.
+**`<Version>` is `1.7.0`, everything is committed, and the tool is packed and installed.** Per this repo's convention (`1_6_3_plan.md` reserves "SHIPPED" for after pack + `dotnet tool update`), 1.7.0 counts as shipped: `Snipper.1.7.0.nupkg` is built and installed globally, `snipper --version` reports `1.7.0`, and self-run against the *installed* tool was verified (see the release gate). There is no git tag and no NuGet publish pipeline in this repo — a release here is a commit plus a pack and a tool install. See [What is left for 1.7.0](#what-is-left-for-170) for the gate.
 
 **Corrections to the original roadmap design, all established by measurement:** 4A was budgeted at ~2× analysis time and measured ~10%; 4B's per-pull-request denominator was measured to be dominated by commit size (a 400× spread) and replaced; 4C's present-tense framing was not expressible, because a copy that receives a fix *leaves* the clone set. **Two of my own performance hypotheses were also measured and rejected** — Server GC and disabling tiered JIT — see the perf section.
 
@@ -1238,7 +1238,7 @@ tractable, not what made it small.
 **The tuning pass was attempted in 1.7.1 and measured as a no-go.** There is no trimmable noise tail —
 raising either threshold deletes representative findings rather than noise, so the count was deliberately
 left alone. The measurement, and the one lever that does exist (reporting per clone set instead of per
-occurrence), are recorded in [`plan_1_7_1.md`](plan_1_7_1.md).
+occurrence), are recorded in [`1_7_1_plan.md`](1_7_1_plan.md).
 
 SNP0032 is 302 findings: **220 `Advisory` + 82 `High`**. By kind — 185 `One-sided change` (Advisory),
 35 `One-sided rename` (Advisory), 82 `One-sided defensive fix` (High). By clone-set size: 2 copies
@@ -1304,7 +1304,7 @@ by this work.
 **RESOLVED in 1.7.1** — Snipper used to surface a raw unhandled `System.Xml.XmlDocument` stack trace
 when handed a malformed `.slnx`. The wording above was slightly wrong on its own diagnosis: there *was* a
 try/catch around `OpenSolutionAsync`, but its filter was a closed type list that `XmlException` did not
-match. Fixed in 1.7.1 — see [`plan_1_7_1.md`](plan_1_7_1.md). The note is left here rather than deleted
+match. Fixed in 1.7.1 — see [`1_7_1_plan.md`](1_7_1_plan.md). The note is left here rather than deleted
 because the misdiagnosis is the interesting part: "no try/catch" and "a try/catch that does not cover this
 case" call for different fixes.
 

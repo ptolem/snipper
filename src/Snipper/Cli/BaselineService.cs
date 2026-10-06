@@ -11,7 +11,7 @@ using Snipper.Models;
 /// rule + relative path + message — deliberately excluding line numbers so
 /// incidental edits don't churn the baseline.
 ///
-/// Channel safety (4A-2, measured — see <c>docs/plan_1_7_0.md</c>): no suppression
+/// Channel safety (4A-2, measured — see <c>docs/history/1_7_0_plan.md</c>): no suppression
 /// channel can rewrite a baseline. <c>exclude.paths</c>, severity overrides and
 /// <c>--certainty-tier</c> apply after fingerprinting. Namespace exclusions and
 /// disabling a sole-rule analyser suppress *before* fingerprinting, so the caller must

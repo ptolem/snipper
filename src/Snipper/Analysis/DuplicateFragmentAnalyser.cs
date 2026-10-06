@@ -17,7 +17,7 @@ using Snipper.Models;
 /// maximal runs, and runs that overlap form clone sets. One Advisory finding is
 /// emitted per occurrence.
 ///
-/// Threshold rationale (measured, see docs/plan_1_6_3.md): W=60 clears the
+/// Threshold rationale (measured, see docs/history/1_6_3_plan.md): W=60 clears the
 /// generated/codegen shapes at every threshold tested, and lowering it adds
 /// noise rather than signal - Program.cs still collided on 1,248 buckets with
 /// its using lists stripped.

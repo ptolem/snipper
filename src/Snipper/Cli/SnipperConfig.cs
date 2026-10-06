@@ -8,7 +8,7 @@ using Snipper.Models;
 /// skipped entirely (their analysers never run). Path globs filter findings only —
 /// usage evidence from excluded paths is always retained.
 ///
-/// Baseline safety (measured 2026-10-03, see <c>docs/plan_1_7_0.md</c>): no suppression
+/// Baseline safety (measured 2026-10-03, see <c>docs/history/1_7_0_plan.md</c>): no suppression
 /// channel can rewrite a baseline. Path globs and severity overrides apply after
 /// fingerprinting, and as of 4A-2 namespace exclusions and disabled rules are
 /// fingerprinted from the suppression-independent finding set, so a config toggle never

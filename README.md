@@ -121,13 +121,14 @@ Framework entry points are excluded automatically: ASP.NET Core controllers, Med
 | [CI integration](docs/ci-integration.md) | Gating strategies for a large monorepo, baseline adoption, report-gating recipes with `jq`/PowerShell, the entropy budget, suppression hygiene, sharding, and ready-to-use GitHub Actions / Azure Pipelines / GitLab CI definitions. |
 | [Feature parity roadmap](docs/Snipper-Feature-Parity-Roadmap.md) | Wave-by-wave delivery history and what is planned next, with the reasoning kept rather than rewritten. |
 | [Competitive analysis](docs/competitive-analysis.md) | Snipper against the dead-code / duplication / entropy-governance ecosystem, including where it is genuinely behind. |
+| [Documentation history](docs/history/README.md) | Superseded plans, wave specs, FP reviews and retrospectives, version-prefixed. Several exist specifically to record no-gos and reversals. |
 
 Release plans and investigations are kept as historical record rather than edited into prose:
-[`plan_1_7_3.md`](docs/plan_1_7_3.md) (clone-window verification + a fixture that had never compiled),
-[`plan_1_7_2.md`](docs/plan_1_7_2.md) (clone drift no longer blaming file creations, SNP0019 dedupe),
-[`plan_1_7_1.md`](docs/plan_1_7_1.md) (unopenable targets exit `1`; an SNP0031 tuning pass measured as a
+[`1_7_3_plan.md`](docs/history/1_7_3_plan.md) (clone-window verification + a fixture that had never compiled),
+[`1_7_2_plan.md`](docs/history/1_7_2_plan.md) (clone drift no longer blaming file creations, SNP0019 dedupe),
+[`1_7_1_plan.md`](docs/history/1_7_1_plan.md) (unopenable targets exit `1`; an SNP0031 tuning pass measured as a
 no-go), and
-[`1_7_1_false_positives_investigation.md`](docs/1_7_1_false_positives_investigation.md) — the
+[`1_7_1_false_positives_investigation.md`](docs/history/1_7_1_false_positives_investigation.md) — the
 first-800 sweep of an 81-project monorepo that produced 1.7.2 and 1.7.3, **including two places
 where the investigation's own conclusions were wrong** and are corrected in place.
 

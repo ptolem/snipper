@@ -743,10 +743,12 @@ Verified against the running tool. Listed so they are not discovered the hard wa
 - [CI integration](ci-integration.md) — pipeline recipes, gating strategies, monorepo sharding.
 - [Code architecture](code_architecture.md) - for contributors: how the tool loads code, runs analysers, and produces findings.
 - [README](../README.md) — installation, quick start, and the rule catalogue.
-- [`plan_1_7_3.md`](plan_1_7_3.md) — clone-window verification, and the fixture that had never compiled.
-- [`plan_1_7_2.md`](plan_1_7_2.md) — clone drift no longer blaming file creations; SNP0019 dedupe.
-- [`plan_1_7_1.md`](plan_1_7_1.md) — unopenable targets, and an SNP0031 tuning pass measured as a no-go.
-- [`plan_1_7_0.md`](plan_1_7_0.md) — design rationale and measurements for the entropy-governance wave.
-- [`1_7_1_false_positives_investigation.md`](1_7_1_false_positives_investigation.md) — the monorepo
+- [`1_7_3_plan.md`](history/1_7_3_plan.md) — clone-window verification, and the fixture that had never compiled.
+- [`1_7_2_plan.md`](history/1_7_2_plan.md) — clone drift no longer blaming file creations; SNP0019 dedupe.
+- [`1_7_1_plan.md`](history/1_7_1_plan.md) — unopenable targets, and an SNP0031 tuning pass measured as a no-go.
+- [`1_7_0_plan.md`](history/1_7_0_plan.md) — design rationale and measurements for the entropy-governance wave.
+- [`1_7_1_false_positives_investigation.md`](history/1_7_1_false_positives_investigation.md) — the monorepo
   sweep that produced 1.7.2 and 1.7.3, with its own wrong conclusions corrected in place.
 - [Feature parity roadmap](Snipper-Feature-Parity-Roadmap.md) — what is planned next and why.
+- [Documentation history](history/README.md) — superseded release plans, wave specs and FP reviews,
+  version-prefixed. The plan documents linked above live there.

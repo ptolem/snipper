@@ -176,7 +176,7 @@ public static class CliRunner
         }
 
         // Captured before removal so the audit can run just these analysers and count
-        // what the disabled rules are hiding (see docs/plan_1_7_0.md).
+        // what the disabled rules are hiding (see docs/history/1_7_0_plan.md).
         List<IWorkspaceAnalyser> removedByDisabledRules = [];
         if (config.DisabledRules.Count > 0)
         {

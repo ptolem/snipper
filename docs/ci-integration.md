@@ -561,9 +561,10 @@ The things most likely to cost you time. Each is a real, verified behaviour, not
 - [Usage guide](usage.md) — full option reference, filtering model, glob and namespace semantics.
 - [Code architecture](code_architecture.md) - for contributors: how the tool loads code, runs analysers, and produces findings.
 - [README](../README.md) — installation and the rule catalogue.
-- [`plan_1_7_0.md`](plan_1_7_0.md) — the entropy gate, suppression audit, and clone-drift design
+- [`1_7_0_plan.md`](history/1_7_0_plan.md) — the entropy gate, suppression audit, and clone-drift design
   rationale, with measurements.
-- [`plan_1_7_3.md`](plan_1_7_3.md) — the clone-window fix that removed ~232 false SNP0031 findings.
-- [`plan_1_7_2.md`](plan_1_7_2.md) — clone drift no longer blaming file creations, and SNP0019 dedupe.
-- [`1_7_1_false_positives_investigation.md`](1_7_1_false_positives_investigation.md) — the monorepo
+- [`1_7_3_plan.md`](history/1_7_3_plan.md) — the clone-window fix that removed ~232 false SNP0031 findings.
+- [`1_7_2_plan.md`](history/1_7_2_plan.md) — clone drift no longer blaming file creations, and SNP0019 dedupe.
+- [`1_7_1_false_positives_investigation.md`](history/1_7_1_false_positives_investigation.md) — the monorepo
   sweep behind 1.7.2/1.7.3, if you want to know why a rule is quieter than it used to be.
+- [Documentation history](history/README.md) — the full index of superseded documents.

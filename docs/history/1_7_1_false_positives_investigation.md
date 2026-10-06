@@ -105,7 +105,7 @@ Compounding it, `Normalize` collapses every identifier to `ID`, string literal t
 > which is `Substitute.For<Refit.IApiResponse>()`. No shared tokens - a shared 32-bit hash.
 >
 > **1.7.3 measured 232 SNP0031 findings removed and 0 added.** The DI/const-table family is the larger,
-> separate problem and is still open - see the E1 entry in [`plan_1_7_3.md`](plan_1_7_3.md).
+> separate problem and is still open - see the E1 entry in [`1_7_3_plan.md`](1_7_3_plan.md).
 
 The DI-registration family, kept because the observation underneath it is sound even though the
 attribution was not:
@@ -372,7 +372,7 @@ that exists only on that class, via `global using M60.Shared.Core.Extensions;`.
 > **Correction, recorded after implementation was attempted.** The claim in this section — that own-source
 > usage is "the whole discriminator" — is **wrong**. Every one of these 29 findings is *true and
 > actionable*: removing the direct edge leaves the resolved graph unchanged and the project compiles.
-> Tested in an isolated project (see `plan_1_7_2.md` §3): drop the direct `Serilog` reference while the
+> Tested in an isolated project (see `1_7_2_plan.md` §3): drop the direct `Serilog` reference while the
 > source still calls `Serilog.Log.Logger`, and `Serilog.Sinks.Console` supplies it — build succeeds.
 >
 > The rule's own contract already says so: *"a direct reference also documents intent and pins against
@@ -588,7 +588,7 @@ Two corrections to this document, both found by implementing rather than reading
 
 Item 4 shipped on its own as **1.7.3**, as planned, because it changes an engine invariant and
 invalidates any SNP0031 baseline. It removed **232 SNP0031 findings and added 0**; see
-[`plan_1_7_3.md`](plan_1_7_3.md). Its 24-word original estimate - "1 hard FP + a large share of the
+[`1_7_3_plan.md`](1_7_3_plan.md). Its 24-word original estimate - "1 hard FP + a large share of the
 53 benign" - was wrong in an interesting direction: the hard FPs were undercounted and the benign
 count was a red herring, because the benign DI/const-table family is a *different* defect
 (over-aggressive normalisation) that E1 does not touch.
@@ -600,7 +600,7 @@ fixture had never compiled (8 distinct causes, 11 diagnostics), so a large part 
 
 Two consequences worth stating before anyone acts on this:
 
-- **1.7.1's SNP0031 tuning conclusion needs revisiting.** `plan_1_7_1.md` measured the fragment-length
+- **1.7.1's SNP0031 tuning conclusion needs revisiting.** `1_7_1_plan.md` measured the fragment-length
   distribution and concluded no threshold could trim noise. That was sound reasoning about the *output*
   distribution, and E1 does not contradict it — but E1 means some reported fragments are hash collisions
   that were never duplication at all, which no output-distribution analysis could have detected. The

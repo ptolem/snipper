@@ -1,6 +1,6 @@
 # Phase 3 — Wave 1 Team Spec (1A config, 1B SNP0019, 1C SNP0020)
 
-**Target release:** 1.2.0 · **Roadmap:** [`Snipper-Feature-Parity-Roadmap.md`](Snipper-Feature-Parity-Roadmap.md) · **Baseline:** 1.1.3 (98 tests)
+**Target release:** 1.2.0 · **Roadmap:** [`Snipper-Feature-Parity-Roadmap.md`](../Snipper-Feature-Parity-Roadmap.md) · **Baseline:** 1.1.3 (98 tests)
 **Status:** APPROVED. Implement in merge order: **1A → 1B → 1C → cross-cutting → release.**
 
 ## Spike results (CS8019 — resolved 2026-09-15)
