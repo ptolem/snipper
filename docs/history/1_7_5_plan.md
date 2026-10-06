@@ -279,6 +279,91 @@ environmental rather than a regression.** Interleave the two builds, or re-run a
 attributing a difference to a code change. The alternative - assuming any mismatch is your fault -
 would send the next person hunting a bug that is not there.
 
+## NEXT CHANGE (not started): block-scoped occurrence gate for SNP0009
+
+Everything below is the specification for the next piece of work, written down so it can be picked
+up without re-deriving the analysis. **Version is undecided**: 1.7.5 is not yet packed or
+version-bumped, so this could fold into it or ship as 1.7.6. It is a distinct change with its own
+tests either way.
+
+### The task
+
+In `UnusedLocalVariableAnalyser.AnalyzeAsync`, the slow path is entered 18,494 times out of 18,534
+candidates and costs 72.4 s of the pass's 76.2 s. Add a **block-scoped** syntactic occurrence test in
+front of it.
+
+### Why block scope, and why it is sound
+
+A local cannot be referenced from outside the subtree that declares it - that is the premise the
+rule's own class comment already rests on ("a local cannot be referenced from outside its declaring
+method, by reflection, or from another file"). The existing fast path is **document**-scoped, so a
+`count` in method A forces semantic binding for an unrelated `count` in method B, which is why it
+fires 31 times in 18,534.
+
+Every syntactic form of a reference to a local is an `IdentifierNameSyntax`, which is what
+`DocumentIdentifierIndex` already buckets by name:
+
+- bare `x` -> `IdentifierNameSyntax`
+- `x.Y` -> the `Expression` of the `MemberAccessExpressionSyntax`
+- `nameof(x)` -> `IdentifierNameSyntax`
+
+So "no indexed position for this name inside the declaring member" **proves** absence, and a test
+built on it can only ever convert work, never lose a finding. Anything it cannot clear falls through
+to the existing slow path unchanged.
+
+### Design constraints
+
+- **Container choice matters and must be conservative.** Use the enclosing **member**
+  (`BaseMethodDeclarationSyntax`, `AccessorDeclarationSyntax`, `LocalFunctionStatementSyntax`),
+  falling back to the compilation unit for top-level statements. Do **not** use the innermost
+  `BlockSyntax`: for `if (TryGet(out var v)) { Use(v); }`, `v`'s scope is the enclosing block, so an
+  inner block would be too narrow and could wrongly report `v` as unused. A member is a superset of
+  every block inside it, so it is always sound.
+- **Verify the declaration itself is not in the index.** `VariableDeclaratorSyntax.Identifier` is a
+  `SyntaxToken`, not a `SimpleNameSyntax`, so it should not appear - confirm this rather than assume,
+  and exclude its span explicitly if it does.
+- The check is a span-containment test over already-built data, so it should be a loop over
+  `_positionsByName[name]` testing `position.SpanStart` against the container's `FullSpan`. No
+  binding, no allocation.
+- New API belongs on `DocumentIdentifierIndex` (it owns `_positionsByName`), named for what it
+  proves, e.g. `HasOccurrenceWithin(string name, SyntaxNode container)`.
+
+### Verification, in order
+
+1. `dotnet build Snipper.slnx --nologo` - 0 errors.
+2. `dotnet test Snipper.slnx --nologo` - 590/590, the current baseline.
+3. **SNP0009 must still emit exactly 56 findings on MILKRUN**, unchanged. This is the load-bearing
+   correctness check; the harness hash guard also covers it.
+4. Measure the pass wall clock from the analyser's own progress line
+   (`UnusedLocalVariableAnalyser: N finding(s) in X.Xs`). Baseline **76.2 s**; the analysis phase is
+   **152.7 s** and the next-longest analyser is ~51 s, so this pass sets the critical path.
+5. Self-analysis must stay at the 3 pre-existing findings, none in changed files.
+
+### Measurement commands
+
+```console
+# baseline capture (do this immediately before changing anything - see the drift caveat below)
+.\scripts\measure-run.ps1 -Target C:\ws\milkrun\MILKRUN.slnx -Iterations 3 -MaxDop 8 `
+    -OutputPath artifacts\perf-before.json -ResultPath artifacts\perf-before.result.json
+
+# after the change, guarded by the baseline hash
+.\scripts\measure-run.ps1 -Target C:\ws\milkrun\MILKRUN.slnx -Iterations 3 -MaxDop 8 `
+    -BaselineHash <hash from before> -OutputPath artifacts\perf-after.json
+```
+
+Set `SNIPPER_PROFILE=localvar` to re-enable profiling if the file is restored from history; as
+committed it is **deleted**, deliberately, because it is scaffolding rather than a product feature.
+
+### Traps already hit in this wave - do not re-walk them
+
+| Assumption | Reality |
+|---|---|
+| `SyntaxToken.ValueSpan`, `SyntaxToken.GetLinePosition()` | Neither exists in Roslyn 5.9. Check the API surface before designing around it. |
+| `MemoryExtensions.Split` on `ReadOnlySpan<char>` | Takes a **caller-supplied `Span<Range>`** and truncates **silently** on overflow. A short buffer would stop matching a nested path. |
+| Profiler counters via `ref` to another class's fields | Printed all zeros while still looking plausible. |
+| One `Interlocked` counter **per node** | Made the pass **2.7x slower**; tens of millions of contended writes on one cache line. |
+| A hash mismatch means the change broke output | It may be **environmental drift**. Re-run a baseline before blaming the code. |
+
 ## Not done, and why
 
 - **`MSBuildWorkspace.Create()` tuning - rejected on measurement.** Workspace load is 14.6% of a
