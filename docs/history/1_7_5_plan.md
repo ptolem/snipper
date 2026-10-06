@@ -109,7 +109,9 @@ honest result is that they were not worth acting on as stated.
 |---|---|
 | `Cli\PerfSummary.cs`, `Program.cs` | Opt-in `SNIPPER_PERF=1` resource summary |
 | `scripts\measure-run.ps1` | Measurement harness with determinism guard |
-| `Analysis\TokenShingleIndex.cs` | `SyntaxFacts.GetText` for fixed-text kinds; `token.Text` read once instead of twice |
+| `Analysis\TokenShingleIndex.cs` | `SyntaxFacts.GetText` for fixed-text kinds; `token.Text` read once instead of twice; `Collect` returns both halves from **one** walk |
+| `Analysis\DuplicateFragmentAnalyser.cs` | Hands `Build` the tokens `CollectFiles` already produced — **four tree walks per file reduced to one** |
+| `Analysis\TokenShingleIndex.cs` | Shingle dedup by **path** rather than by `(path, window index)`: ~7.5M entries -> <4,000, guarantee and test unchanged |
 | `Analysis\ExclusionEngine.cs` | `obj` segment hoisted to static fields; both separator spellings tested as spans instead of copying the path |
 | `Cli\ConsoleRenderer.cs` | `StringComparer.Ordinal` on the path sort - **a determinism fix, not a perf one** |
 | `Cli\GitMetadata.cs`, `Analysis\GitHistory.cs` | `int.TryParse` span overloads; the sliced strings existed only to be parsed |
@@ -119,18 +121,94 @@ culture-sensitive ordering, so the console table could list the same findings in
 than the JSON and SARIF writers, varying with machine locale. Every other sort in the tool is
 explicit ordinal for exactly this reason.
 
+## Phase split - where the time actually goes
+
+The audit ranked "tune `MSBuildWorkspace.Create()`" as a side note while I promoted it in
+conversation to "the dominant cost, possibly bigger than everything combined". **Both were wrong,
+and measuring the split is what caught it.** One MILKRUN clone run, timings the tool already
+prints:
+
+| Phase | Wall clock | Share |
+|---|---|---|
+| Workspace load, config, report write | 26.1 s | 14.6% |
+| Analysis | 152.7 s | **85.4%** |
+| Total process | 178.8 s | |
+
+So workspace loading is a seventh of the run, not the bulk of it. MSBuildWorkspace tuning was
+**not attempted**: the ceiling on the whole idea is 14.6%, and the load has to happen to analyse a
+solution at all.
+
+Per-analyser wall clock (parallel, DOP 8, so these overlap and sum past the phase total):
+
+| Analyser | Wall clock |
+|---|---|
+| `UnusedLocalVariableAnalyser` | **94.7 s** |
+| `UnusedUsingDirectiveAnalyser` | 51.4 s |
+| `UnusedPrivateMemberAnalyser` | 44.8 s |
+| `UnusedParameterAnalyser` | 40.3 s |
+| `DuplicateFragmentAnalyser` | 28.7 s |
+| `ObsoleteMemberAnalyser` | 12.0 s |
+| `WriteOnlyFieldAnalyser` | 9.4 s |
+| `HierarchyDeadCodeAnalyser` | 7.1 s |
+| `UnreachableCodeAnalyser` | 5.4 s |
+| `CommentedCodeAnalyser` | 2.6 s |
+| `OrphanProjectAnalyser` | 1.1 s |
+| `EventNeverInvokedAnalyser` | 0.8 s |
+
+One analyser is **53% of the analysis phase on its own**. No amount of tuning in the other eleven
+competes with that, and it is not where the audit pointed.
+
+## Shingling: one walk per file, and a set that was 7.5M entries
+
+`TokenShingleIndex` walked every tree **four times** per file. `DuplicateFragmentAnalyser.CollectFiles`
+called `Tokenize` and `TokenLines` - each a full recursive traversal - and then handed `Build` the
+bare roots so it could re-derive both. `TokenShingleIndex.Collect` now returns a `TokenizedFile`
+(tokens plus aligned line positions) from one walk, and `Build` has an overload that takes
+already-tokenized files and walks nothing. The syntax-tree overload is retained for the tests and
+delegates through a **lazy** projection, so each file's tokens are still released after its windows
+are hashed rather than every stream being held at once.
+
+The dead `seen` set was **not** deleted, which is the decision worth recording. Its documented
+guarantee - a linked file or multi-TFM document contributing one copy - is real and is covered by
+`Dedupe_Locations_By_Path`. But the guarantee never depended on the per-window key: a repeated path
+means every window it could contribute is already recorded, so skipping the file outright is
+equivalent. Deduplicating **by path** keeps the guarantee and its test, and replaces a set with one
+entry per window with one entry per file. The only behaviour this gives up is a pathological caller
+handing the same path two different token streams, which contradicts the path-identity contract the
+type documents.
+
+Measured on the clone profile, 3 iterations, report bytes identical:
+
+| Metric | Before | After | Delta |
+|---|---|---|---|
+| Allocated (min) | 28,852 MB | 28,082 MB | -770 MB (-2.7%) |
+| Peak working set (min) | 2,244 MB | 2,213 MB | -31 MB (-1.4%) |
+| gen0 collections (min) | 3,710 | 3,638 | -72 |
+| Wall clock (min) | 176.34 s | 179.31 s | inside a 43 s spread |
+
+The audit predicted roughly 150 MB of live set for that `seen` entry. Measured, removing it freed
+**31 MB**. Third extrapolation in this project to overstate by about an order of magnitude, and
+the pattern is consistent enough to be worth naming: multiplying a small per-item allocation by a
+file count describes Gen0 churn accurately and describes peak memory very badly, because the
+garbage is collectable and was never resident all at once.
+
+Note also that `DuplicateFragmentAnalyser` as a whole is **28.7 s of a 152.7 s phase**. Cutting
+three of its four tree walks cannot show up in the total, which is exactly what was observed.
+
 ## Not done, and why
 
-- **The 4 redundant tree walks and the dead `seen` HashSet.** These remain the largest identified
-  wins and the harness can now prove them. `seen` needs a decision first: its doc comment claims a
-  linked-file / multi-TFM dedup guarantee that production never exercises, because
-  `DuplicateFragmentAnalyser.cs:149` already dedupes paths, while `TokenShingleIndexShould.cs:174`
-  passes a duplicate path deliberately. Either `Build`'s contract or the test has to change, and
-  that is a behaviour question rather than a performance one.
-- **`MSBuildWorkspace.Create()` tuning.** The largest fixed cost, and a workspace-load question
-  rather than a data-structure one.
+- **`MSBuildWorkspace.Create()` tuning - rejected on measurement.** Workspace load is 14.6% of a
+  run, so this cannot be where the time is. Attempting it would have been optimising a phase that
+  has to happen anyway.
+- **`UnusedLocalVariableAnalyser` - identified, not attempted.** 94.7 s, 53% of the analysis
+  phase, and by a wide margin the best remaining target. It is a different analyser with a
+  different set of candidate fixes (a per-document `GetSemanticModelAsync`, `AnalyzeControlFlow`
+  per candidate, `FirstAncestorOrSelf` per candidate, and the `DocumentIdentifierIndex` build),
+  and attributing its cost needs profiling rather than another extrapolation. Deliberately left
+  for its own change.
 - **`ConfigurationBindingAnalyser.FindKeyLocation`** re-reads the whole file per unbound JSON key -
-  genuinely quadratic, with no cache.
+  genuinely quadratic, with no cache. Bounded by config files, so it does not appear in the
+  per-analyser table above, which covers symbol analysers.
 - **`ReportWriter` streaming.** Worth ~2 MB of LOH and one fewer transcode, but the `string` return
   type is load-bearing for 10 test call sites and the newline bytes must be verified unchanged.
 - **`DocumentIdentifierIndex` -> `FrozenDictionary`.** Correct but adds ~1.8 MB peak at scale to
