@@ -195,17 +195,102 @@ garbage is collectable and was never resident all at once.
 Note also that `DuplicateFragmentAnalyser` as a whole is **28.7 s of a 152.7 s phase**. Cutting
 three of its four tree walks cannot show up in the total, which is exactly what was observed.
 
+## SNP0009 attribution: one call is 97% of the pass
+
+`UnusedLocalVariableAnalyser` was the largest single contributor, so it was profiled directly with
+temporary env-gated instrumentation (`SNIPPER_PROFILE=localvar`), since region-level timers inside
+the loop attribute cost far better than a sampling profiler at this resolution. **The scaffolding
+was deleted after the run and is not in the tree.** Two lessons from building it are recorded at the
+top of what it replaced, because both produced confidently wrong numbers first time:
+
+- Counters held in `ref` fields belonging to the *analyser*, while the printer read its own fields.
+  Every counter printed zero, and the run still looked plausible.
+- A counter incremented **per node** rather than per candidate made the pass **2.7x slower**
+  (254.8 s against a 94.7 s baseline) - tens of millions of contended `Interlocked` operations on
+  one cache line across eight threads. A profiler that slows the thing it profiles by 2.7x cannot
+  attribute it.
+
+With those fixed, one MILKRUN run:
+
+| Region | Thread-seconds | Calls |
+|---|---|---|
+| `GetDeclaredSymbol` | **72.4 s** | 18,494 |
+| &nbsp;&nbsp;first call in a document | 21.1 s | ~3,004 (7.0 ms each) |
+| &nbsp;&nbsp;every subsequent call | 51.2 s | ~15,490 (**3.3 ms each**) |
+| `HasReference` | 1.3 s | 18,494 |
+| `DocumentIdentifierIndex.Build` | 0.1 s | 3,004 documents |
+| `AnalyzeControlFlow` | 0.0 s | 132 |
+| `GetSemanticModelAsync` | 0.0 s | 3,004 |
+| Whole `DescendantNodes` walk | 74.4 s | - |
+| **Pass wall clock** | **76.2 s** | |
+
+`GetDeclaredSymbol` is **97% of the pass**, at 3.3 ms per call on a warm model. That is the
+anomaly worth explaining: declaring the symbol of a local variable should be microseconds once the
+model is built. The cost is Roslyn constructing the **method-body binder** for each method that
+contains a local declaration - roughly 15,500 method bodies, priced at a few milliseconds each.
+
+**The fast path in front of it fires 31 times in 18,534.** `IsNameUsedInDocument` asks whether the
+name appears in a usage position *anywhere in the document*, and local names are reused across
+methods in the same file, so 99.83% of candidates fall straight through to semantic binding. The
+gate is not merely weak, it is close to inert, and it is guarding a 3.3 ms call.
+
+The fix that follows, **not implemented here** because it changes what the rule proves and deserves
+its own change with its own tests: a local cannot be referenced outside the block that declares it,
+so the occurrence test should be **block-scoped rather than document-scoped**. `DocumentIdentifierIndex`
+already holds every `SimpleNameSyntax` position per name, so the test is a span containment check
+over already-built data - no binding at all. Anything the block-scoped test cannot clear still takes
+the existing slow path unchanged, so it can only convert work, never lose a finding.
+
+This is also the codebase's own idiom, used correctly twice already: `UnreachableCodeGate` puts a
+hand-rolled syntactic gate in front of `AnalyzeControlFlow` (and it works - 132 calls out of 18,534
+candidates), and `RedundancyAnalyser` replaced five tree walks with one. SNP0009 has the same shape
+with the gate at the wrong granularity.
+
+**Why the prize is large.** The pass consumed 72.4 s of thread time in 76.2 s of wall clock, so it
+runs **effectively serially** - it is a plain sequential `foreach`, not a `Parallel.ForEach`. Its
+cost converts to wall clock nearly one-for-one, and because it is the longest analyser it sets the
+analysis phase's critical path. Cutting 90% of the 72.4 s would take this pass to roughly 10 s and
+let the 152.7 s analysis phase fall toward the next-longest analyser (~51 s). That is a far bigger
+lever than anything else measured in this wave, and unlike the earlier estimates it comes from a
+measurement rather than an extrapolation.
+
+## A caveat the harness does not cover: output is not stable across time
+
+Two reports of the same clean binary on the same target, roughly an hour apart, disagreed:
+
+| Rule | Run A | Run B |
+|---|---|---|
+| SNP0003 | 16 | 15 |
+| SNP0006 | 1,501 | 1,484 |
+| SNP0019 | 190 | 202 |
+| SNP0024 | 728 | 729 |
+| **Total** | **2,782** | **2,777** |
+
+SNP0009 emitted 56 findings in both, and the profiling run made the same four rules move, which
+briefly looked like the instrumentation's fault. Reverting the instrumentation and rebuilding
+reproduced **2,777** - so the profiler was innocent and the drift is environmental. The rules that
+moved are binding- and restore-dependent, and milkrun's `obj/` and `project.assets.json` state is
+part of the effective input whether or not the sources changed.
+
+`measure-run.ps1` verifies byte-identical output across **iterations of one invocation**, which is
+exactly what an A/B needs and is why every comparison in this document held. It does **not** cover
+drift between sessions, and that has a practical consequence: **a hash mismatch on an A/B may be
+environmental rather than a regression.** Interleave the two builds, or re-run a baseline before
+attributing a difference to a code change. The alternative - assuming any mismatch is your fault -
+would send the next person hunting a bug that is not there.
+
 ## Not done, and why
 
 - **`MSBuildWorkspace.Create()` tuning - rejected on measurement.** Workspace load is 14.6% of a
   run, so this cannot be where the time is. Attempting it would have been optimising a phase that
   has to happen anyway.
-- **`UnusedLocalVariableAnalyser` - identified, not attempted.** 94.7 s, 53% of the analysis
-  phase, and by a wide margin the best remaining target. It is a different analyser with a
-  different set of candidate fixes (a per-document `GetSemanticModelAsync`, `AnalyzeControlFlow`
-  per candidate, `FirstAncestorOrSelf` per candidate, and the `DocumentIdentifierIndex` build),
-  and attributing its cost needs profiling rather than another extrapolation. Deliberately left
-  for its own change.
+- **`UnusedLocalVariableAnalyser` - profiled, fix identified, not implemented.** 94.7 s, 53% of the
+  analysis phase. `GetDeclaredSymbol` is 97% of it, at 3.3 ms per call because it builds a
+  method-body binder, and the document-scoped fast path in front of it fires 31 times in 18,534.
+  The fix is a block-scoped occurrence test. See "SNP0009 attribution" above. Not implemented here
+  because it changes what the rule proves and needs its own tests.
+- **A pre-existing caveat, now documented:** report output is not stable across sessions on a target
+  whose restore state can move under the tool. See "output is not stable across time" above.
 - **`ConfigurationBindingAnalyser.FindKeyLocation`** re-reads the whole file per unbound JSON key -
   genuinely quadratic, with no cache. Bounded by config files, so it does not appear in the
   per-analyser table above, which covers symbol analysers.
