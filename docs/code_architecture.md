@@ -4,11 +4,12 @@ A map of the codebase for people who want to contribute to it. It explains how S
 memory, how analysers run, and how findings become a report — and, importantly, which invariants you
 must not break when adding to it.
 
-Written against the 1.7.0 tree (Wave 4: 4A/4A-2/4B/4C plus the perf increment), ~13,800 lines of C# across 74
-files, zero third-party runtime dependencies beyond Roslyn, MSBuild, and Spectre.Console.
+Written against the 1.7.3 tree, ~14,990 lines of C# across 80 files in `src/Snipper` (19 registered
+analysers, 28 rule IDs, 581 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
+Spectre.Console.
 
 For *using* the tool see the [usage guide](usage.md). For *why* the design is the way it is see
-[`plan_1_7_0.md`](plan_1_7_0.md).
+[`plan_1_7_0.md`](plan_1_7_0.md) and [`plan_1_7_3.md`](plan_1_7_3.md).
 
 ---
 
@@ -62,7 +63,7 @@ Five things to internalise before reading further:
    its own list. All sharing happens through memoized solution-keyed indexes, never through mutable
    fields.
 3. **Compilation warm-up is deliberate and sequential.** Every analyser opens with
-   `GetCompilationAsync`; without the pre-warm, 17 analysers discover the same cold compilations at
+   `GetCompilationAsync`; without the pre-warm, 19 analysers discover the same cold compilations at
    once and serialise on Roslyn's compilation tracker. Measured: 33 s naive versus 4.6 s warmed.
 4. **Two suppression classes, and the difference is load-bearing.** Namespace exclusions and
    whole-analyser disables remove findings *before they exist*; rule-off, path globs and severity
@@ -865,15 +866,21 @@ windows, extends matches, and keeps only maximal ones:
 
 ```
 CollectFiles ──► TokenShingleIndex.Build ──► FindFragments ──► KeepMaximalMatches ──► BuildFindings
-                                                                            │
-                                                                            └──► CloneSet[] ──► CloneDriftDetector ──► SNP0032
+                                                                             │
+                                                                             └──► CloneSet[] ──► CloneDriftDetector ──► SNP0032
 ```
 
-Four things to know:
+Five things to know:
 
 - **Normalisation is aggressive.** Every identifier becomes `ID`, so structurally uniform code matches.
   That is why the rule is opt-in and why clones confined to one directory are suppressed — sibling
   files sharing a skeleton are duplication by design.
+- **The bucket key is a hash; the window is the truth.** `TokenShingleIndex` buckets candidate windows
+  by an FNV-1a/32 hash of their 60 tokens. `Extend` therefore **re-verifies all 60 tokens** before
+  seeding a forward scan, and bounds-checks its offsets rather than trusting its caller. This is not
+  an optimisation detail — it is the only thing standing between a 32-bit collision and a finding
+  claiming two unrelated files are duplicates (invariant 22). It also means the `length < WindowTokens`
+  guard in `FindFragments` is reachable rather than dead code, since `Extend` returns `0` on mismatch.
 - **One pass, two outputs.** `BuildFindings` returns both the findings *and* the clone sets it proved.
   `CloneDriftDetector` consumes those sets, which is why `--clone-drift` costs no extra analysis and
   why `--clone-drift` implies `--duplicate-detection`.
@@ -882,6 +889,10 @@ Four things to know:
   which the symbol-based rules cannot.
 - **It uses union-find** (`Find`/`Union` with path compression) to group overlapping maximal matches
   into clone sets.
+
+`Extend` and `TokenShingleIndex.Hash` are `internal` rather than `private` purely so
+`TokenShingleIndexShould` can test the window logic directly. Both were widened in 1.7.3 and neither is
+part of the analyser's contract with anyone else.
 
 ---
 
@@ -1011,7 +1022,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | # | Invariant | Why |
 | --- | --- | --- |
 | 1 | Findings are reassembled in analyser **declaration order**, not completion order. | The report must be byte-identical to a sequential run. |
-| 2 | No mutable state on an analyser instance. | 17 analysers share one `Solution` concurrently. |
+| 2 | No mutable state on an analyser instance. | 19 analysers share one `Solution` concurrently. |
 | 3 | New shared indexes use `ConditionalWeakTable<Solution, Lazy<T>>` with `ExecutionAndPublication`. | Build once; do not leak workspaces; no duplicated work. |
 | 4 | Shared indexes are frozen/immutable after build. | Lock-free concurrent reads. |
 | 5 | `MSBuildLocator.RegisterDefaults()` runs before any MSBuild-touching code. | Runtime MSBuild resolution; a compile-time reference breaks on SDK upgrades. |
@@ -1031,6 +1042,9 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | 19 | A cache keyed on a csproj path must be invalidated by last-write time. | `ProjectFileReader` serves five call sites. Mutating its invalidation check so the cache never expires left **every other test green** - nothing in the suite rewrites a csproj between two reads. `ProjectFileReaderShould` exists because of that gap. |
 | 20 | Do not "optimise" a name comparison by returning a bare identifier. | Callers compare whole rendered strings, so `[Newtonsoft.Json.JsonSerializable]` deliberately does *not* match `[JsonSerializable]`. Swapping `ToString()` for `SimpleNameOf` would silently widen every attribute rule. Use `AttributeNameText`, which keeps the qualified fallback. |
 | 21 | A project path is not unique in a `Solution`. | A multi-targeted csproj appears once per TFM, and a project reached by two referencing paths can appear twice. Keying a dictionary on `project.FilePath` threw `ArgumentException: An item with the same key has already been added` and took the whole run down. `DuplicateProjectPathShould` pins the one-to-many shape. |
+| 22 | **A hash-indexed candidate must be verified against the tokens it stands for, not just its bounds.** | `DuplicateFragmentAnalyser.Extend` seeded its forward scan at `WindowTokens`, so offsets `[0,60)` — the window the bucket key was computed from — were never compared. The bucket key is FNV-1a/32, so a collision promoted two unrelated files to a clone. On an 81-project monorepo this produced findings claiming an interpolated `ToString()` was a 60-token duplicate of `Substitute.For<Refit.IApiResponse>()`. 232 such findings disappeared when `Extend` began proving the window. `TokenShingleIndexShould` pins this, including a brute-forced real collision (~130k trials). |
+| 23 | **Code written to make a test exercise a rule must be asserted to compile.** | `SampleApp` accumulated 8 compile defects (duplicate `JsonIncludeAttribute`, 5 × `CS0122` on internals, a void call assigned to a discard, a missing `Serilog` using, an illegal local shadow, a `System.Text.Json` name bound to a stand-in type). ~560 tests stayed green, because Snipper reports findings rather than requiring a clean build: a broken fixture still yields partial semantic information, and nothing checked the rest. `FixtureBuildShould` now builds it as part of the suite. |
+| 24 | **Do not make a fixture observable through `InternalsVisibleTo` to reach internals.** | It compiles, and it silently demotes real findings: `HierarchyDeadCodeAnalyser` treats a type with friend assemblies as Advisory, because a friend assembly is a legitimate external caller. Adding it to `SampleApp` broke 5 tests asserting Moderate. The analyser was right. `CoreLib/InternalFixtureBridge.cs` exposes public entry points instead. |
 
 ---
 
@@ -1051,18 +1065,37 @@ Each of these is load-bearing, and several exist because breaking them was measu
    evidence, not about severity of consequence.
 6. **Red first.** In a **new** test file, with the test failing for the right reason.
 7. **Green, then verify the test can fail.** Deliberately break the decision logic and confirm a test
-   catches it. 4C's two mutations caught 3 and 1 failures respectively; that is the bar.
-8. **Dogfood.** Run it on Snipper's own solution. Fix what it finds in your own code — do not suppress.
+   catches it. 4C's two mutations caught 3 and 1 failures respectively; that is the bar. 1.7.3's
+   window-verification mutation turns all six window tests red.
+8. **If you added fixture code to make a rule reachable, check it compiles.** See
+   [Testing conventions](#testing-conventions) — `SampleApp` went years without compiling.
+9. **Dogfood.** Run it on Snipper's own solution. Fix what it finds in your own code — do not suppress.
    4C found a real duplicated-git-runner bug in its own author on the day it was written.
-9. **Document.** README rule-catalogue row; `usage.md` if it adds an option; `plan_1_7_0.md` for the
-   design and measurements.
-10. **Full suite green**, and leave the tree cleaner than you found it.
+10. **Document.** README rule-catalogue row; `usage.md` if it adds an option; the current wave's
+   `plan_1_7_x.md` for the design and measurements.
+11. **Full suite green**, and leave the tree cleaner than you found it.
 
 ---
 
 ## Testing conventions
 
-- `test/Snipper.Tests/`, xUnit + FluentAssertions. ~520 tests, ~2 min per run.
+- `test/Snipper.Tests/`, xUnit + FluentAssertions. 581 tests, ~2 min per run. ~10,600 lines across 95
+  files, including the `TestAssets/SampleApp` fixture.
+- **The fixture must compile, and that is asserted.** `FixtureBuildShould` builds every project in
+  `SampleApp` and fails on any diagnostic. Before it existed, `SampleApp` carried 8 compile defects
+  (duplicate `JsonIncludeAttribute`, five `CS0122` on internal fixtures, a void call bound to a
+  discard, a missing `Serilog` using, an illegal local shadow, and `System.Text.Json.JsonSerializer`
+  binding to the `CoreLib.JsonSerializer` stand-in) while ~560 tests passed. Nothing noticed because
+  Snipper *reports* findings rather than requiring a clean build — a broken fixture still yields
+  partial semantic information, so most assertions still had something to chew on. One detail is
+  worth knowing before you write such code: `OuterShadowedIsUnused` needs an inner local shadowing an
+  outer one, which is `CS0136` in **every** form — nested block, `for`, `foreach`, `using`, `catch`,
+  lambda parameter, `out var`, `is var`. Of nine shapes tried, exactly one compiles: a local
+  function's parameter.
+- **Do not reach fixture internals with `InternalsVisibleTo`.** It compiles, and it changes findings:
+  `HierarchyDeadCodeAnalyser` demotes a type with friend assemblies from Moderate to Advisory, because
+  a friend assembly is a legitimate external caller. Using it broke 5 tests asserting Moderate before
+  it was reverted in favour of `CoreLib/InternalFixtureBridge.cs`.
 - **Any test that calls `CliRunner.RunAsync` needs `[Collection("CliRuns")]`.** Spectre.Console's
   `Status` is process-wide exclusive, so parallel collections deadlock or interleave.
 - **Prefer the extracted seams over `RunAsync` where you can.** `CommandLineParser`,
@@ -1076,6 +1109,8 @@ Each of these is load-bearing, and several exist because breaking them was measu
 - Assert on the JSON report for anything end-to-end; console output is for humans.
 - A test that passes because the fixture is too weak is worse than no test. 4C's patch-parser tests
   were rewritten against **real git output** rather than a canned patch string for exactly this reason.
+  1.7.3's version of the same lesson is stronger: the fixture did not fail *softly*, it failed to
+  compile at all, and 581 tests still passed.
 
 ---
 
@@ -1110,5 +1145,6 @@ Each of these is load-bearing, and several exist because breaking them was measu
 
 - [Usage guide](usage.md) — options, filtering semantics, and the analyser→rule catalogue.
 - [CI integration](ci-integration.md) — running this in a pipeline.
+- [`plan_1_7_3.md`](plan_1_7_3.md) — the clone-window verification fix, and the guard that the test fixture compiles.
 - [`plan_1_7_0.md`](plan_1_7_0.md) — design rationale and measurements for the 1.7.0 wave.
 - [Feature parity roadmap](Snipper-Feature-Parity-Roadmap.md) — what is planned next.

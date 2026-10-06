@@ -17,9 +17,12 @@ dotnet tool install --global Snipper
 From a local build:
 
 ```shell
-dotnet pack src/Snipper -c Release
-dotnet tool install --global Snipper --add-source src/Snipper/bin/Release
+dotnet pack src/Snipper -c Release -o artifacts
+dotnet tool install --global Snipper --add-source artifacts --version <version>
 ```
+
+Pass `--version` explicitly: without it the installer picks the highest version found across *all*
+configured sources, which is not necessarily the one you just built.
 
 Update / uninstall:
 
@@ -43,7 +46,7 @@ snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--bas
 | `--certainty-tier <tier>` | Minimum certainty to report: `guaranteed`, `high`, `moderate`, or `advisory`. E.g. `--certainty-tier high` shows only Guaranteed and High findings. Applies to the terminal table and report file; the baseline always tracks the full finding set so switching tiers never churns it. |
 | `--version`, `-v` | Print the tool version and exit. |
 | `--config-analysis` | Opt in to configuration binding analysis (SNP0007/SNP0008). **Off by default**: indirect binding through referenced libraries and framework conventions makes its false-positive rate too high for default runs. |
-| `--duplicate-detection` | Opt in to duplicate-fragment detection (SNP0031). **Off by default**: token-normalized clone detection flags structurally uniform code, which is duplication by design in most codebases (every workspace analyser shares one project/document loop). Costs ~53s on a 3,000-file monorepo, so it is never paid unless asked for. |
+| `--duplicate-detection` | Opt in to duplicate-fragment detection (SNP0031). **Off by default**: token-normalized clone detection flags structurally uniform code, which is duplication by design in most codebases (every workspace analyser shares one project/document loop). Cheap relative to semantic analysis — **+0.7s** on this repository (11.4s → 12.1s, 5-run average). On an 81-project / ~3,000-file monorepo the whole run takes 125-255s depending on machine load, with the marginal cost sitting inside run-to-run noise, so it is never paid unless asked for. |
 | `--clone-drift` | Report the **temporal one-sided fix** in a clone set: a commit that changed one copy of a duplicated region without touching its siblings. Emits `SNP0032` — `High` when the change reads as a defensive fix (`null`/guard/`try`/`catch`/bounds), `Advisory` otherwise. **Implies `--duplicate-detection`** and reuses its shingling pass, so there is no second analysis. Costs no extra analysis either: history is read in two batched git calls regardless of how many clone sets exist. **Off by default**, and silent outside a git repository. See [Clone drift](#clone-drift). |
 | `--exclude-namespaces <list>` | Suppress findings in the given namespaces (exact match plus sub-namespaces). Repeatable; each occurrence may be a comma-separated list. Code in excluded namespaces still counts as usage evidence — references from it keep other members alive. Applies to SNP0001/0002/0005/0006/0008/0009/0010/0019/0020/0021/0022/0023/0024/0025/0026/0027/0028/0029/0030/0031; assembly-level rules (SNP0003/0004) and JSON keys (SNP0007) have no namespace concept. SNP0031 resolves the namespace syntactically through the enclosing namespace declaration; for a fragment at file scope, exclude it with the special name `<global>`. Excluded findings are still recorded in the baseline, so removing an exclusion later does not resurface them as new. |
 | `--audit-suppressions` | Report what your suppressions are actually hiding, per channel, and flag any that have gone stale. Adds a `suppression` section to the JSON report (omitted entirely when the flag is absent). **Off by default**, and free when you have no suppressions: measured at 0.0s on `Snipper.slnx` with no `snipper.json`, and 0.8s (~10% marginal) with an exclusion configured — the shadow passes reuse the memoized compilations and symbol indexes, so they cost far less than a second full analysis. See [Suppression audit](#suppression-audit). |
@@ -104,7 +107,8 @@ snipper ./MyMonorepo.slnx --baseline .snipper-baseline.json
 | SNP0028 | High (~90%) | Redundant qualification: `this.` where nothing shadows the member, and qualified type names whose bare form binds identically — both verified by speculative re-binding. Using directives, alias-qualified names, and conditional-access contexts are excluded. |
 | SNP0029 | High (~90%) | Empty type members: a public parameterless empty constructor on a non-abstract class (its only constructor — the compiler synthesizes an identical one), and empty destructors (finalization overhead with no work). Private/static constructors, structs, records, initializers, and attributes are excluded. |
 | SNP0030 | Advisory (~50%) | Field-like events that are never raised: subscribers (`+=`/`-=`) alone never count as usage. Custom add/remove accessors, interface events and implementations, virtual/override families, and attributed events are excluded. |
-| SNP0031 | Advisory (~40%) | Duplicated code fragments across files and projects: Type-1 exact and Type-2 rename-only clones of ≥60 normalized tokens spanning ≥4 lines. Detection is syntax-only (no semantic model is bound). **Opt-in via `--duplicate-detection`.** Clones confined to one directory are suppressed — sibling files sharing one skeleton are duplication by design, not copy-paste. Intra-file duplication is not reported. Constant tables and entry-point composition preambles dominate the output by nature: every `const` declaration normalizes to the same token shape. |
+| SNP0031 | Advisory (~40%) | Duplicated code fragments across files and projects: Type-1 exact and Type-2 rename-only clones of ≥60 normalized tokens spanning ≥4 lines. Detection is syntax-only (no semantic model is bound), and the 60-token window is **verified token-by-token** before a clone is confirmed — the index is keyed on a 32-bit hash, so verification is what stops two unrelated files from colliding into a finding (fixed in 1.7.3). **Opt-in via `--duplicate-detection`.** Clones confined to one directory are suppressed — sibling files sharing one skeleton are duplication by design, not copy-paste. Intra-file duplication is not reported. Constant tables and entry-point composition preambles dominate the output by nature: every `const` declaration normalizes to the same token shape. |
+| SNP0032 | High/Advisory | **Temporal one-sided fix** in a clone set: a commit that changed one copy of a duplicated region without touching its siblings. `High` when the change reads as a defensive fix (`null`/guard/`try`/`catch`/bounds), `Advisory` otherwise. A commit that *creates* the file is never drift (1.7.2). A commit that brought a copy back into line is reported as a resolution, not new drift. Merge commits are skipped; renames are not followed. **Opt-in via `--clone-drift`**, which implies `--duplicate-detection`. Silent outside a git repository. |
 
 Framework entry points are excluded automatically: ASP.NET Core controllers, MediatR/MassTransit/Quartz handlers, hosted services, xUnit facts/theories, `IAsyncLifetime` fixtures and `[CollectionDefinition]` types, `[ModuleInitializer]` methods, entry-point (`Main`) containing types, source-generated members (`[LoggerMessage]`, `[GeneratedRegex]`), DI-registered services, members whose interface contracts have callers, interface implementations and override-chain members (polymorphic dispatch), and types whose names are spelled in string literals or configuration JSON (plugin loading by name). Framework-dispatched contracts are recognised by simple name — health checks, hosted services, exception handlers, FusionCache serializers, OpenApi transformers, Swashbuckle filters/examples (`IDocumentFilter`/`IOperationFilter`/`ISchemaFilter`/`IExamplesProvider`), xUnit serialization/test-case orderers, the MVC filter family (`IActionFilter`, `IOrderedFilter`, and the exception/result/resource/authorization twins), and MediatR pipeline behaviours — their implementations are framework-instantiated, so the type and its contract members are evidence. Types discovered by reflection assembly scans (`IsSubclassOf` / `IsAssignableFrom` plugin loading) are likewise treated as framework-instantiated. Package findings are additionally suppressed when the reference roots a transitive subtree the project actually uses (removal would break compilation).
 
@@ -113,8 +117,30 @@ Framework entry points are excluded automatically: ASP.NET Core controllers, Med
 | Document | Covers |
 | --- | --- |
 | [Usage guide](docs/usage.md) | Every option in depth, certainty tiers, the four suppression channels, glob and namespace semantics, the analyser→rule catalogue, report schemas, performance knobs, and known limitations. |
-| [Code architecture](docs/code_architecture.md) | For contributors: C4 context/container and class diagrams, a full run sequence, how code is loaded through Roslyn, the analyser contract and shared-index pattern, the filtering order, 16 invariants, and a checklist for adding a rule. |
+| [Code architecture](docs/code_architecture.md) | For contributors: C4 context/container and class diagrams, a full run sequence, how code is loaded through Roslyn, the analyser contract and shared-index pattern, the filtering order, 24 invariants, and a checklist for adding a rule. |
 | [CI integration](docs/ci-integration.md) | Gating strategies for a large monorepo, baseline adoption, report-gating recipes with `jq`/PowerShell, the entropy budget, suppression hygiene, sharding, and ready-to-use GitHub Actions / Azure Pipelines / GitLab CI definitions. |
+| [Feature parity roadmap](docs/Snipper-Feature-Parity-Roadmap.md) | Wave-by-wave delivery history and what is planned next, with the reasoning kept rather than rewritten. |
+| [Competitive analysis](docs/competitive-analysis.md) | Snipper against the dead-code / duplication / entropy-governance ecosystem, including where it is genuinely behind. |
+
+Release plans and investigations are kept as historical record rather than edited into prose:
+[`plan_1_7_3.md`](docs/plan_1_7_3.md) (clone-window verification + a fixture that had never compiled),
+[`plan_1_7_2.md`](docs/plan_1_7_2.md) (clone drift no longer blaming file creations, SNP0019 dedupe),
+[`plan_1_7_1.md`](docs/plan_1_7_1.md) (unopenable targets exit `1`; an SNP0031 tuning pass measured as a
+no-go), and
+[`1_7_1_false_positives_investigation.md`](docs/1_7_1_false_positives_investigation.md) — the
+first-800 sweep of an 81-project monorepo that produced 1.7.2 and 1.7.3, **including two places
+where the investigation's own conclusions were wrong** and are corrected in place.
+
+## Current release
+
+`1.7.3` — 28 rule IDs, 19 analysers, 581 tests. Behaviour changes since `1.7.0`:
+
+| Version | Change |
+| --- | --- |
+| `1.7.1` | An unopenable target — malformed `.slnx`, or one whose XML is schema-invalid — exits `1` with a message instead of crashing. |
+| `1.7.2` | SNP0032 no longer reports a commit that *created* the file as a one-sided fix. SNP0019 reports one directive once, not twice for CS8019 + CS8933. |
+| `1.7.3` | SNP0031 verifies all 60 window tokens before confirming a clone, so a 32-bit hash collision cannot report two unrelated files as duplicates. The `SampleApp` test fixture had never compiled (8 defects) and now is asserted to. |
+
 ## Configuration file
 
 Snipper discovers `snipper.json` by walking up from the target solution/project directory (first file wins). Schema `"version": 1`:
@@ -304,6 +330,13 @@ Read that as: copy A got a guard; copy B did not, until a later commit. **The se
 | --- | --- |
 | `High` | One-sided, and the change reads as a defensive fix. |
 | `Advisory` | One-sided, with no fix-shaped marker: real drift, but not evidence of a defect. |
+
+**A commit that creates the file is not drift.** In 1.7.1, 90 of 302 findings on an 81-project
+monorepo said a commit that *created* a file was a one-sided fix — a file's first appearance cannot
+leave a sibling untouched, because there was no sibling to begin with. Since `1.7.2` the patch parser
+records whether a hunk is a file creation and the detector ignores those hunks. A sibling added in a
+*later* commit still counts as drift, because that genuinely is one copy of a region existing without
+the other.
 
 Tier discipline matters more here than anywhere else in the tool. "One copy changed" is a heuristic, not proof, so the High tier is gated on the change actually looking like a fix, and the marker test is deliberately loose in the safe direction — it can only ever promote a change to fix-shaped, and it sits behind the one-sided requirement, which is the real filter.
 

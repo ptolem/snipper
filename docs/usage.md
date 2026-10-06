@@ -5,8 +5,10 @@ pipeline recipes and gating strategies see [CI integration](ci-integration.md). 
 *means* see the [rule catalogue in the README](../README.md#rules); this document covers *how to run
 and filter it*.
 
-Every behaviour here was verified against the running tool on this repository (Snipper 1.7.0,
-Wave 4 working tree). Where something is a limitation rather than a feature, it says so.
+Every behaviour here was verified against the running tool on this repository (Snipper 1.7.3, 53
+commits). Where something is a limitation rather than a feature, it says so. Numbers quoted for a
+larger codebase come from an 81-project / ~3,000-file / 3,896-commit monorepo measured with the same
+flags across the 1.7.x series.
 
 ---
 
@@ -25,7 +27,8 @@ Wave 4 working tree). Where something is a limitation rather than a feature, it 
 11. [Baselines](#baselines)
 12. [Report formats](#report-formats)
 13. [Performance and scaling](#performance-and-scaling)
-14. [Known limitations and rough edges](#known-limitations-and-rough-edges)
+14. [Behaviour changes by version](#behaviour-changes-by-version)
+15. [Known limitations and rough edges](#known-limitations-and-rough-edges)
 
 ---
 
@@ -614,7 +617,7 @@ it trades speed for determinism of behaviour, and it is the documented revert pa
 **Do not widen the fan-out beyond core count on a loaded CI agent.** Every analyser already saturates
 the machine with its own inner loops, so the two nest. Measured on 16 cores against the sample app
 (190 findings, identical output at every width): fan-out 1 → 6.9 s, 4 → 5.4 s, 8 → 4.8 s, 16 → 4.6 s.
-The naive full-width fan-out *without* the compilation pre-warm measured 33 s — 17 analysers
+The naive full-width fan-out *without* the compilation pre-warm measured 33 s — 19 analysers
 discovering the same cold compilations at once and serialising on Roslyn's compilation tracker. Snipper
 pre-warms compilations for this reason.
 
@@ -629,8 +632,11 @@ pre-warms compilations for this reason.
 | `--duplicate-detection` | One syntax-only shingling pass. Cheap relative to semantic analysis. |
 | `--clone-drift` | **No extra analysis.** Reuses SNP0031's clone sets and reads history in two batched git calls, regardless of clone-set count. |
 
-Measured on this repository (39 commits, `Snipper.slnx`): 9.6 s with
-`--duplicate-detection --clone-drift` against 7.0 s for a plain baseline run.
+Measured on this repository (53 commits, `Snipper.slnx`), 5 alternating runs after a warm-up:
+plain baseline **11.4 s** average, `--duplicate-detection` **12.1 s** — a **+0.7 s** marginal cost.
+On the 81-project monorepo the same comparison is **not** separable: a full run takes 125-255 s and
+the same configuration varied 1.7x between consecutive runs on a loaded machine, so any marginal
+figure quoted for that repo is inside the noise. Treat the monorepo numbers as a shape, not a budget.
 
 The per-member git cost is why 4C batches. A per-path `git log` costs ~90 ms of process spawn on
 Windows, which would make per-clone-member lookups unusable on a monorepo with thousands of clone
@@ -639,7 +645,11 @@ sets. The whole-repo `git log --name-only` is 100 ms / 19.2 KB, and a batched 30
 
 ### Scaling to a large monorepo
 
-All of the following are unmeasured at monorepo scale — see [Known limitations](#known-limitations-and-rough-edges).
+Validated on one: an 81-project / ~3,000-file / 3,896-commit `.slnx`, which is where the 1.7.1-1.7.3
+defects were found. On that repo, 2,202 findings without duplication flags and 6,626 with both — so
+duplication is **~66% of the total report** and is the reason it is opt-in. Sharding is still
+unmeasured at that scale; the advice below is reasoned, not benchmarked — see
+[Known limitations](#known-limitations-and-rough-edges).
 
 - **Pass the `.slnx`/`.sln`, not a project**, or you will analyse a fraction of the repo and may pick
   up a different `snipper.json`.
@@ -650,6 +660,30 @@ All of the following are unmeasured at monorepo scale — see [Known limitations
 - **Disable whole analysers you have decided not to adopt** — the only change that reduces runtime.
 - **Exclude generated trees by namespace**, not by path glob, if the generated code has a consistent
   namespace. Path globs pay full analysis cost.
+
+---
+
+## Behaviour changes by version
+
+What changes for you when you upgrade, and whether it disturbs a baseline.
+
+| Version | Change | Baseline effect |
+| --- | --- | --- |
+| `1.7.1` | A target that cannot be opened — malformed `.slnx`, or well-formed XML with a schema-invalid root or a bad project `Type` GUID — exits `1` with `Failed to open '<path>': <reason>`. It previously crashed with an unhandled exception (exit `-532462766`). | None. No findings change. **If your pipeline was relying on the crash, it now gets a clean non-zero exit.** |
+| `1.7.2` | SNP0032 ignores hunks that create a file. A file's first appearance cannot be a one-sided fix. | Findings that no longer exist are reported as *resolved*, which lowers your entropy numerator. Re-stamp the baseline to keep the file from growing. |
+| `1.7.2` | SNP0019 reports one using directive once. Roslyn emits CS8019 *and* CS8933 for the same directive, and both were reported. | Fewer duplicate findings; same fix is still identified. |
+| `1.7.3` | SNP0031 verifies all 60 window tokens before confirming a clone. The index is keyed on a 32-bit hash, so two unrelated files could collide into a finding. | Findings removed are the collisions — they were never real clones. |
+| `1.7.3` | The `SampleApp` test fixture compiles. This changes **no** production rule behaviour; it changes what the tests prove. | None. |
+
+**Finding-count changes are the only thing that moves a baseline.** Fingerprints are derived from the
+finding's identity, not from a version stamp, so a rule that emits the same finding produces the same
+fingerprint. A finding that disappears simply stops being reported, and the baseline refresh records
+that as resolved. The consequence worth planning for is on gates that count *new* findings: a rule
+getting quieter never creates new findings, so it can only make such a gate pass more often — it
+cannot make one fail spuriously.
+
+The one upgrade hazard is `1.7.1`'s exit-code change, and it is a hazard only for a pipeline that was
+treating a **crash** as its failure signal. That still fails, just cleanly and with a message.
 
 ---
 
@@ -683,12 +717,24 @@ Verified against the running tool. Listed so they are not discovered the hard wa
 13. **Baseline and globs interact asymmetrically.** The baseline grows on first run to include
     findings for newly excluded code, by design.
 14. **SARIF carries no baseline state and no entropy or suppression sections.** JSON-only for those.
-15. **SNP0031/SNP0032 have not been validated on a large repository.** Everything measured so far is a
-    39-commit repo and the SampleApp fixture.
+15. **SNP0031/SNP0032 have only been validated on one large repository.** A single 81-project,
+    ~3,000-file, 3,896-commit monorepo, across the 1.7.x series. That is enough to find three real
+    engine defects and not enough to call the false-positive rate settled — a first-800 sweep of that
+    repo found SNP0031's output dominated by *real but not worth fixing* duplication (additive
+    configuration, threshold constants, uniform declarations) rather than by wrong answers.
 16. **SNP0032 has a known blind spot.** A one-sided fix that is still present removes the copies from
     the clone set, so there is nothing to attribute it to. Clone-set breakup search is the documented
     follow-up.
 17. **`--merge` commits are skipped by 4C,** and renames are not followed.
+18. **A test suite passing does not mean the code under test compiles.** Snipper's own `SampleApp`
+    fixture accumulated 8 compile defects that ~560 tests never noticed, because Snipper reports
+    findings rather than requiring a clean build — a broken fixture still yields *some* semantic
+    information, and nothing asserted the rest. `FixtureBuildShould` now builds the fixture as part of
+    the suite. If you write fixture code to trigger a rule, add the same assertion.
+19. **SNP0031's confidence figure is inherited, not measured.** The `Advisory (~40%)` tier is a
+    judgement about what a duplicate fragment usually is, carried since 1.6.3. The monorepo sweep
+    supports the direction (mostly real duplication, rarely worth removing) but did not produce a
+    calibrated percentage.
 
 ---
 
@@ -697,5 +743,10 @@ Verified against the running tool. Listed so they are not discovered the hard wa
 - [CI integration](ci-integration.md) — pipeline recipes, gating strategies, monorepo sharding.
 - [Code architecture](code_architecture.md) - for contributors: how the tool loads code, runs analysers, and produces findings.
 - [README](../README.md) — installation, quick start, and the rule catalogue.
-- [`plan_1_7_0.md`](plan_1_7_0.md) — design rationale and measurements for the 1.7.0 wave.
+- [`plan_1_7_3.md`](plan_1_7_3.md) — clone-window verification, and the fixture that had never compiled.
+- [`plan_1_7_2.md`](plan_1_7_2.md) — clone drift no longer blaming file creations; SNP0019 dedupe.
+- [`plan_1_7_1.md`](plan_1_7_1.md) — unopenable targets, and an SNP0031 tuning pass measured as a no-go.
+- [`plan_1_7_0.md`](plan_1_7_0.md) — design rationale and measurements for the entropy-governance wave.
+- [`1_7_1_false_positives_investigation.md`](1_7_1_false_positives_investigation.md) — the monorepo
+  sweep that produced 1.7.2 and 1.7.3, with its own wrong conclusions corrected in place.
 - [Feature parity roadmap](Snipper-Feature-Parity-Roadmap.md) — what is planned next and why.

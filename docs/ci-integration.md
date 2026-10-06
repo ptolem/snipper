@@ -32,12 +32,16 @@ day two, and a disabled gate is worse than no gate because it looks like coverag
 | Code | Meaning |
 | --- | --- |
 | `0` | Analysis ran. Findings may or may not exist. |
-| `1` | Usage error. |
+| `1` | Usage error — bad flags, **or a target that could not be opened** (missing file, malformed `.slnx`, schema-invalid `.slnx`). |
 | `2` | Report could not be written. |
 | `3` | Entropy budget exceeded. |
 
 So `snipper ... && echo ok` in a pipeline is a check that Snipper ran, not that the code is clean. And
 `if [ $? -eq 0 ]` will never fail on findings.
+
+**Before 1.7.1 an unopenable target crashed** with an unhandled exception and exit `-532462766`. It is
+now a clean exit `1` with `Failed to open '<path>': <reason>`. A pipeline that tests for a non-zero
+exit is unaffected; one that matched that specific crash code should be updated to test for non-zero.
 
 There are exactly two ways to build a real gate:
 
@@ -185,6 +189,21 @@ jq -e '[.findings[] | select(.ruleId == "SNP0032")] | length == 0' artifacts/sni
 SNP0032 is the one to gate on hardest if you enable clone drift — it is the only rule in the set that
 reports *correctness* defects rather than smells, and it found a real bug in its own author's code on
 the day it was written.
+
+Two things to know before you trust that gate, both from a sweep of an 81-project monorepo:
+
+- **Since 1.7.2 a file-creation commit is never drift.** On that repo 90 of 302 findings were commits
+  that *created* the file — a file's first appearance cannot leave a sibling untouched, because there
+  was no sibling. A gate written before 1.7.2 will simply go quieter, not wrong.
+- **A gate of `length == 0` is only sane on an adopted baseline or a fixed-size repo.** SNP0032
+  reports on history, so its count is a property of the commit log rather than of the current tree.
+  For a moving target, gate on *new* SNP0032 findings via the baseline instead:
+
+```shell
+# New clone drift only, against a committed baseline.
+snipper ./MyMonorepo.slnx artifacts/snipper.json --baseline .snipper/baseline.json --clone-drift
+jq -e '[.findings[] | select(.ruleId == "SNP0032")] | length == 0' artifacts/snipper.json
+```
 
 ### PowerShell
 
@@ -523,6 +542,17 @@ The things most likely to cost you time. Each is a real, verified behaviour, not
 13. **The audit has no exit code.** To make dead suppressions blocking, gate on the JSON.
 14. **CPU count changes timings, not results.** Output is deterministic, but if you shard by target
     you must deduplicate across shards.
+15. **A duplicate-detection gate on an unbaselined monorepo will fire constantly.** SNP0031 emitted
+    ~4,200 findings on an 81-project monorepo — about two thirds of that repo's entire report. The
+    productive question was never "is there duplication" (there always is) but "is any of it *worth*
+    removing", and the honest answer from a first-800 sweep was mostly no: additive configuration,
+    threshold constants, and uniform declarations are duplication by design. If you gate on SNP0031,
+    gate on **new** findings via a committed baseline, and expect to spend the first month tuning
+    rather than deleting.
+16. **Measure duplicate-detection cost on an idle machine or not at all.** On a loaded agent the same
+    configuration measured 138 s and 240 s on consecutive runs, and the marginal cost of the flag sat
+    inside that noise. Do not derive an SLA from a single run; take a minimum-of-N, and never
+    attribute a wall-clock difference to the flag without that.
 
 ---
 
@@ -533,3 +563,7 @@ The things most likely to cost you time. Each is a real, verified behaviour, not
 - [README](../README.md) — installation and the rule catalogue.
 - [`plan_1_7_0.md`](plan_1_7_0.md) — the entropy gate, suppression audit, and clone-drift design
   rationale, with measurements.
+- [`plan_1_7_3.md`](plan_1_7_3.md) — the clone-window fix that removed ~232 false SNP0031 findings.
+- [`plan_1_7_2.md`](plan_1_7_2.md) — clone drift no longer blaming file creations, and SNP0019 dedupe.
+- [`1_7_1_false_positives_investigation.md`](1_7_1_false_positives_investigation.md) — the monorepo
+  sweep behind 1.7.2/1.7.3, if you want to know why a rule is quieter than it used to be.
