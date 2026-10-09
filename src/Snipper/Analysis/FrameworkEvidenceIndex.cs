@@ -369,11 +369,11 @@ internal sealed class FrameworkEvidenceIndex
         InvocationExpressionSyntax invocation,
         ConcurrentBag<(Document, TypeSyntax)> serializationSeeds)
     {
-        var (name, receiverText, genericName) = invocation.Expression switch
+        var (name, receiver, genericName) = invocation.Expression switch
         {
-            MemberAccessExpressionSyntax memberAccess => (memberAccess.Name, memberAccess.Expression.ToString(), memberAccess.Name as GenericNameSyntax),
-            MemberBindingExpressionSyntax memberBinding => (memberBinding.Name, string.Empty, memberBinding.Name as GenericNameSyntax),
-            _ => ((SimpleNameSyntax?)null, string.Empty, null),
+            MemberAccessExpressionSyntax memberAccess => (memberAccess.Name, (SyntaxNode?)memberAccess.Expression, memberAccess.Name as GenericNameSyntax),
+            MemberBindingExpressionSyntax memberBinding => (memberBinding.Name, null, memberBinding.Name as GenericNameSyntax),
+            _ => ((SimpleNameSyntax?)null, null, null),
         };
 
         if (name is null)
@@ -381,12 +381,32 @@ internal sealed class FrameworkEvidenceIndex
             return;
         }
 
+        // Gate on the identifier before touching the receiver. `receiverText` is read
+        // by only two of the three checks below, so rendering it here built a string
+        // for every invocation in the solution — roughly 4,500, all but a handful of
+        // them discarded unread. Each of these three tests is a hash lookup or an
+        // ordinal comparison; only the winner pays for the string.
         var identifier = name.Identifier.Text;
+        var serializerCandidate = SerializerGenericMethods.Contains(identifier);
+        var extensionCandidate = JsonExtensionMethods.Contains(identifier);
+        var bsonClassMapCandidate = identifier == "RegisterClassMap";
+
+        if (!serializerCandidate && !extensionCandidate && !bsonClassMapCandidate)
+        {
+            return;
+        }
+
+        // Now worth rendering, and only for the checks that actually read it.
+        var receiverText = serializerCandidate || bsonClassMapCandidate
+            ? receiver?.ToString() ?? string.Empty
+            : string.Empty;
+
         var isSerializerCall =
-            (SerializerGenericMethods.Contains(identifier)
-                && (receiverText.EndsWith("JsonSerializer", StringComparison.Ordinal) || receiverText.EndsWith("JsonConvert", StringComparison.Ordinal)))
-            || JsonExtensionMethods.Contains(identifier)
-            || (identifier == "RegisterClassMap" && receiverText.EndsWith("BsonClassMap", StringComparison.Ordinal));
+            (serializerCandidate
+                && (receiverText.EndsWith("JsonSerializer", StringComparison.Ordinal)
+                    || receiverText.EndsWith("JsonConvert", StringComparison.Ordinal)))
+            || extensionCandidate
+            || (bsonClassMapCandidate && receiverText.EndsWith("BsonClassMap", StringComparison.Ordinal));
 
         if (!isSerializerCall || genericName is null)
         {
