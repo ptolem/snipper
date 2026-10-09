@@ -35,7 +35,9 @@ internal sealed record SarifResult(
 
 internal sealed record SarifMessage(string Text);
 
-internal sealed record SarifLocation(SarifPhysicalLocation PhysicalLocation);
+internal sealed record SarifLocation(
+    SarifPhysicalLocation PhysicalLocation,
+    SarifPhysicalLocation[]? RelatedLocations = null);
 
 internal sealed record SarifPhysicalLocation(
     SarifArtifactLocation ArtifactLocation,

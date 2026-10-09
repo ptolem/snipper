@@ -55,6 +55,8 @@ mid-name or absent. `git mv` was used throughout so history follows the rename.
 
 - **1.8.0 - SNP0033 cyclomatic complexity (in progress).** Classical ReSharper parity, counting table as the contract: [1_8_0_plan.md](1_8_0_plan.md)
 
+- **1.9.0 - SNP0031 per-set reporting.** One finding per clone set instead of one per copy: 4,375 -> 1,092 on the owner's monorepo, -45% of the whole report, with every copy still reported as a related location. [1_9_0_plan.md](1_9_0_plan.md)
+
 ### Specs, by wave
 
 | Version | Document | What it covers |

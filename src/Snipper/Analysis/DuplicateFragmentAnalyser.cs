@@ -519,9 +519,8 @@ public sealed class DuplicateFragmentAnalyser(
 
             var reported = new List<CloneSetMember>();
 
-            for (var index = 0; index < members.Count; index++)
+            foreach (var member in members)
             {
-                var member = members[index];
                 if (!byPath.TryGetValue(member.Path, out var file))
                 {
                     continue;
@@ -534,28 +533,55 @@ public sealed class DuplicateFragmentAnalyser(
 
                 reported.Add(new CloneSetMember(
                     member.Path, member.StartLine, member.StartCharacter, member.EndLine));
-
-                var other = members[(index + 1) % members.Count];
-                var lines = member.EndLine - member.StartLine + 1;
-
-                findings.Add(new SnipperFinding(
-                    RuleId: "SNP0031",
-                    Title: "Duplicate Code Fragment",
-                    Message: $"{member.TokenCount}-token fragment ({lines} lines) duplicated {members.Count} time(s); first other occurrence at {other.Path}:{other.StartLine}.",
-                    Certainty: CertaintyTier.Advisory,
-                    Category: FindingCategory.DuplicateFragment,
-                    FilePath: member.Path,
-                    LineNumber: member.StartLine,
-                    CharacterOffset: member.StartCharacter,
-                    Symbol: null));
             }
 
-            // A single surviving copy is not a set 4C can reason about: there is no sibling to
-            // have drifted from.
-            if (reported.Count >= 2)
+            // Per-set reporting: ONE finding per clone set, not one per copy. A skeleton
+            // copied 30 times was previously 30 findings, so a single duplication could
+            // dominate a threshold table and a report could read as hundreds of issues
+            // while holding a handful of distinct problems.
+            //
+            // The copies are not lost - they ride along as related locations, which is
+            // what SARIF's location.relatedLocations exists for. The anchor is the first
+            // surviving member in the set's own (path, token index) order, so the finding
+            // lands in the same place on every run.
+            //
+            // The >= 2 floor matches the one CloneSet already applies: one surviving copy
+            // has no sibling to be duplicated from, so it is not a set. Previously a set
+            // reduced to one member by exclusions still emitted that member as a
+            // finding, which is the inconsistency this closes.
+            if (reported.Count < 2)
             {
-                cloneSets.Add(new CloneSet(reported));
+                continue;
             }
+
+            cloneSets.Add(new CloneSet(reported));
+
+            var anchor = reported[0];
+            var lines = anchor.EndLine - anchor.StartLine + 1;
+            var fileCount = reported.Select(m => m.Path).Distinct(StringComparer.Ordinal).Count();
+
+            // Every member of a set is token-identical by construction - that is what
+            // shingling proved - so any member supplies the shared token count. Read from
+            // the Fragment list rather than CloneSetMember, which does not carry one,
+            // because CloneSet is also consumed by SNP0032.
+            var tokenCount = members[0].TokenCount;
+
+            findings.Add(new SnipperFinding(
+                RuleId: "SNP0031",
+                Title: "Duplicate Clone Set",
+                Message: $"{tokenCount}-token block ({lines} lines) duplicated {reported.Count} time(s) across {fileCount} file(s).",
+                Certainty: CertaintyTier.Advisory,
+                Category: FindingCategory.DuplicateFragment,
+                FilePath: anchor.Path,
+                LineNumber: anchor.StartLine,
+                CharacterOffset: anchor.StartCharacter,
+                Symbol: null,
+                RelatedLocations:
+                [
+                    .. reported
+                        .Skip(1)
+                        .Select(m => new RelatedLocation(m.Path, m.StartLine)),
+                ]));
         }
 
         return (findings, cloneSets);

@@ -99,7 +99,10 @@ internal static class ReportWriter
                     FilePath: f.FilePath,
                     LineNumber: f.LineNumber,
                     CharacterOffset: f.CharacterOffset,
-                    LineText: lineCache.GetLine(f.FilePath, f.LineNumber)))
+                    LineText: lineCache.GetLine(f.FilePath, f.LineNumber),
+                    RelatedLocations: f.RelatedLocations is { Count: > 0 } related
+                        ? [.. related]
+                        : null))
                 .ToArray(),
             Suppression: suppressionAudit,
             EntropyRate: entropyRate);
@@ -182,12 +185,21 @@ internal static class ReportWriter
                 Message: new SarifMessage(f.Message),
                 Locations:
                 [
-                    new SarifLocation(new SarifPhysicalLocation(
-                        ArtifactLocation: new SarifArtifactLocation(new Uri(Path.GetFullPath(f.FilePath)).AbsoluteUri),
-                        Region: new SarifRegion(
-                            f.LineNumber,
-                            f.CharacterOffset,
-                            lineCache.GetLine(f.FilePath, f.LineNumber) is { } lineText ? new SarifArtifactContent(lineText) : null)))
+                    new SarifLocation(
+                        new SarifPhysicalLocation(
+                            ArtifactLocation: new SarifArtifactLocation(new Uri(Path.GetFullPath(f.FilePath)).AbsoluteUri),
+                            Region: new SarifRegion(
+                                f.LineNumber,
+                                f.CharacterOffset,
+                                lineCache.GetLine(f.FilePath, f.LineNumber) is { } lineText ? new SarifArtifactContent(lineText) : null)),
+                        // SARIF's native home for "the same finding also appears here".
+                        // SNP0031's clone sets would otherwise be N findings where the
+                        // format has a first-class concept for exactly this.
+                        RelatedLocations: f.RelatedLocations is { Count: > 0 } related
+                            ? [.. related.Select(r => new SarifPhysicalLocation(
+                                new SarifArtifactLocation(new Uri(Path.GetFullPath(r.FilePath)).AbsoluteUri),
+                                new SarifRegion(r.LineNumber, 1)))]
+                            : null)
                 ],
                 Properties: new Dictionary<string, string>(StringComparer.Ordinal)
                 {
@@ -231,4 +243,5 @@ internal sealed record FindingReportEntry(
     string FilePath,
     int LineNumber,
     int CharacterOffset,
-    string? LineText);
+    string? LineText,
+    RelatedLocation[]? RelatedLocations = null);

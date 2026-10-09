@@ -29,6 +29,22 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
         return Path.GetFileName(finding.FilePath);
     }
 
+    /// <summary>
+    /// Every file a finding points at: the anchor plus its related locations.
+    /// <para>
+    /// SNP0031 reports one finding per clone <em>set</em>, so a two-file clone has one
+    /// finding whose anchor is only one of the two files. Assertions about "is this
+    /// file reported" therefore have to look across the whole set, or they would pass
+    /// or fail on which side happened to sort first.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> FilesOf(SnipperFinding finding)
+    {
+        var files = new List<string> { finding.FilePath };
+        files.AddRange(finding.RelatedLocations?.Select(r => r.FilePath) ?? []);
+        return files.Select(Path.GetFileName).ToList();
+    }
+
     [Fact]
     public async Task Emit_Nothing_Without_Duplicated_Fragments_For_A_Control_Only_Fixture()
     {
@@ -41,13 +57,15 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
     }
 
     [Fact]
-    public async Task Flag_A_Cross_Project_Exact_Clone_For_AnalyzeAsync()
-    {
-        var findings = await AnalyzeAsync();
+public async Task Flag_A_Cross_Project_Exact_Clone_For_AnalyzeAsync()
+        {
+            var findings = await AnalyzeAsync();
 
-        findings.Should().Contain(f =>
-            f.FilePath.Contains("CloneFixtures.cs", StringComparison.Ordinal));
-    }
+            // The set is reported once, anchored at whichever member sorts first, so
+            // the assertion is over the whole set rather than over FilePath alone.
+            findings.Should().Contain(f =>
+                FilesOf(f).Contains("CloneFixtures.cs", StringComparer.Ordinal));
+        }
 
     [Fact]
     public async Task Report_The_Counterpart_Project_For_AnalyzeAsync()
@@ -70,14 +88,20 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
     }
 
     [Fact]
-    public async Task State_The_Occurrence_Count_And_Other_Location_For_AnalyzeAsync()
-    {
-        var findings = await AnalyzeAsync();
+public async Task State_The_Occurrence_Count_And_Other_Location_For_AnalyzeAsync()
+        {
+            var findings = await AnalyzeAsync();
 
-        findings.Should().Contain(f =>
-            f.Message.Contains("duplicated", StringComparison.Ordinal)
-            && f.Message.Contains("first other occurrence", StringComparison.Ordinal));
-    }
+            // The count and the sibling locations are the whole point of the finding,
+            // so both must survive the collapse: the count in the message, the copies
+            // as related locations.
+            findings.Should().Contain(f =>
+                f.Message.Contains("duplicated", StringComparison.Ordinal)
+                && f.Message.Contains("time(s)", StringComparison.Ordinal)
+                && f.Message.Contains("file(s)", StringComparison.Ordinal));
+
+            findings.Count(f => f.RelatedLocations is { Count: > 0 }).Should().BeGreaterThan(0);
+        }
 
     [Fact]
     public async Task Not_Flag_A_Short_Identical_Helper_For_AnalyzeAsync()
@@ -113,18 +137,48 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
     }
 
     [Fact]
-    public async Task Flag_A_File_Scope_Fragment_For_AnalyzeAsync()
-    {
-        var findings = await AnalyzeAsync();
+public async Task Flag_A_File_Scope_Fragment_For_AnalyzeAsync()
+        {
+            var findings = await AnalyzeAsync();
 
-        // FileScopeClone.cs and its mirror carry duplicated helpers with no
-        // enclosing type declaration at file scope.
-        findings.Should().Contain(f => ShortName(f) == "FileScopeClone.cs");
-        findings.Should().Contain(f => ShortName(f) == "FileScopeCloneMirror.cs");
-    }
+            // FileScopeClone.cs and its mirror carry duplicated helpers with no
+            // enclosing type declaration at file scope. One set, one finding - so both
+            // files must be reachable from that single finding.
+            var covering = findings
+                .Where(f => FilesOf(f).Contains("FileScopeClone.cs", StringComparer.Ordinal))
+                .ToList();
 
-    [Fact]
-    public async Task Use_Advisory_Certainty_And_Duplicate_Category_For_AnalyzeAsync()
+            covering.Should().NotBeEmpty();
+            covering.Should().Contain(f =>
+                FilesOf(f).Contains("FileScopeCloneMirror.cs", StringComparer.Ordinal));
+        }
+
+        [Fact]
+        public async Task Report_One_Finding_Per_Set_Not_One_Per_Copy_For_AnalyzeAsync()
+        {
+            // The defect this change exists for: a skeleton copied N times was N
+            // findings, so one duplication could dominate a threshold table. Each set
+            // must now yield exactly one finding, and that finding must list the rest.
+            var findings = await AnalyzeAsync();
+
+            findings.Should().NotBeEmpty();
+
+            // Uniqueness is per anchor *span*, not per file and not per line: one file can
+            // legitimately anchor several distinct clone sets, and two different fragments
+            // can begin on the same line. What must never repeat is one anchor, which is
+            // what per-window reporting produced ~140 times over for a single clone.
+            findings.Select(f => (f.FilePath, f.LineNumber, f.CharacterOffset))
+                .Should().OnlyHaveUniqueItems("one anchor fragment per clone set");
+
+            // A set of two or more always leaves at least one other copy to point at, so every
+            // finding must carry related locations. Count(...) rather than OnlyContain(...)
+            // because the latter compiles to an expression tree, where `is` is illegal.
+            findings.Count(f => f.RelatedLocations is { Count: > 0 })
+                .Should().Be(findings.Count);
+        }
+
+        [Fact]
+        public async Task Use_Advisory_Certainty_And_Duplicate_Category_For_AnalyzeAsync()
     {
         var findings = await AnalyzeAsync();
 
@@ -202,18 +256,20 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
     }
 
     [Fact]
-    public async Task Report_A_Clone_Once_Not_Once_Per_Window_For_AnalyzeAsync()
-    {
-        // Regression: extension walks backwards one token at a time, so a
-        // 220-token clone between two files arrives as ~140 nested matches.
-        // Collapsing them is what keeps one clone to one finding per occurrence.
-        var findings = await AnalyzeAsync();
+public async Task Report_A_Clone_Once_Not_Once_Per_Window_For_AnalyzeAsync()
+        {
+            // Regression: extension walks backwards one token at a time, so a
+            // 220-token clone between two files arrives as ~140 nested matches.
+            // Collapsing them is what keeps one clone to one finding.
+            var findings = await AnalyzeAsync();
 
-        var seed = findings.Where(f => f.FilePath.EndsWith("CloneFixtures.cs", StringComparison.Ordinal)).ToList();
+            var seed = findings
+                .Where(f => FilesOf(f).Contains("CloneFixtures.cs", StringComparer.Ordinal))
+                .ToList();
 
-        seed.Should().NotBeEmpty();
-        seed.Select(f => f.LineNumber).Should().OnlyHaveUniqueItems();
-    }
+            seed.Should().NotBeEmpty();
+            seed.Select(f => (f.FilePath, f.LineNumber, f.CharacterOffset)).Should().OnlyHaveUniqueItems();
+        }
 
     [Fact]
     public async Task Report_The_Rule_Id_Contract_For_CliRunner()
