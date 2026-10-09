@@ -86,19 +86,41 @@ default is for. The worst offenders are real: a 50-parameter test-double factory
 mapper at **31**, a status formatter at **29**. Verified by hand against the first one — a chain of
 `if (x is not null)` guards, one per parameter — and the count is right.
 
-## The open decision this creates for the owner
+## The threshold decision, and how the 29 are handled
 
 Dogfooded on Snipper itself at threshold 15, the rule reports **29 findings in its own codebase** —
 against a report of 32 total. `CliRunner.AnalyzeAsync` is 59, `HierarchyDeadCodeAnalyser` 67,
 `CommandLineParser` 42.
 
 That is not a defect in the rule. Snipper is nineteen branch-heavy analysers in one repository, so
-its complexity profile is nothing like ordinary application code. But it is a real consequence:
-enabling this on a CI gate adds 29 findings on day one. The options are
+its complexity profile is nothing like ordinary application code.
 
-- keep 15 and triage or suppress the 29,
-- raise the default to 20 (~18 on MILKRUN, ~12 here), or
-- make the rule opt-in, like `--config-analysis` and `--duplicate-detection`.
+**Decision: keep the threshold at 15, and accept the existing 29 through a baseline** rather than
+suppressing the rule.
 
-Left as a decision, not silently resolved. It should not be decided by whoever writes the next
-commit.
+The suppression channels are coarser than this problem needs, which is what settles it. There is no
+per-finding suppression: the available channels are `rules.SNxxxx: "off"` (whole rule), `exclude.paths`
+(a glob, which would also hide *every other rule's* findings in those files), and a tier override.
+Any of those would leave the rule with no CI value at all, which defeats the purpose of adding it.
+
+`snipper-baseline.json` is the right instrument, and it already exists for exactly this. Fingerprints
+are content hashes over rule + relative path + message; existing findings are recorded as accepted and
+only **new** ones are reported. So the repo is green on day one, and any method that newly crosses 15
+fails the build. The 29 can be refactored down over time and drop out of the baseline as they go.
+
+Recorded as 32 fingerprints (29 SNP0033 plus the 2 pre-existing SNP0019 and 1 SNP0024), stamped at the
+commit they were taken from.
+
+**One hazard this design carries, stated plainly.** The fingerprint includes the message, and the
+message carries the complexity number. So refactoring a method from 22 down to 19 — still over the
+threshold — produces a *new* fingerprint and leaves a stale entry, showing up as one new finding plus
+one obsolete suppression. That is arguably correct behaviour (the finding genuinely changed) and it is
+the price of "triageable without re-running anything". A refactor that drops a method below 15
+removes the finding entirely and churns nothing. Recorded here because it is the kind of thing that
+looks like a bug the first time someone hits it.
+
+## Not in this release
+
+- **Cognitive complexity.** Deliberately excluded: a different algorithm with its own unit, threshold
+  semantics and calibration. Classical is what "cyclomatic complexity" means in a code review, and
+  shipping one well-calibrated metric beats two. It would be a clean follow-up.

@@ -76,7 +76,7 @@ internal static class CommandLineParser
         "[[--exclude-namespaces <list>]] [[--config-analysis]] [[--duplicate-detection]] " +
         "[[--clone-drift]] [[--audit-suppressions]] [[--entropy-rate]] " +
         "[[--entropy-budget <per-kloc>]] [[--entropy-ledger <path>]] " +
-        "[[--entropy-min-lines <n>]] [[--version]]";
+        "[[--entropy-min-lines <n>]] [[--max-complexity <n>]] [[--version]]";
 
     public static bool TryParse(string[] args, out CommandLineOptions options, out string? error)
     {
