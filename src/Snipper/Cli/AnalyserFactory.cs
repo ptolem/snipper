@@ -47,9 +47,10 @@ internal static class AnalyserFactory
             new WriteOnlyFieldAnalyser(exclusions),
             new RedundancyAnalyser(exclusions),
             new HierarchyDeadCodeAnalyser(exclusions),
-            new TighteningAnalyser(exclusions),
-            new EventNeverInvokedAnalyser(exclusions),
-        };
+new TighteningAnalyser(exclusions),
+              new EventNeverInvokedAnalyser(exclusions),
+              new CyclomaticComplexityAnalyser(exclusions, options.MaxCyclomaticComplexity),
+          };
 
         if (options.IncludeConfigAnalysis)
         {

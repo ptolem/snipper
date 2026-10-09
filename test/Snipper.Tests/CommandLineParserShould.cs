@@ -394,23 +394,23 @@ public class AnalyserFactoryShould
         };
 
     [Fact]
-    public void Build_The_Default_Seventeen_Analysers()
+    public void Build_The_Default_Eighteen_Analysers()
     {
         var built = AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".");
 
-        built.Should().HaveCount(17);
+        built.Should().HaveCount(18);
     }
 
     [Fact]
     public void Add_The_Opt_In_Analysers_Only_When_Asked()
     {
-        AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".").Should().HaveCount(17);
+        AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".").Should().HaveCount(18);
         AnalyserFactory.Build(Options(configAnalysis: true), AnalysisExclusions.None, ".")
-            .Should().HaveCount(18);
-        AnalyserFactory.Build(Options(duplicateDetection: true), AnalysisExclusions.None, ".")
-            .Should().HaveCount(18);
-        AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), AnalysisExclusions.None, ".")
             .Should().HaveCount(19);
+        AnalyserFactory.Build(Options(duplicateDetection: true), AnalysisExclusions.None, ".")
+            .Should().HaveCount(19);
+        AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), AnalysisExclusions.None, ".")
+            .Should().HaveCount(20);
     }
 
     [Fact]
@@ -435,7 +435,7 @@ public class AnalyserFactoryShould
         var built = AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), AnalysisExclusions.None, ".");
         var partition = AnalyserFactory.PartitionByExclusionSensitivity(built);
 
-        partition.Aware.Should().HaveCount(15);
+        partition.Aware.Should().HaveCount(16);
         partition.Agnostic.Select(a => a.GetType().Name).Should().BeEquivalentTo(
         [
             "UnreferencedPackageAnalyser",

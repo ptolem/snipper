@@ -97,7 +97,7 @@ flowchart TB
         subgraph PROC["Analysis process"]
             direction TB
             AR{{"<b>AnalysisRunner</b><br/>warm-up + parallel fan-out"}}
-            AN["<b>19 analysers</b><br/><i>IWorkspaceAnalyser</i><br/>SNP0001-SNP0032"]
+            AN["<b>20 analysers</b><br/><i>IWorkspaceAnalyser</i><br/>SNP0001-SNP0033"]
             IDX["<b>Shared indexes</b><br/><i>solution-keyed, memoized</i><br/>usage / framework / inheritance / packages"]
         end
 

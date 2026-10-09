@@ -53,6 +53,8 @@ mid-name or absent. `git mv` was used throughout so history follows the rename.
 | 1.7.4 | [`1_7_4_plan.md`](1_7_4_plan.md) | Namespace exclusion reaching file-scope code via the shared `<global>` marker; **and a suspected second defect withdrawn before any code was written.** |
 | 1.7.5 | [`1_7_5_plan.md`](1_7_5_plan.md) | Data-structure and allocation audit, measured on the 3,864-file MILKRUN monorepo. **Contains an extrapolation caught by measurement, and three suggested fixes rejected against the real API.** |
 
+- **1.8.0 - SNP0033 cyclomatic complexity (in progress).** Classical ReSharper parity, counting table as the contract: [1_8_0_plan.md](1_8_0_plan.md)
+
 ### Specs, by wave
 
 | Version | Document | What it covers |

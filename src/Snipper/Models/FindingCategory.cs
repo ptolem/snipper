@@ -27,5 +27,6 @@ public enum FindingCategory : byte
     EmptyTypeMember = 23,
     UnusedEvent = 24,
     DuplicateFragment = 25,
-    CloneDrift = 26
+    CloneDrift = 26,
+    Complexity = 27
 }

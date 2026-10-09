@@ -38,6 +38,12 @@ internal sealed record CommandLineOptions
 
     public int EntropyMinimumLines { get; init; }
 
+/// <summary>
+    /// Branch count above which a method is reported by SNP0033. Defaults to
+    /// <see cref="CyclomaticComplexityAnalyser.DefaultMaxComplexity"/>.
+    /// </summary>
+    public int MaxCyclomaticComplexity { get; init; } = CyclomaticComplexityAnalyser.DefaultMaxComplexity;
+
     public FrozenSet<string> ExcludedNamespaces { get; init; } = FrozenSet<string>.Empty;
 
     /// <summary>
@@ -103,6 +109,7 @@ internal static class CommandLineParser
         double? entropyBudget = null;
         string? entropyLedgerPath = null;
         var entropyMinimumLines = EntropyRateCalculator.DefaultMinimumLines;
+        var maxCyclomaticComplexity = CyclomaticComplexityAnalyser.DefaultMaxComplexity;
         var excludedNamespaces = new List<string>();
         var malformedNamespaces = new List<string>();
 
@@ -188,6 +195,17 @@ internal static class CommandLineParser
                 entropyRateRequested = true;
                 i++;
             }
+            else if (string.Equals(args[i], "--max-complexity", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out var complexityMax) || complexityMax < 1)
+                {
+                    error = "Error: --max-complexity requires a positive integer.";
+                    return false;
+                }
+
+                maxCyclomaticComplexity = complexityMax;
+                i++;
+            }
             else if (string.Equals(args[i], "--exclude-namespaces", StringComparison.OrdinalIgnoreCase))
             {
                 // Repeatable flag; each occurrence may carry a comma-separated list.
@@ -265,6 +283,7 @@ internal static class CommandLineParser
             EntropyBudget = entropyBudget,
             EntropyLedgerPath = entropyLedgerPath,
             EntropyMinimumLines = entropyMinimumLines,
+            MaxCyclomaticComplexity = maxCyclomaticComplexity,
             ExcludedNamespaces = excludedNamespaces.ToFrozenSet(StringComparer.Ordinal),
             MalformedNamespaces = malformedNamespaces,
         };
