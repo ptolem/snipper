@@ -579,6 +579,21 @@ pipeline. Adopt it before adding any gate.
       "lineNumber": 109,
       "characterOffset": 8,
       "lineText": "    private static IEnumerable<string> CollectFiles(..."
+    },
+    {
+      "ruleId": "SNP0031",
+      "title": "Duplicate Clone Set",
+      "message": "70-token block (10 lines) duplicated 257 time(s) across 13 file(s).",
+      "certainty": "Advisory",
+      "category": "DuplicateFragment",
+      "filePath": "src/Contracts/Cart/CartDto.cs",
+      "lineNumber": 18,
+      "characterOffset": 4,
+      "lineText": "    public sealed class CartDto {",
+      "relatedLocations": [
+        { "filePath": "src/Contracts/Orders/OrderDto.cs", "lineNumber": 18 },
+        { "filePath": "src/Contracts/Billing/InvoiceDto.cs", "lineNumber": 22 }
+      ]
     }
   ],
   "suppression": { "...": "present with --audit-suppressions" },
@@ -589,6 +604,24 @@ pipeline. Adopt it before adding any gate.
 `suppression` and `entropyRate` are optional sections, present only when the corresponding option was
 used. Every finding carries `lineText`, so a consumer can verify a finding still matches before
 applying it — useful for a gate that auto-fixes.
+
+#### `relatedLocations` (SNP0031, since 1.9.0)
+
+`relatedLocations` is **optional and omitted entirely when absent**, so a consumer should read it as
+`finding.relatedLocations ?? []`. It appears only on SNP0031.
+
+Since 1.9.0 SNP0031 reports **one finding per clone set** rather than one per copy. The finding's own
+`filePath`/`lineNumber`/`characterOffset` anchor the set, and every other copy in the set is listed in
+`relatedLocations`. A set of 257 copies is **one** finding with 257 locations, not 257 findings.
+
+Two consequences to plan for:
+
+- **Triage is now set-oriented.** Iterating findings and treating each as a separate issue will
+  under-count duplications by roughly the average set size (4 copies on the reference repo). Iterate
+  `relatedLocations` to see the copies.
+- **Baselines must be re-generated once.** The fingerprint covers the message, and the message now
+  carries the *set* size, so a set whose size changes produces a new fingerprint. Everything up to and
+  including 1.8.x used per-copy messages.
 
 `filePath` in the report is **relative to the target's directory** (forward slashes), whereas globs
 match the **absolute** path. That asymmetry is the source of the glob footgun above.
@@ -606,6 +639,10 @@ consumers.
   findings that survived it. The SARIF file therefore does not distinguish new from pre-existing — it
   is already filtered. Upload the JSON alongside if you need the distinction.
 - **No suppression or entropy section.** Both are JSON-only.
+- **Clone sets use native `relatedLocations`.** Since 1.9.0 an SNP0031 result anchors one clone set and
+  lists the other copies under `locations[0].relatedLocations`, which is why one 257-copy set is a single
+  SARIF result. Consumers that read only `locations` will see the anchor and miss the copies; read
+  `relatedLocations` too.
 
 ---
 

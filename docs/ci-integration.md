@@ -543,13 +543,19 @@ The things most likely to cost you time. Each is a real, verified behaviour, not
 13. **The audit has no exit code.** To make dead suppressions blocking, gate on the JSON.
 14. **CPU count changes timings, not results.** Output is deterministic, but if you shard by target
     you must deduplicate across shards.
-15. **A duplicate-detection gate on an unbaselined monorepo will fire constantly.** SNP0031 emitted
-    ~4,200 findings on an 81-project monorepo — about two thirds of that repo's entire report. The
-    productive question was never "is there duplication" (there always is) but "is any of it *worth*
-    removing", and the honest answer from a first-800 sweep was mostly no: additive configuration,
-    threshold constants, and uniform declarations are duplication by design. If you gate on SNP0031,
-    gate on **new** findings via a committed baseline, and expect to spend the first month tuning
-    rather than deleting.
+15. **A duplicate-detection gate on an unbaselined monorepo will fire constantly.** Before 1.9.0 SNP0031
+      emitted ~4,200 findings on an 81-project monorepo — about two thirds of that repo's entire report.
+      Per-set reporting cut that to 1,092 (−45% of the whole report) without hiding a single copy, so the
+      *volume* objection is addressed; the underlying advice stands. The productive question was never "is
+      there duplication" (there always is) but "is any of it *worth* removing", and the honest answer
+      from a first-800 sweep was mostly no: additive configuration, threshold constants, and uniform
+      declarations are duplication by design. If you gate on SNP0031, gate on **new** findings via a
+      committed baseline, and expect to spend the first month tuning rather than deleting.
+
+      **If your baseline predates 1.9.0, re-baseline before gating.** SNP0031 fingerprints cover the
+      message, which now carries the clone *set* size rather than a per-copy description, so every
+      pre-1.9.0 SNP0031 entry reads as new on the next run. It is a one-time cost, but it will look like
+      a mass of new findings if you are not expecting it.
 16. **Measure duplicate-detection cost on an idle machine or not at all.** On a loaded agent the same
     configuration measured 138 s and 240 s on consecutive runs, and the marginal cost of the flag sat
     inside that noise. Do not derive an SLA from a single run; take a minimum-of-N, and never

@@ -253,7 +253,7 @@ here, not in [`competitive-analysis.md`], because the sweep measured them on a r
 | **F5** | SNP0032 | The fix-shape marker matcher promotes non-defensive text to `High` (≈17 cases). The matcher is deliberately loose in the safe direction, so this is a precision problem, not a soundness one. | ~17 | **Open.** Lower tier first, tighten second. |
 | **F6** | several | Four remaining single-finding classes, each needing its own evidence channel. | 4 | **Open.** Individually trivial; collectively a pattern (see below). |
 | **Normalisation** | SNP0031 | The study's largest *misattribution*: the DI-registration family is not a hash collision at all, it is over-aggressive token normalisation collapsing unrelated registrations into one shape. | — | **Open, and reclassified.** 1.7.3 fixed the collision bug; this is a different problem that the earlier draft conflated with it. |
-| **Per-set reporting** | SNP0031 | Output is per-fragment, so one 30-fragment skeleton reads as 30 findings and a threshold table reads as hundreds. 1.7.1's no-go on tuning was correct *and* its premise was half wrong — the 4,373 included ~232 collisions that should never have been reported. | ~4,200 total | **Open — the largest lever.** Report clone sets with member counts rather than fragments. |
+| ~~**Per-set reporting**~~ | SNP0031 | Output was per-fragment, so one 30-fragment skeleton read as 30 findings and a threshold table read as hundreds. 1.7.1's no-go on tuning was correct *and* its premise was half wrong — the 4,373 included ~232 collisions that should never have been reported. | ~4,200 total | **SHIPPED in 1.9.0** — 4,375 → 1,092 on the owner's monorepo, −45% of the whole report, all 4,375 copies preserved as related locations. [`1_9_0_plan.md`](history/1_9_0_plan.md) |
 | **Clone-set breakup** | SNP0032 | A one-sided fix still in place removes the copies from the clone set, so 4C is silent about the case it exists to find. | — | **Open.** The documented blind spot since 1.7.0. |
 
 **The pattern worth naming:** F2, F3 and F6 are all the same defect — *a rule has no channel for
@@ -261,10 +261,11 @@ evidence that only exists outside the compiler's model* (serialiser contracts, J
 dispatch). F1 was the one case where the evidence already existed and the rule simply did not consult
 it. That is a cheaper class of fix, and it is where a new rule should look first.
 
-**Sequencing note:** per-set reporting is the highest-value item and is independent of the evidence
-work. F5 can ship in isolation at low risk. F2/F3 should ship together or not at all, since they need
-the same channel. Normalisation should not be attempted before per-set reporting lands, because the
-two interact — collapsing fewer skeletons is a different change from reporting them once.
+**Sequencing note:** per-set reporting shipped in 1.9.0 and was, as expected, independent of the
+evidence work. **It is also what unblocks normalisation**, which was deliberately held until now:
+collapsing fewer skeletons is a different change from reporting them once, and doing them together would
+have made neither measurable. Normalisation is therefore the natural next release. F5 can ship in
+isolation at low risk. F2/F3 should ship together or not at all, since they need the same channel.
 
 ---
 
