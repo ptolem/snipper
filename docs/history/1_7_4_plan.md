@@ -132,9 +132,12 @@ same fixture-that-proves-nothing pattern 1.7.3 found in `SampleApp`, in a smalle
 
 ## Effect
 
-580 → 590 tests. Nine added: five namespace-exclusion regressions, two SNP0019 cross-file
+581 → 590 tests. Nine added: five namespace-exclusion regressions, two SNP0019 cross-file
 regressions, two CLI-parser tests replacing the config-only assertion. No production finding count
 changes unless `<global>` is configured.
 
-Release convention note: `Snipper.1.7.4.nupkg` is packed; `dotnet tool update --global` has not
-been run, so the installed tool still reports 1.7.3.
+Release convention note: `Snipper.1.7.4.nupkg` is packed and `dotnet tool update --global` has been
+run against it, so the installed tool reported 1.7.4 from this release onward. (This line originally
+said the install had not been run and the tool still reported 1.7.3 — accurate when written, and
+wrong for every reader after the install. Stale release state is worth correcting rather than
+leaving to be discovered by someone who believes it.)
