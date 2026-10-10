@@ -1,7 +1,7 @@
 # Snipper Feature-Parity Roadmap (Waves 1–4)
 
 **Date:** 2026-09-15 · **Updated:** 2026-10-06 · **Baseline:** Snipper 1.1.2 (15 rules, 98 tests) · **Source analysis:** [`competitive-analysis.md`](competitive-analysis.md)
-**Current release:** **1.9.0** — 29 rule IDs (SNP0001–0013, 0018–0033), 20 analysers, **610 tests**. Waves 1–3 and Wave 4 (4A/4A-2/4B/4C) are all shipped; 1.7.1–1.7.4 were a correctness pass over Wave 4's output, found by reviewing real findings rather than by tests. **1.7.5 is a measurement release**: a repeatable performance harness (`scripts/measure-run.ps1`) plus a MILKRUN audit that fixed what was measurably fixable, documented two negative results that close off whole lines of enquiry, and recorded that report output is *not* stable across sessions on a target whose restore state can move under the tool. Details and numbers in [`history/1_7_5_plan.md`](history/1_7_5_plan.md). The open backlog is in [Next up](#next-up--the-17x-false-positive-backlog). **This document is current.** Every plan, wave spec, FP review and retrospective it cites is superseded and lives in [`history/`](history/README.md), version-prefixed — including several that record a no-go or a reversal.
+**Current release:** **1.10.0** — 29 rule IDs (SNP0001–0013, 0018–0033), 20 analysers, **610 tests**. Waves 1–3 and Wave 4 (4A/4A-2/4B/4C) are all shipped; 1.7.1–1.7.4 were a correctness pass over Wave 4's output, found by reviewing real findings rather than by tests. **1.7.5 is a measurement release**: a repeatable performance harness (`scripts/measure-run.ps1`) plus a MILKRUN audit that fixed what was measurably fixable, documented two negative results that close off whole lines of enquiry, and recorded that report output is *not* stable across sessions on a target whose restore state can move under the tool. Details and numbers in [`history/1_7_5_plan.md`](history/1_7_5_plan.md). The open backlog is in [Next up](#next-up--the-17x-false-positive-backlog). **This document is current.** Every plan, wave spec, FP review and retrospective it cites is superseded and lives in [`history/`](history/README.md), version-prefixed — including several that record a no-go or a reversal.
 **Status:** Wave 1 SHIPPED 2026-09-17 as 1.2.0 (16 rules, 127 tests). Wave 2 COMPLETE 2026-09-18 — 2A as 1.3.0, 2B as 1.3.1 (19 rules, 158 tests). Wave 3 SHIPPED 2026-09-18 as 1.4.0 (22 rules, 188 tests) — roadmap complete through the committed waves. 1.4.1 (2026-09-18): hotfix — invocation speculation guarded against conditional access (`?.`), fixing an SNP0022/SNP0025 crash (Roslyn speculative binder NRE on `MemberBindingExpression`). 1.4.2 (2026-09-18, 192 tests): perf wave — shared `SolutionReferenceIndex` (one semantic harvest replacing per-candidate `FindReferencesAsync` storms in SNP0005/0006 incl. both rescue passes, and absorbing SNP0003/0004's usage sweep), `UnreachableCodeGate` syntax pre-filter for flow analysis (SNP0002/0009), SNP0019 single-pass per-project diagnostics. Monorepo validation pending user A/B (doctrine gate: SNP0005/0006 reduction OK, increase blocks; other rules count-identical). 1.4.3 (2026-09-18, 195 tests): hotfix — the index gained the unconfirmed-name evidence tier (broken bindings / dynamic receivers), replicating FindReferencesAsync's candidate-location doctrine; fixes the SNP0005/0006 false-positive flood reported on the user's monorepo (interface-dispatched domain entities). Monorepo A/B remains the acceptance test. 1.4.4 (2026-09-18, 191 tests): perf-wave index REVERTED — the monorepo gate was breached (SNP0005/0006 findings 1,532 → 3,769 despite both doctrine fixes; root cause unsolved, hypotheses in [`1_4_4_perf_wave_retrospective.md`](history/1_4_4_perf_wave_retrospective.md)). SNP0005/0006 and SNP0009's slow path back to `FindReferencesAsync`/`SymbolReferenceQuery`, `SymbolUsageCollector` restored. Kept: `UnreachableCodeGate` (SNP0002/0009 flow pre-filter, monorepo SNP0002 47.1s → 24.2s), SNP0019 single-pass diagnostics (14.2s → 6.4s), 1.4.1 `?.` guard. 1.5.0 (2026-09-19, 209 tests): **Wave 4 framework evidence** ([`1_5_0_phase3_wave4.md`](history/1_5_0_phase3_wave4.md)) — SNP0005/0006 learn to recognise framework-invoked members: `FrameworkEvidenceIndex` (STJ `[JsonSerializable]` contexts, serializer call sites, Refit signatures, `[FromBody]` binding, GraphQL response contracts → transitive DTO closure; DI/framework registration shapes → contract implementations; middleware + FluentValidation conventions; member-level serialization attributes) plus record-protocol `Deconstruct` exemption. Monorepo A/B: SNP0006 1,515 → 1,090 (−28%), all other rules count-identical (SNP0023 0 → 2 = parity with 1.4.1/1.4.3; the 1.4.4 "0" was a stale-report artifact). 1.5.1 (2026-09-19, 213 tests): Wave 4 course-correction — plain DI registration is no longer evidence (calls through a registered contract are ordinary visible references; 1.5.0 wrongly suppressed uncalled contract members on registered types, e.g. `CartRepository.GetActiveCart`). Registration-shape evidence replaced by framework-dispatched CONTRACT evidence (`IHealthCheck`, `IFusionCacheSerializer`, `IHostedService`, `IExceptionHandler`, OpenAPI filters/transformers), which also catches shapes registration-scanning missed (instance registrations, `SchemaFilter<T>`). Monorepo A/B vs 1.5.0: +36 restored true positives, −5 additional genuine FPs. 1.5.2 (2026-09-19, 217 tests): correctness + perf patch per the approved gap-filler/perf plan. (a) Snipper's own report JSONs no longer feed string-name evidence (content-sniff `"ruleId"` in `AssemblyNameEvidenceScanner`) — monorepo SNP0023 0 → 3, all three previously hidden by stale reports (the two attribute classes **plus `MilkrunDiscount`**, whose name a 1.4.4-era report spelled in unrelated finding paths — mechanism triple-confirmed). (b) `[JsonInclude]` private members are SNP0001 evidence (`FrameworkEvidenceIndex.HasMemberSerializationAttribute`). (c) `DiRegistrationScanner` syntax-first — semantic models only for registration-bearing documents. (d) Redundancy `?.`-guard per-tree memoized pre-clear (same accept/reject set). (e) **Parallelism adopted behind the revertible `SNIPPER_MAX_DOP` switch (default on):** per-document binding (`FrameworkEvidenceIndex`, `DiRegistrationScanner` pass 1) and — via the user-approved second spike — per-candidate `FindReferencesAsync` in SNP0005/0006 (two-phase restructure: sequential candidate enumeration, parallel searches, sorted output). Adoption gate: **0 finding drift on fixture2 (both modes, 23/25) and on the monorepo (2,323 findings, sequential vs parallel); monorepo SNP0005/0006 164.4s → 57.8s (−65%), total 309.9s → 211.3s (−32%)** — same-build back-to-back Debug runs. All other monorepo rules count-identical to 1.5.1. 1.6.0 (2026-09-19, 238 tests, 26 rule IDs): **Wave 5 gap-filler sweep** ([`1_6_0_phase3_wave5.md`](history/1_6_0_phase3_wave5.md)) — SNP0026 upcast variant (rebind-gated whole arguments + fixed-target contexts), SNP0024 can-be-private (locality proof over containing-type spans), SNP0028 redundant qualifiers (`this.` + qualified type names, speculation-gated), SNP0029 empty ctor/dtor, SNP0027 unused member hierarchy (override families with no external caller), SNP0030 event-never-invoked. Monorepo A/B vs 1.5.2: all pre-existing rules count-identical; +73 net findings across the new rules (21 can-be-private, 49 SNP0028, 2 SNP0029, 1 upcast; SNP0027/0030 zero on this codebase), all sampled findings explainable. Wave-time bug the A/B caught: SNP0027 family roots initially walked into metadata (empty finding path) — fixed pre-ship. 1.6.1 (2026-09-20, 252 tests): **external FP-review hardening** ([`1_6_1_fp_review.md`](history/1_6_1_fp_review.md)) — an apply-and-build-verify pass over 461 Guaranteed/High monorepo findings found 52 FPs/stale, 47 in one category. Fixed: SNP0003/SNP0004 now compute the **transitive consumer closure** (hub references flow downstream by default; `PrivateAssets="all"` blocks it) and SNP0004's **upstream exclusive flow** (removal evicts the reference's transitive project/package flow); SNP0026 suppresses casts on natural-type-less operands (collection expressions — the parenthesis-inherits-converted-type hole); SNP0019 calls out verbatim duplicates in the message; reports are stamped with `commitSha` + per-finding `lineText` (SARIF `snippet`) for mechanical drift checks. One claim disproven with an isolated repro: the three SNP0025 "FPs" are true positives (lambda output-inference + unique-interface inference both strip cleanly) — pinned in the fixture against future regression. Monorepo A/B vs 1.6.0: SNP0003 31 → 16, SNP0004 16 → 10, all three proven FP chains suppressed, remainders sampled-explainable. 1.6.2 (2026-09-20, 297 tests): **framework-evidence round 2** ([`1_6_2_fp_review.md`](history/1_6_2_fp_review.md)) - Advisory-tier FP review of the 1.6.1 monorepo report. Fixed: the 1.5.1 OpenApi transformer contract names were wrong (never matched; real names `IOpenApi*Transformer` + Swashbuckle `IDocumentFilter`/`IOperationFilter`); contract list gained Swashbuckle `IExamplesProvider`, xUnit (`IXunitSerializable`/`ITestCaseOrderer`/`IXunitTestCaseOrderer`), the MVC filter family, and MediatR pipeline middleware (request/notification handlers stay OUT - test-callable); framework-dispatched contract implementations are now evidence at the TYPE level too (scan-instantiated implementations carry no registration reference); new reflection plugin-by-scan evidence (`IsSubclassOf`/`IsAssignableFrom` bases → derived types, type-level only, simple-name closure). Two root-cause bugs: SNP0020 reported the trivia ANCHOR's location instead of the block's own (every finding misplaced; the "double emission" was two distinct blocks pinned to one method brace), and SNP0005/0006 proved applied attribute classes unreferenced because applications omit the `Attribute` suffix (usage-index short-spelling union). SNP0023 excludes `System.Attribute`-derived classes (terminal by convention). Same-tree monorepo A/B vs 1.6.1: SNP0006 1,125 → 1,085 (-40, all classified), SNP0023 3 → 1, SNP0020 12 → 12 (locations corrected), all other rules count-identical. 1.6.3 (2026-10-03, 353 tests): **SNP0031 duplicate-fragment detection shipped** ([`1_6_3_plan.md`](history/1_6_3_plan.md)) — Advisory, opt-in behind `--duplicate-detection`, syntax-only Type-1/Type-2 clone detection; opt-in + cross-directory guard + maximal-match collapse took dogfood from 1,160 findings to 2 (both triaged). Monorepo: 5,439 findings / 1,659 clone sets at 52.6 s marginal — **3.5× over the planned ≤15 s budget**, recorded honestly. Phase 0 prerequisite first: `pp\snipper` was reconciled onto trimmer's lineage (perf commit replayed as `8a6b58c`, tree hash unchanged, 4-way output parity verified), so 1.6.3 builds on real history. Wave 4 (below) was added 2026-10-03 from a competitive re-analysis that split detection parity from **entropy governance** — see [`competitive-analysis.md`](competitive-analysis.md) §3 and §6.**Wave 4 UPDATE 2026-10-05:** all of 4A, 4A-2, 4B and 4C are **SHIPPED as 1.7.0** (565 tests green; `<Version>` `1.7.0`, packed and installed), together with a performance/correctness increment that fixed a reproducible crash on 2 of 7 real solutions - see the 4D note below and [`1_7_0_plan.md`](history/1_7_0_plan.md) for the release gate. **4C's High tier was validated on the 2,763-file monorepo on 2026-10-05** (gate 5): it runs deterministically, fits its performance budget, and satisfies the Wave 4 exit criterion on its second branch - 29 High findings demoted to Advisory, 111 -> 82 - after four High-tier presentation defects were found and fixed. See [`1_7_0_plan.md`](history/1_7_0_plan.md) gate 5. **1.7.1 / 1.7.2 / 1.7.3 (SHIPPED 2026-10-05 → 2026-10-06)** — a correctness pass over Wave 4, not new features. All three defects (E1 clone-window verification, E2 file-creation drift, F1 SNP0019 double-report) and one withdrawn claim (F4) came from reviewing real findings on the owner's monorepo; **none was found by a test**, and the suite was green against a fixture that had never compiled. 6,893 → 6,625 findings on that monorepo. See the three sections below and [Next up](#next-up--the-17x-false-positive-backlog).
 
 ## Locked decisions
@@ -123,14 +123,25 @@ were real. Two engine-level defects accounted for 75.
 **Two proposals were withdrawn on evidence, not shipped.** SNP0012 (29 findings) looked like the same
 class of defect until an isolated repro showed removing the direct `Serilog` reference still compiles:
 the findings are true, and the rule is correctly tiered Moderate. And the investigation's own E1
-evidence example was mis-attributed - the DI-registration family it used is a *normalisation* problem
+evidence example was mis-attributed — the DI-registration family it used is a *normalisation* problem
 (every registration normalises to `ID . ID < ID , ID > ( ) ;`), not a hash collision. Both corrections
 are recorded in place.
 
-**What this changes for the roadmap.** The 1.7.1 SNP0031 no-go stands for *thresholds* - there is
-genuinely no trimmable tail - but the count it measured (4,373) included ~232 collisions and a
-large real-but-worthless bootstrap/const-table family. Per-set reporting is still the right lever for
-the latter, and it still needs its own plan.
+> **The normalisation attribution itself was later shown to be wrong, twice over.** Corrected
+> 2026-10-10: a consistent-rename (bijective identifier) check does **not** reject the DI family, because
+> `AddScoped<IFoo,Foo>` and `AddScoped<IBar,Bar>` *are* a consistent rename — the rule is correct to report
+> them. The mechanism proposed here does not exist. See the closed Normalisation row in §4.
+>
+> The second error was mine, and it is the reason this is written down rather than quietly deleted. Having
+> refuted the hash-collision theory in 1.7.3, I recorded *normalisation* as the residual explanation and
+> scheduled a release for it — on the strength of reading the code, not of testing the claim. A ten-minute
+> test refuted it. Meanwhile the thing nobody was looking at was a sets/copies accounting bug that had
+> shipped in every release from 1.0 and been invisible because per-fragment reporting hid it. A backlog item
+> is a hypothesis with a priority attached; the priority is not evidence for the hypothesis.
+
+**What this changes for the roadmap.** The 1.7.1 SNP0031 no-go stands for *thresholds* — there is
+genuinely no trimmable tail. Per-set reporting was the right lever for the const-table family and shipped
+in 1.9.0; the one-location-per-file accounting bug behind its inflated counts shipped in 1.10.0.
 
 ### 1.7.4 released 2026-10-06 - namespace exclusion could not reach file-scope code
 
@@ -252,8 +263,8 @@ here, not in [`competitive-analysis.md`], because the sweep measured them on a r
 | **F3** | SNP0018 | `[Obsolete]` members that are **live serialisation contracts** — the contract is alive, the type is not. | 48 of 49 (98%) | **Open.** Shares F2's missing evidence channel; build once, use twice. |
 | **F5** | SNP0032 | The fix-shape marker matcher promotes non-defensive text to `High` (≈17 cases). The matcher is deliberately loose in the safe direction, so this is a precision problem, not a soundness one. | ~17 | **Open.** Lower tier first, tighten second. |
 | **F6** | several | Four remaining single-finding classes, each needing its own evidence channel. | 4 | **Open.** Individually trivial; collectively a pattern (see below). |
-| **Normalisation** | SNP0031 | The study's largest *misattribution*: the DI-registration family is not a hash collision at all, it is over-aggressive token normalisation collapsing unrelated registrations into one shape. | — | **Open, and reclassified.** 1.7.3 fixed the collision bug; this is a different problem that the earlier draft conflated with it. |
-| ~~**Per-set reporting**~~ | SNP0031 | Output was per-fragment, so one 30-fragment skeleton read as 30 findings and a threshold table read as hundreds. 1.7.1's no-go on tuning was correct *and* its premise was half wrong — the 4,373 included ~232 collisions that should never have been reported. | ~4,200 total | **SHIPPED in 1.9.0** — 4,375 → 1,092 on the owner's monorepo, −45% of the whole report, all 4,375 copies preserved as related locations. [`1_9_0_plan.md`](history/1_9_0_plan.md) |
+| ~~**Normalisation**~~ | SNP0031 | *Closed by measurement, not by code.* The premise was that over-aggressive token normalisation collapsed unrelated DI registrations into one shape. Tested before changing anything: `AddScoped<IFoo,Foo>` vs `AddScoped<IBar,Bar>` **satisfies a bijective identifier map** — every left identifier maps to exactly one right and back. That is a genuine Type-2 rename clone, so the rule is correct to report it, and no normalisation change would remove it. There was nothing to normalise. | — | **CLOSED as a non-issue (1.10.0).** The DI family is real-but-worthless duplication by design, which is the already-documented tuning answer. |
+| **One location per file** | SNP0031 | A set reported **more copies than it had places**: 1,210 of 4,379 copies (27.6%) were a second-or-later fragment from a file already in the set. `duplicated 257 time(s) across 13 file(s)` meant 13 files with a constant table sliding through them at shifted token offsets, `CTConstants.cs` alone claiming 85. The `same-path` guard is on *pairs*, not on sets — A–B and B–C are both legal, so union-find merged them and A appeared twice. | 93 sets self-contradictory | **SHIPPED in 1.10.0** — copies 4,379 → 3,169, 0 sets list a file twice, 0 self-contradicting messages, every other rule byte-identical. [`1_10_0_plan.md`](history/1_10_0_plan.md) |
 | **Clone-set breakup** | SNP0032 | A one-sided fix still in place removes the copies from the clone set, so 4C is silent about the case it exists to find. | — | **Open.** The documented blind spot since 1.7.0. |
 
 **The pattern worth naming:** F2, F3 and F6 are all the same defect — *a rule has no channel for
@@ -261,11 +272,99 @@ evidence that only exists outside the compiler's model* (serialiser contracts, J
 dispatch). F1 was the one case where the evidence already existed and the rule simply did not consult
 it. That is a cheaper class of fix, and it is where a new rule should look first.
 
-**Sequencing note:** per-set reporting shipped in 1.9.0 and was, as expected, independent of the
-evidence work. **It is also what unblocks normalisation**, which was deliberately held until now:
-collapsing fewer skeletons is a different change from reporting them once, and doing them together would
-have made neither measurable. Normalisation is therefore the natural next release. F5 can ship in
-isolation at low risk. F2/F3 should ship together or not at all, since they need the same channel.
+**Sequencing note, rewritten 2026-10-10.** The old note said per-set reporting would "unblock
+normalisation" as the natural next release. That was wrong on both counts, and chasing it would have
+wasted a release. Per-set reporting shipped in 1.9.0; the follow-up investigation then found the
+**normalisation premise does not hold** — a bijective rename check does not reject the DI family, because
+the DI family genuinely *is* a consistent rename. There is no normalisation bug to fix.
+
+What the investigation found instead was worse than the item it replaced: sets reported **more copies
+than they had locations**, and the message contradicted itself in 93 sets. That shipped in 1.10.0. The
+lesson worth keeping is about the backlog's shape — an item's *diagnosis* is not evidence, and this one
+had survived 1.7.1 → 1.9.0 on the strength of a plausible mechanism that a ten-minute test refuted.
+
+Current order: **F5** can ship in isolation at low risk. **F2/F3** ship together or not at all, since
+they need the same evidence channel. **Cognitive complexity** (see below) is a new-signal item and is
+ranked *after* F2/F3 — see its own row for the reasoning.
+
+### Cognitive complexity (SNP0034 candidate) — researched 2026-10-10, not implemented
+
+Added at the owner's request during 1.10.0. **Research only; nothing implemented.** The question was
+whether SonarSource/ReSharper's *cognitive* complexity deserves a slot ahead of F2+F3.
+
+**What it is.** SonarSource's whitepaper (sonarsource.com/docs/CognitiveComplexity.pdf) defines it as a
+metric for how hard control flow is to *understand*, built from three rules: ignore structures that
+merely shorthand multiple statements, +1 for each break in linear flow, and +1 for each break that is
+*nested* inside another break. The nesting increment is the entire point — it is the one thing
+cyclomatic complexity structurally cannot express.
+
+The increment set is wider than a bare branch count: `if`/`else if`/`else`, ternary, `switch`, `for`,
+`foreach`, `while`, `do-while`, `catch`, labelled `goto`/`break`/`continue`, each method in a recursion
+cycle, and **sequences of binary boolean operators** — where `a && b && c || d || e` costs +3, because
+each *run* of like operators is one increment, not one per operator. Nesting-increasing structures
+include lambdas and nested functions, but a lambda's own body takes no structural increment (per the
+whitepaper's `myMethod2` example: total 2, with nesting level now 1). Implementation is spec version 1.2,
+dated 19 April 2017, and is stable across implementations — clang-tidy's
+`readability-function-cognitive-complexity` and SonarQube S3776 both implement it.
+
+**Default thresholds.** SonarQube **15** (documented as the S3776 default; the threshold is
+configurable). PMD uses 15. clang-tidy uses **25**. Note the source of SonarQube's 15 is not arbitrary:
+their own forum post on S3776 records that they *started* at cyclomatic's 10 and raised it to 15 after
+running the rule over real code — a calibration data point worth citing before picking Snipper's.
+ReSharper's own position could not be established: the official JetBrains plugin is
+*cyclomatic*, not cognitive, and defaults to 20 (per Carnegie Mellon risk bands). **Flagged as
+unverified — do not cite "ReSharper's cognitive default" without re-checking.**
+
+**(a) Genuinely different signal, not redundant?** **Yes, and specifically for nesting.** SNP0033 is
+classical cyclomatic: `Measure` seeds at 1 and adds 1 per decision point via `DescendantNodes`, which is
+depth-agnostic by construction. So a method with 6 sequential guard clauses and no nesting scores ~6
+under SNP0033 and scores far higher under cognitive — each guard nested inside the previous block's
+flow costs more than 1. Cyclomatic cannot distinguish "six flat branches" from "one branch wrapping five
+others"; cognitive is designed to. That is a real gap and a real new signal.
+
+The converse also holds and is worth stating: cognitive **discounts** long `&&`/`||` chains relative to
+cyclomatic, so a method can score *higher* on SNP0033 and lower on SNP0034. The two rules disagree by
+construction, which means the pair is genuinely more informative than either alone — and also that
+they need separate thresholds to avoid double-reporting the same method twice.
+
+**(b) Effort.** Cheap-to-moderate, not free. `CountDecisionPoints` is a `switch` over node kinds, so the
+node classification is reusable. But cognitive needs what cyclomatic does not compute at all: a
+**nesting level**, which means the walk must carry mutable state and switch from a flat
+`DescendantNodes` enumeration to a recursive descent that tracks depth, and it must know whether a
+construct is a nesting-increasing one. The boolean-sequence rule additionally needs
+**left-to-right traversal with previous-operator state**, which `DescendantNodes` does not guarantee in an
+order that makes "sequence of like operators" computable in one pass. So: reuses the node-kind table,
+replaces the traversal. Roughly a day of work plus a parity test suite against the spec's worked examples
+(the whitepaper's `myMethod` = 9 is a natural fixture). **Not** a one-line extension.
+
+**(c) Before or after F2+F3?** **After**, and the distinction is categorical rather than a matter of
+finding size. F2/F3 and cognitive are different *kinds* of work:
+
+| | F2/F3 | Cognitive |
+|---|---|---|
+| Kind | Fixes **existing false positives** | Adds a **new signal** |
+| Affects | Output you already ship | Output you'd opt into |
+| Cost of not doing it | 97 findings read as defects that aren't | Nothing is wrong |
+| Cost of doing it wrong | — | A new noisy rule, i.e. the same trust damage F2/F3 exist to repair |
+
+The repo's own convention already ranks this way — §4's closing paragraph names the pattern *"a rule has
+no channel for evidence that only exists outside the compiler's model"* and calls it the cheaper class of
+fix, explicitly the place a new rule "should look first." F2/F3 *are* that cheaper class. Building a new
+rule while 97 known-wrong findings sit in shipped output spends credibility to buy novelty.
+
+**(d) New rule, or a second metric on SNP0033?** **A new rule ID (SNP0034), and this matters more than it
+looks.** Both metrics attach to a function and both breach a threshold, so they will frequently fire on
+the same method — and because they disagree by construction, one method can breach one and not the other.
+Overloading SNP0033 with a mode flag would put a silently-swapped metric behind an ID whose name and
+documented meaning promise cyclomatic, which is precisely the "High tier fires on the wrong thing" failure
+already recorded against SNP0032. A separate ID keeps each metric's number interpretable and lets a
+consumer threshold them independently. The rule ID space is open (SNP0034 is unused).
+
+**Recommended slot: after F2/F3, before the non-duplication backlog (agent surface, architecture
+modelling).** Two things to settle when it is picked up: (1) calibrate the threshold on the reference
+monorepo rather than copying SonarQube's 15 — the 1.7.1 tuning no-go is a standing reminder that Snipper's
+codebase rewards different numbers; (2) decide whether to suppress one metric when the other fires, or
+report both and let the consumer threshold, and document which.
 
 ---
 

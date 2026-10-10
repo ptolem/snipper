@@ -612,16 +612,23 @@ applying it — useful for a gate that auto-fixes.
 
 Since 1.9.0 SNP0031 reports **one finding per clone set** rather than one per copy. The finding's own
 `filePath`/`lineNumber`/`characterOffset` anchor the set, and every other copy in the set is listed in
-`relatedLocations`. A set of 257 copies is **one** finding with 257 locations, not 257 findings.
+`relatedLocations`.
+
+**One location per file, since 1.10.0.** Each file appears at most once across a finding and its
+`relatedLocations`, so the copy count always equals the file count. Before 1.10.0 a set could list the same
+file many times — one constant table re-detected as the matching window slid down the file — and claim 257
+copies across 13 files. Multiple fragments in one file are now merged into a single location covering the
+whole duplicated region, so `lineNumber` marks the start of that region and not merely the first window that
+matched.
 
 Two consequences to plan for:
 
-- **Triage is now set-oriented.** Iterating findings and treating each as a separate issue will
-  under-count duplications by roughly the average set size (4 copies on the reference repo). Iterate
+- **Triage is set-oriented.** Iterating findings and treating each as a separate issue under-counts
+  duplications by roughly the average set size (≈3 copies on the reference repo after 1.10.0). Iterate
   `relatedLocations` to see the copies.
-- **Baselines must be re-generated once.** The fingerprint covers the message, and the message now
-  carries the *set* size, so a set whose size changes produces a new fingerprint. Everything up to and
-  including 1.8.x used per-copy messages.
+- **Baselines must be re-generated.** The fingerprint covers the message, and the counts in it changed in
+  both 1.9.0 (per-copy → per-set) and 1.10.0 (raw members → one per file). A consumer upgrading across
+  both re-baselines once.
 
 `filePath` in the report is **relative to the target's directory** (forward slashes), whereas globs
 match the **absolute** path. That asymmetry is the source of the glob footgun above.

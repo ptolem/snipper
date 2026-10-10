@@ -45,6 +45,34 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
         return files.Select(Path.GetFileName).ToList();
     }
 
+    /// <summary>
+    /// Every path a finding names, anchor included, unshortened.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="FilesOf"/> reduces to a basename, which is right for "was this file
+    /// reported" but wrong for uniqueness: two different files sharing a name are two
+    /// files. This variant keeps the path so "one location per file" is checked
+    /// against the file and not against its name.
+    /// </remarks>
+    private static IReadOnlyList<string> PathsOf(SnipperFinding finding)
+    {
+        var paths = new List<string> { finding.FilePath };
+        paths.AddRange(finding.RelatedLocations?.Select(r => r.FilePath) ?? []);
+        return paths;
+    }
+
+    /// <summary>Copy and file counts read back out of a SNP0031 message, or null.</summary>
+    private static (int Copies, int Files)? ParseCounts(string message)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            message,
+            @"duplicated (\d+) time\(s\) across (\d+) file\(s\)\.");
+
+        return match.Success
+            ? (int.Parse(match.Groups[1].Value), int.Parse(match.Groups[2].Value))
+            : null;
+    }
+
     [Fact]
     public async Task Emit_Nothing_Without_Duplicated_Fragments_For_A_Control_Only_Fixture()
     {
@@ -270,6 +298,122 @@ public async Task Report_A_Clone_Once_Not_Once_Per_Window_For_AnalyzeAsync()
             seed.Should().NotBeEmpty();
             seed.Select(f => (f.FilePath, f.LineNumber, f.CharacterOffset)).Should().OnlyHaveUniqueItems();
         }
+
+    [Fact]
+        public async Task Report_One_Location_Per_File_So_The_Copy_Count_Means_It_Says_For_AnalyzeAsync()
+    {
+        // The same-path guard skips a file matching ITSELF, not against its
+        // siblings, so A-B and B-C are both legal pairs and union-find merges
+        // them into a set holding A twice. Those were windows over one duplicated
+        // region, not separate copies, and the set claimed more copies than it
+        // had places. On the reference monorepo 1,210 of 4,375 copies (27.7%)
+        // were a second-or-later fragment from a file already in the set.
+        var findings = await AnalyzeAsync();
+
+        findings.Should().NotBeEmpty();
+
+        foreach (var finding in findings)
+        {
+            PathsOf(finding).Should().OnlyHaveUniqueItems(
+                $"{finding.RuleId} at {finding.FilePath}:{finding.LineNumber} lists one file more than once");
+        }
+    }
+
+    [Fact]
+    public async Task Report_The_Copy_Count_To_Equal_The_File_Count_For_AnalyzeAsync()
+    {
+        // "duplicated N time(s) across M file(s)" is only honest when N == M.
+        // The message asserts both, so a set that reported 85 copies in one file
+        // made the sentence contradict itself.
+        var findings = await AnalyzeAsync();
+
+        var counted = findings
+            .Select(finding => new
+            {
+                Finding = finding,
+                Parsed = ParseCounts(finding.Message),
+                Message = $"{finding.FilePath}:{finding.LineNumber} - {finding.Message}",
+            })
+            .Where(entry => entry.Parsed is not null)
+            .ToList();
+
+        counted.Should().NotBeEmpty();
+
+        foreach (var entry in counted)
+        {
+            var parsed = entry.Parsed!.Value;
+
+            parsed.Copies.Should().Be(parsed.Files, entry.Message);
+            parsed.Files.Should().Be(PathsOf(entry.Finding).Count, entry.Message);
+        }
+    }
+
+    [Fact]
+    public void Merge_Fragments_Of_One_File_Into_Their_Enclosing_Span()
+    {
+        // A const table slid through one file at shifted token offsets reports as
+        // windows at lines 6, 8, 9, 10 ... The merge reports the whole region.
+        var members = new List<CloneSetMember>
+        {
+            new("c.cs", 10, 5, 19),
+            new("c.cs", 8, 5, 17),
+            new("c.cs", 6, 5, 15),
+            new("d.cs", 6, 5, 15),
+        };
+
+        var collapsed = DuplicateFragmentAnalyser.CollapseToOneLocationPerFile(members);
+
+        collapsed.Should().HaveCount(2, "one location per file");
+        collapsed[0].Should().Be(new CloneSetMember("c.cs", 6, 5, 19));
+        collapsed[1].Should().Be(new CloneSetMember("d.cs", 6, 5, 15));
+    }
+
+    [Fact]
+    public void Keep_Disjoint_Regions_Of_One_File_Separate()
+    {
+        // Two genuinely disjoint duplicated blocks in one file stay disjoint: the
+        // spans do not touch, so there is one region to report, not two.
+        var members = new List<CloneSetMember>
+        {
+            new("a.cs", 10, 5, 20),
+            new("a.cs", 80, 5, 90),
+            new("b.cs", 10, 5, 20),
+        };
+
+        var collapsed = DuplicateFragmentAnalyser.CollapseToOneLocationPerFile(members);
+
+        // Merged per path, so a.cs is ONE location whose span covers both regions.
+        // They are not two copies: the file is where the duplication lives.
+        collapsed.Should().HaveCount(2);
+        collapsed[0].Should().Be(new CloneSetMember("a.cs", 10, 5, 90));
+        collapsed[1].Should().Be(new CloneSetMember("b.cs", 10, 5, 20));
+    }
+
+    [Fact]
+    public void Leave_A_Set_Of_One_File_Alone()
+    {
+        var members = new List<CloneSetMember> { new("only.cs", 3, 1, 9) };
+
+        DuplicateFragmentAnalyser.CollapseToOneLocationPerFile(members)
+            .Should().BeEquivalentTo(members);
+    }
+
+    [Fact]
+    public void Order_Collapsed_Locations_Deterministically()
+    {
+        // The anchor must not move between runs, so ordering cannot depend on
+        // group enumeration order.
+        var members = new List<CloneSetMember>
+        {
+            new("z.cs", 4, 1, 9),
+            new("a.cs", 40, 1, 49),
+            new("a.cs", 4, 1, 9),
+        };
+
+        var collapsed = DuplicateFragmentAnalyser.CollapseToOneLocationPerFile(members);
+
+        collapsed.Select(m => m.Path).Should().ContainInOrder("a.cs", "z.cs");
+    }
 
     [Fact]
     public async Task Report_The_Rule_Id_Contract_For_CliRunner()

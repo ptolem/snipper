@@ -241,11 +241,15 @@ public sealed class DuplicateFragmentAnalyser(
                     var left = candidates[i];
                     var right = candidates[j];
 
-                    if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
-                    {
-                        // One copy per path by design (decision 5).
-                        continue;
-                    }
+if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
+    {
+                            // A file is never matched against itself (decision 5). Note this is a
+                            // guard on PAIRS, not on sets: A-B and B-C are each legal, so union-find
+                            // merges them and A ends up in the set twice. BuildFindings collapses
+                            // that to one location per file - see CollapseToOneLocationPerFile -
+                            // so a set's copy count equals its file count.
+                            continue;
+                        }
 
                     if (!byPath.TryGetValue(left.Path, out var leftFile)
                         || !byPath.TryGetValue(right.Path, out var rightFile))
@@ -554,11 +558,31 @@ public sealed class DuplicateFragmentAnalyser(
                 continue;
             }
 
-            cloneSets.Add(new CloneSet(reported));
+            // One location per FILE. Same-path pairs are skipped when matching, but that
+            // guard is on PAIRS, not on sets: A-B and B-C are each legal, so union-find
+            // merges them into a set where A contributes twice. The set then claimed more
+            // copies than it had places, and a constant table slid through one file at a
+            // shifted offset reported as ~85 copies in a single file (measured: 1,210 of
+            // 4,375 copies, 27.7%, were a second-or-later fragment from a file already
+            // present). Fragments from one file are merged into their enclosing span so
+            // the copy count and the file count agree, and a merged member covers the
+            // whole duplicated region rather than the first window that matched.
+            var located = CollapseToOneLocationPerFile(reported);
 
-            var anchor = reported[0];
+            // Merging can leave a single file (every copy was the same one, merged).
+            // One surviving location still has no sibling to be duplicated from.
+            if (located.Count < 2)
+            {
+                continue;
+            }
+
+            cloneSets.Add(new CloneSet(located));
+
+            var anchor = located[0];
             var lines = anchor.EndLine - anchor.StartLine + 1;
-            var fileCount = reported.Select(m => m.Path).Distinct(StringComparer.Ordinal).Count();
+            // One location per file, so these are the same number by construction.
+            // Named once because the message asserts both and they must agree.
+            var fileCount = located.Count;
 
             // Every member of a set is token-identical by construction - that is what
             // shingling proved - so any member supplies the shared token count. Read from
@@ -566,10 +590,14 @@ public sealed class DuplicateFragmentAnalyser(
             // because CloneSet is also consumed by SNP0032.
             var tokenCount = members[0].TokenCount;
 
+            // Copies and files are the same number now, and the message says so twice
+            // deliberately: a set reports one location per file, so "33 time(s) across
+            // 9 file(s)" would be a sentence contradicting itself. Copying pre-merge
+            // count into this format string was the bug - 93 of 1,094 sets carried it.
             findings.Add(new SnipperFinding(
                 RuleId: "SNP0031",
                 Title: "Duplicate Clone Set",
-                Message: $"{tokenCount}-token block ({lines} lines) duplicated {reported.Count} time(s) across {fileCount} file(s).",
+                Message: $"{tokenCount}-token block ({lines} lines) duplicated {fileCount} time(s) across {fileCount} file(s).",
                 Certainty: CertaintyTier.Advisory,
                 Category: FindingCategory.DuplicateFragment,
                 FilePath: anchor.Path,
@@ -578,13 +606,68 @@ public sealed class DuplicateFragmentAnalyser(
                 Symbol: null,
                 RelatedLocations:
                 [
-                    .. reported
+                    .. located
                         .Skip(1)
                         .Select(m => new RelatedLocation(m.Path, m.StartLine)),
                 ]));
         }
 
         return (findings, cloneSets);
+    }
+
+    /// <summary>
+    /// Merges the members of one clone set so that each file contributes a single
+    /// location, ordered by <see cref="CloneSetMember"/> position.
+    /// </summary>
+    /// <remarks>
+    /// A file can hold several fragments of one set because the same-path guard skips
+    /// matching a file against <em>itself</em>, not against its siblings: A-B and B-C
+    /// are both legal pairs, so union-find merges them and A ends up twice. Those are
+    /// windows over one duplicated region rather than separate copies of it, so the
+    /// enclosing span is reported instead of each window separately. That makes the copy
+    /// count equal the file count, which is what "duplicated N times across M files"
+    /// has to mean for a set - and means the anchor covers the whole duplicated region.
+    ///
+    /// Members are grouped by path, so a file's fragments merge no matter where in the
+    /// set they sit. Overlap is handled by taking the widest span and the earliest
+    /// start, which is correct for fragments sliding through one region at shifted
+    /// offsets; two genuinely disjoint duplicated regions in one file stay disjoint,
+    /// because their spans do not touch.
+    /// </remarks>
+    internal static IReadOnlyList<CloneSetMember> CollapseToOneLocationPerFile(
+        IReadOnlyList<CloneSetMember> members)
+    {
+        if (members.Count < 2)
+        {
+            return members;
+        }
+
+        var merged = members
+            .GroupBy(static m => m.Path, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var ordered = group.OrderBy(m => m.StartLine).ThenBy(m => m.StartCharacter).ToList();
+                var startLine = ordered[0].StartLine;
+                var startCharacter = ordered[0].StartCharacter;
+                var endLine = ordered[0].EndLine;
+
+                foreach (var member in ordered)
+                {
+                    if (member.EndLine > endLine)
+                    {
+                        endLine = member.EndLine;
+                    }
+                }
+
+                return new CloneSetMember(
+                    ordered[0].Path, startLine, startCharacter, endLine);
+            })
+            .OrderBy(m => m.Path, StringComparer.Ordinal)
+            .ThenBy(m => m.StartLine)
+            .ThenBy(m => m.StartCharacter)
+            .ToList();
+
+        return merged;
     }
 
     /// <summary>
