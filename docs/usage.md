@@ -726,13 +726,28 @@ What changes for you when you upgrade, and whether it disturbs a baseline.
 | `1.7.3` | SNP0031 verifies all 60 window tokens before confirming a clone. The index is keyed on a 32-bit hash, so two unrelated files could collide into a finding. | Findings removed are the collisions — they were never real clones. |
 | `1.7.3` | The `SampleApp` test fixture compiles. This changes **no** production rule behaviour; it changes what the tests prove. | None. |
 | `1.7.4` | `--exclude-namespaces "<global>"` is accepted (it was rejected as malformed) and now suppresses file-scope findings for **every** namespace-aware rule, not just SNP0031. Findings in files declaring no namespace — top-level-statements `Program.cs`, files of global usings — were never suppressible by a namespace name. | None unless you configure `<global>`. Suppressed findings are recorded in the baseline as resolved; deleting the exclusion later does not resurface them as new. |
+| `1.9.0` | SNP0031 reports once per clone **set** rather than once per copy, and the message names the copies. Before 1.9.0 a file holding two copies of a set was reported twice, once per copy. | **Re-baseline.** The fingerprint covers the message, and both the count and the wording changed. Consumed by the `--clone-drift` suppressor, which resolves names rather than quoting them. |
+| `1.10.0` | SNP0031 lists each **file at most once** across a finding and its `relatedLocations`, so the copy count always equals the file count. Before 1.10.0 a set could report more copies than it had locations, and 93 sets contradicted their own message. | **Re-baseline.** Both counts in the message changed. Findings dropped by roughly the average set size (about 3 copies per set on the reference repo). |
+| `1.11.0` | SNP0006 and SNP0018 gained wire-contract evidence: minimal-API typed-result returns seed the DTO closure, the closure walks base types, obsolete enum ordinals are recognised, and used obsolete extension holders are rescued. | **Re-baseline.** 140 findings removed on the reference repo (SNP0018 49 to 1, SNP0006 1,647 to 1,558), none added. Nothing needs removing by hand - they simply stop being reported. |
+| `1.12.0` | SNP0032 `High` is now earned by a **shape** rather than a bare word: comments and string literals are stripped before matching, `Count`/`Length` need a following comparison, and an added line whose text already existed on the removed side is a rearrangement, not a fix. | **Re-baseline.** No finding is added or removed, but 13 on the reference repo change **tier**, and the tier is the first words of the message. Each therefore re-fingerprints and surfaces as new. This is the one release whose baseline effect is invisible in the finding count - see below. |
 
-**Finding-count changes are the only thing that moves a baseline.** Fingerprints are derived from the
-finding's identity, not from a version stamp, so a rule that emits the same finding produces the same
-fingerprint. A finding that disappears simply stops being reported, and the baseline refresh records
-that as resolved. The consequence worth planning for is on gates that count *new* findings: a rule
-getting quieter never creates new findings, so it can only make such a gate pass more often — it
-cannot make one fail spuriously.
+**Finding-count changes move a baseline, but they are not the only thing that does.** Fingerprints are
+derived from `RuleId | path | message` - no version stamp - so a rule that emits the same finding
+produces the same fingerprint, and a finding that disappears simply stops being reported and is
+recorded as resolved. That is why 1.7.2, 1.9.0, 1.10.0 and 1.11.0 all move the baseline: each changed
+counts that appear in the message.
+
+**`1.12.0` is the exception that proves the rule is about the message, not the count.** It added and
+removed nothing. Thirteen findings changed *tier* - from `One-sided defensive fix` to `One-sided
+change` - and because the tier opens the message, all thirteen re-fingerprinted and surfaced as new
+against a `1.11.0` baseline. A consumer reading only the finding count would have concluded nothing
+changed.
+
+The practical consequence for gates that count *new* findings is unchanged and worth restating: a
+rule getting quieter never creates new findings, so it can only make such a gate pass more often -
+it cannot make one fail spuriously. The hazard is the opposite one, and it is a **maintenance**
+cost: any edit to message wording re-fingerprints every finding that uses it, so a re-baseline is
+owed after an upgrade that only rewords output.
 
 The one upgrade hazard is `1.7.1`'s exit-code change, and it is a hazard only for a pipeline that was
 treating a **crash** as its failure signal. That still fails, just cleanly and with a message.
