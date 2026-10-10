@@ -8,11 +8,18 @@
   <ItemGroup>
     <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
     <ProjectReference Include="..\OrphanLib\OrphanLib.csproj" />
+    <!-- Wire-contract evidence (F2/F3): ASP.NET typed results, enum ordinal
+         contracts, extension-method holders. Program.cs calls into it so the
+         reference stays load-bearing for SNP0012/SNP0004. -->
+    <ProjectReference Include="..\WebLib\WebLib.csproj" />
     <!-- Hub reference: FacadeLib declares no API; it only carries TransitiveLib
          onward. Worker.cs uses TransitiveLib.TransitCatalog — the reference is
          load-bearing through its transitive flow, so SNP0004 must stay silent. -->
     <ProjectReference Include="..\FacadeLib\FacadeLib.csproj" />
     <PackageReference Include="Humanizer.Core" Version="2.14.1" />
+    <!-- WebLib carries a Microsoft.AspNetCore.App FrameworkReference; the
+         framework flows transitively, so App must reference it too. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <!-- Serilog.Sinks.Console requires Serilog >= 4.0.0: the direct Serilog reference
          is transitively supplied at the same version → SNP0012 target. Both are used
          in Worker.cs so SNP0003 stays silent. -->

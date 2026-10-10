@@ -391,4 +391,49 @@ public sealed class UnusedNonPrivateMemberAnalyserShould(SampleSolutionFixture f
             (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
             && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
     }
+
+    // -----------------------------------------------------------------------
+    // F2 — a DTO property a serializer writes has no C# reference. The wire
+    // shape is the evidence, and minimal-API typed results are where it starts.
+    // -----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("Sku")]                 // ordinary property on the base of the returned type
+    [InlineData("Quantity")]            // on the leaf
+    [InlineData("LegacyBaseField")]     // obsolete, and still on the wire
+    [InlineData("LegacyBaseFlag")]      // obsolete, non-string: the walk is not name-shaped
+    [InlineData("LegacyEnvelopeField")]
+    [InlineData("Term")]                // bound from the request by the model binder
+    public async Task Not_Flag_Members_Of_A_Minimal_Api_Wire_Contract_For_AnalyzeAsync(string memberName)
+    {
+        var findings = await new UnusedNonPrivateMemberAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains($"'{memberName}'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Flag_Members_Of_A_Type_No_Route_Or_Serializer_Returns_For_AnalyzeAsync()
+    {
+        // The negative control that makes the suppression meaningful: without it
+        // the theory above would pass on a rule that had simply stopped reporting.
+        var findings = await new UnusedNonPrivateMemberAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains("'Used'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Flag_Members_Behind_An_Application_Defined_MapGet_For_AnalyzeAsync()
+    {
+        // FakeRouter.MapGet shares the name but is not ASP.NET route mapping, so
+        // its handler's return type must not open a serialization closure.
+        var findings = await new UnusedNonPrivateMemberAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            (f.RuleId == "SNP0005" || f.RuleId == "SNP0006")
+            && f.Message.Contains("'PlainUnreferenced'", StringComparison.Ordinal));
+    }
 }

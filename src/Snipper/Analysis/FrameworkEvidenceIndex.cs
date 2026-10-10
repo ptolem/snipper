@@ -55,11 +55,45 @@ internal sealed class FrameworkEvidenceIndex
         "Head",
     }.ToFrozenSet(StringComparer.Ordinal);
 
+    // Parameters the model binder populates from the request. FromBody/FromForm
+    // bind a complex object; FromQuery/FromRoute/FromHeader bind scalars but may
+    // equally name a bound record; AsParameters binds a whole parameter object
+    // property-by-property. All four are framework-written members with no C#
+    // reference, so all four are serialization roots.
     private static readonly FrozenSet<string> BindingAttributeNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "FromBody",
         "FromForm",
+        "FromQuery",
+        "FromRoute",
+        "FromHeader",
+        "AsParameters",
     }.ToFrozenSet(StringComparer.Ordinal);
+
+    // ASP.NET Core minimal-API route mapping. The handler argument's declared
+    // return type is the response's wire shape - Ok<ResponseWrapper<T>> is the
+    // contract the client sees - so it seeds the DTO closure exactly as a
+    // Deserialize<T> type argument would. MapGroup is deliberately absent: it
+    // returns a RouteGroupBuilder, not a payload.
+    private static readonly FrozenSet<string> RouteMappingMethods = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "MapGet",
+        "MapPost",
+        "MapPut",
+        "MapDelete",
+        "MapPatch",
+        "MapHead",
+        "MapOptions",
+        "MapMethods",
+        "MapFallback",
+        "Map",
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    // The one ASP.NET Core type whose methods map a handler to a route. Every
+    // IEndpointRouteBuilder/RouteGroupBuilder mapping extension lives here, so a
+    // same-named helper method elsewhere cannot pose as a route mapping.
+    private const string EndpointRouteBuilderExtensionsMetadataName =
+        "Microsoft.AspNetCore.Builder.EndpointRouteBuilderExtensions";
 
     private static readonly FrozenSet<string> GraphContractNames = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -133,13 +167,16 @@ internal sealed class FrameworkEvidenceIndex
     }.ToFrozenSet(StringComparer.Ordinal);
 
     private readonly FrozenSet<INamedTypeSymbol> _serializationUsedTypes;
+    private readonly FrozenSet<string> _serializationUsedTypeNames;
     private readonly FrozenSet<INamedTypeSymbol> _reflectionDiscoveredTypes;
 
     private FrameworkEvidenceIndex(
         FrozenSet<INamedTypeSymbol> serializationUsedTypes,
+        FrozenSet<string> serializationUsedTypeNames,
         FrozenSet<INamedTypeSymbol> reflectionDiscoveredTypes)
     {
         _serializationUsedTypes = serializationUsedTypes;
+        _serializationUsedTypeNames = serializationUsedTypeNames;
         _reflectionDiscoveredTypes = reflectionDiscoveredTypes;
     }
 
@@ -214,7 +251,7 @@ internal sealed class FrameworkEvidenceIndex
             return false;
         }
 
-        if (_serializationUsedTypes.Contains(type))
+        if (_serializationUsedTypes.Contains(type) || _serializationUsedTypeNames.Contains(IdentityKeyOf(type)))
         {
             return true;
         }
@@ -238,6 +275,7 @@ internal sealed class FrameworkEvidenceIndex
     private static FrameworkEvidenceIndex Build(Solution solution)
     {
         var serializationSeeds = new ConcurrentBag<(Document Document, TypeSyntax Type)>();
+        var routeSeeds = new ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation)>();
         var scanSeeds = new ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation, string BaseName)>();
         var classRegistrations = new ConcurrentBag<(Document Document, TypeDeclarationSyntax Declaration, string Name, IReadOnlyList<string> BaseNames)>();
 
@@ -257,7 +295,7 @@ internal sealed class FrameworkEvidenceIndex
                     return;
                 }
 
-                CollectSeeds(document, root, serializationSeeds, scanSeeds, classRegistrations);
+                CollectSeeds(document, root, serializationSeeds, routeSeeds, scanSeeds, classRegistrations);
             });
 
         // Pass 2: resolve seed types. Per-document semantic binding parallelised
@@ -266,6 +304,7 @@ internal sealed class FrameworkEvidenceIndex
         // documents need a model.
         var seedTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         ResolveSeeds(serializationSeeds, seedTypes, normalizeToDefinition: false);
+        ResolveRouteHandlerReturns(routeSeeds, seedTypes);
 
         // Pass 3: DTO closure — public instance property/field types and generic
         // type arguments, transitively (handles Task<Dto>, IApiResponse<Dto>, and
@@ -293,6 +332,17 @@ internal sealed class FrameworkEvidenceIndex
                 continue;
             }
 
+            // Base types travel with the wire shape: a serializer writes every
+            // public property declared along the whole inheritance chain, not
+            // just the leaf's. Without this, seeding ListingProduct reached none
+            // of ListingProductBase's 32 response properties - the milkrun DTOs
+            // are overwhelmingly leaf-inherits-base, so the closure stopped one
+            // level short of almost every payload it was opened for.
+            if (definition.BaseType is { } baseType)
+            {
+                queue.Enqueue(baseType);
+            }
+
             foreach (var member in definition.GetMembers())
             {
                 if (member is IPropertySymbol { IsStatic: false } property && property.Type is INamedTypeSymbol propertyType)
@@ -316,13 +366,36 @@ internal sealed class FrameworkEvidenceIndex
 
         return new FrameworkEvidenceIndex(
             closure.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default),
+            closure.Select(IdentityKeyOf).ToFrozenSet(StringComparer.Ordinal),
             reflectionDiscoveredTypes);
+    }
+
+    /// <summary>
+    /// A compilation-independent identity for a type: fully-qualified name of the
+    /// generic <em>definition</em>, so the key is stable across constructions.
+    ///
+    /// This exists because symbol equality is not. A loaded solution can hold two
+    /// distinct compilations of one project, each with its own INamedTypeSymbol
+    /// for the same source type; a seed resolved from a dependent project's model
+    /// then fails a SymbolEqualityComparer lookup against the candidate resolved
+    /// from the defining project's own model, and a live wire contract is reported
+    /// as unreferenced. Milkrun demonstrated it exactly: 127 types appeared twice
+    /// in the closure under identical display names, and AddressResponseModel was
+    /// in the closure while its obsolete property was still being flagged.
+    ///
+    /// Consulted only after the symbol lookup misses, so the common same-
+    /// compilation case stays a hash lookup with no string built.
+    /// </summary>
+    private static string IdentityKeyOf(INamedTypeSymbol type)
+    {
+        return type.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
     }
 
     private static void CollectSeeds(
         Document document,
         SyntaxNode root,
         ConcurrentBag<(Document, TypeSyntax)> serializationSeeds,
+        ConcurrentBag<(Document, InvocationExpressionSyntax)> routeSeeds,
         ConcurrentBag<(Document, InvocationExpressionSyntax, string)> scanSeeds,
         ConcurrentBag<(Document, TypeDeclarationSyntax, string, IReadOnlyList<string>)> classRegistrations)
     {
@@ -345,6 +418,7 @@ internal sealed class FrameworkEvidenceIndex
 
                 case InvocationExpressionSyntax invocation:
                     CollectInvocationSeeds(document, invocation, serializationSeeds);
+                    CollectRouteSeed(document, invocation, routeSeeds);
                     CollectScanSeed(document, invocation, scanSeeds);
                     break;
 
@@ -463,6 +537,105 @@ internal sealed class FrameworkEvidenceIndex
                 serializationSeeds.Add((document, typeArgument));
             }
         }
+    }
+
+    /// <summary>
+    /// Minimal-API route mappings. Syntax-only gate on the method name; the
+    /// receiver/argument shapes are confirmed semantically in
+    /// <see cref="ResolveRouteHandlerReturns"/>. A handler passed as a method
+    /// group (not a lambda) is what carries a declared return type - a lambda
+    /// has none to read, so it contributes nothing and is ignored.
+    /// </summary>
+    private static void CollectRouteSeed(
+        Document document,
+        InvocationExpressionSyntax invocation,
+        ConcurrentBag<(Document, InvocationExpressionSyntax)> routeSeeds)
+    {
+        if (invocation.Expression is not MemberAccessExpressionSyntax memberAccess
+            || !RouteMappingMethods.Contains(memberAccess.Name.Identifier.Text))
+        {
+            return;
+        }
+
+        if (invocation.ArgumentList.Arguments.Any(static argument =>
+                argument.Expression is IdentifierNameSyntax or MemberAccessExpressionSyntax))
+        {
+            routeSeeds.Add((document, invocation));
+        }
+    }
+
+    /// <summary>
+    /// Resolves each mapped handler's declared return type and adds it to the
+    /// serialization seeds. <c>Ok&lt;ResponseWrapper&lt;T&gt;&gt;</c> is the exact
+    /// shape the client receives, so seeding it opens the same DTO closure a
+    /// <c>Deserialize&lt;T&gt;</c> argument would.
+    ///
+    /// The mapping call itself is confirmed semantically: an application-defined
+    /// <c>MapGet</c> helper must not open a closure. Handlers bound through
+    /// overload resolution (the usual case once a route has both a plain and a
+    /// cancellation-token overload) have no single <c>Symbol</c>, so
+    /// <c>CandidateSymbols</c> is consulted too.
+    /// </summary>
+    private static void ResolveRouteHandlerReturns(
+        ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation)> routeSeeds,
+        HashSet<INamedTypeSymbol> seedTypes)
+    {
+        if (routeSeeds.IsEmpty)
+        {
+            return;
+        }
+
+        var sync = new object();
+        Parallel.ForEach(
+            routeSeeds.GroupBy(static seed => seed.Document),
+            AnalysisParallelism.CreateOptions(CancellationToken.None),
+            group =>
+            {
+                var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
+                if (semanticModel is null)
+                {
+                    return;
+                }
+
+                foreach (var (_, invocation) in group)
+                {
+                    if (semanticModel.GetSymbolInfo(invocation).Symbol is not { } invoked
+                        || invoked.ContainingType?.ToDisplayString() != EndpointRouteBuilderExtensionsMetadataName)
+                    {
+                        continue;
+                    }
+
+                    foreach (var argument in invocation.ArgumentList.Arguments)
+                    {
+                        if (argument.Expression is not (IdentifierNameSyntax or MemberAccessExpressionSyntax))
+                        {
+                            continue;
+                        }
+
+                        foreach (var handler in HandlersOf(semanticModel, argument.Expression))
+                        {
+                            if (handler.ReturnType is INamedTypeSymbol returnType)
+                            {
+                                lock (sync)
+                                {
+                                    seedTypes.Add(returnType);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+    }
+
+    private static IEnumerable<IMethodSymbol> HandlersOf(SemanticModel semanticModel, ExpressionSyntax expression)
+    {
+        var symbolInfo = semanticModel.GetSymbolInfo(expression);
+        if (symbolInfo.Symbol is IMethodSymbol resolved)
+        {
+            return [resolved];
+        }
+
+        return symbolInfo.CandidateSymbols.OfType<IMethodSymbol>();
     }
 
     /// <summary>

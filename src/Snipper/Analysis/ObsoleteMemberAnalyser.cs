@@ -34,6 +34,8 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
         var findings = new List<SnipperFinding>();
         var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
         var usageIndex = SolutionUsageIndex.Get(solution);
+        var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
+        var enumOrdinals = EnumOrdinalContractIndex.Get(solution);
 
         // Sequential binding — workspace compilations are built with ConcurrentBuild=false.
         foreach (var project in solution.Projects)
@@ -83,7 +85,7 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
                         {
                             if (semanticModel.GetDeclaredSymbol(variable, cancellationToken) is { } fieldSymbol)
                             {
-                                await EvaluateCandidateAsync(fieldSymbol, attribute, project, solution, usageIndex, findings, cancellationToken).ConfigureAwait(false);
+                                await EvaluateCandidateAsync(fieldSymbol, attribute, project, solution, usageIndex, frameworkEvidence, enumOrdinals, findings, cancellationToken).ConfigureAwait(false);
                             }
                         }
 
@@ -92,7 +94,7 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
 
                     if (semanticModel.GetDeclaredSymbol(declaration, cancellationToken) is { } declaredSymbol)
                     {
-                        await EvaluateCandidateAsync(declaredSymbol, attribute, project, solution, usageIndex, findings, cancellationToken).ConfigureAwait(false);
+                        await EvaluateCandidateAsync(declaredSymbol, attribute, project, solution, usageIndex, frameworkEvidence, enumOrdinals, findings, cancellationToken).ConfigureAwait(false);
                     }
                 }
             }
@@ -107,6 +109,8 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
         Project project,
         Solution solution,
         SolutionUsageIndex usageIndex,
+        FrameworkEvidenceIndex frameworkEvidence,
+        EnumOrdinalContractIndex enumOrdinals,
         List<SnipperFinding> findings,
         CancellationToken cancellationToken)
     {
@@ -117,15 +121,7 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
 
         // Confirm the attribute is really System.ObsoleteAttribute (a custom attribute
         // named "Obsolete" must not produce findings) and capture the error flag.
-        AttributeData? obsoleteAttribute = null;
-        foreach (var attributeData in symbol.GetAttributes())
-        {
-            if (attributeData.AttributeClass?.ToDisplayString() == ObsoleteAttributeMetadataName)
-            {
-                obsoleteAttribute = attributeData;
-                break;
-            }
-        }
+        var obsoleteAttribute = FindObsoleteAttribute(symbol);
 
         if (obsoleteAttribute is null || symbol.IsOverride || InterfaceImplementationQuery.IsInterfaceImplementation(symbol))
         {
@@ -133,6 +129,11 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
         }
 
         if (ExclusionEngine.ShouldExcludeIgnoringObsolete(symbol) || ExclusionEngine.IsNamespaceExcluded(symbol, _exclusions))
+        {
+            return;
+        }
+
+        if (await IsLiveContractAsync(symbol, solution, usageIndex, frameworkEvidence, enumOrdinals, cancellationToken).ConfigureAwait(false))
         {
             return;
         }
@@ -152,23 +153,102 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
             return;
         }
 
-        var isError = obsoleteAttribute.ConstructorArguments.Length >= 2
-            && obsoleteAttribute.ConstructorArguments[1].Value is true;
-        var certainty = isError || symbol.DeclaredAccessibility != Accessibility.Public
-            ? CertaintyTier.High
-            : CertaintyTier.Moderate;
+        var isEnumMember = symbol is IFieldSymbol { ContainingType.TypeKind: TypeKind.Enum };
 
         var lineSpan = attribute.GetLocation().GetLineSpan();
         findings.Add(new SnipperFinding(
             RuleId: "SNP0018",
             Title: "Obsolete Unreferenced Member",
-            Message: $"Obsolete {(symbol is INamedTypeSymbol ? "type" : "member")} '{symbol.Name}' is marked for removal and has no references.",
-            Certainty: certainty,
+            Message: MessageFor(symbol, isEnumMember),
+            Certainty: CertaintyFor(symbol, obsoleteAttribute, isEnumMember),
             Category: FindingCategory.ObsoleteUnreferencedMember,
             FilePath: lineSpan.Path ?? string.Empty,
             LineNumber: lineSpan.StartLinePosition.Line + 1,
             CharacterOffset: lineSpan.StartLinePosition.Character + 1,
             Symbol: symbol));
+    }
+
+    private static AttributeData? FindObsoleteAttribute(ISymbol symbol)
+    {
+        foreach (var attributeData in symbol.GetAttributes())
+        {
+            if (attributeData.AttributeClass?.ToDisplayString() == ObsoleteAttributeMetadataName)
+            {
+                return attributeData;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// An enum member is Advisory whatever its accessibility: "no references"
+    /// never implies "safe to delete" when deleting renumbers every later member.
+    /// Any other tier would read as a removal instruction for a one-line change
+    /// that silently rewrites the wire contract.
+    /// </summary>
+    private static CertaintyTier CertaintyFor(ISymbol symbol, AttributeData obsoleteAttribute, bool isEnumMember)
+    {
+        if (isEnumMember)
+        {
+            return CertaintyTier.Advisory;
+        }
+
+        var isError = obsoleteAttribute.ConstructorArguments.Length >= 2
+            && obsoleteAttribute.ConstructorArguments[1].Value is true;
+
+        return isError || symbol.DeclaredAccessibility != Accessibility.Public
+            ? CertaintyTier.High
+            : CertaintyTier.Moderate;
+    }
+
+    private static string MessageFor(ISymbol symbol, bool isEnumMember)
+    {
+        if (isEnumMember)
+        {
+            return $"Obsolete enum member '{symbol.Name}' has no references. Removing it renumbers every later member of '{symbol.ContainingType.Name}', so any ordinal already on the wire or in a payload will then resolve to a different member - retire it by renaming or leaving a placeholder instead of deleting.";
+        }
+
+        var kind = symbol is INamedTypeSymbol ? "type" : "member";
+        return $"Obsolete {kind} '{symbol.Name}' is marked for removal and has no references.";
+    }
+
+    /// <summary>
+    /// True when zero C# references is not evidence of anything, because something
+    /// other than a C# call is what reaches the member.
+    ///
+    /// Three distinct reasons, kept together because from here they are one
+    /// question — but each answers it differently, and each was a separate false
+    /// positive class on milkrun:
+    ///
+    /// <list type="bullet">
+    /// <item>A serializer, model binder, or minimal-API route writes it. [Obsolete]
+    /// stops none of them: registering a converter does not imply
+    /// <c>IgnoreReadOnlyProperties</c>, so the property still ships. Reporting it
+    /// as removable is advice to delete a live contract.</item>
+    /// <item>Its ordinal is the wire value. An enum member's number travels in
+    /// messages, and deleting it renumbers every later member, so the next
+    /// in-flight message decodes as a <em>different</em> case — silently.</item>
+    /// <item>An extension holder is invoked through its methods, never through its
+    /// own name. Same rescue SNP0006 applies, so the two rules agree on whether a
+    /// heavily used holder is alive.</item>
+    /// </list>
+    /// </summary>
+    private static async Task<bool> IsLiveContractAsync(
+        ISymbol symbol,
+        Solution solution,
+        SolutionUsageIndex usageIndex,
+        FrameworkEvidenceIndex frameworkEvidence,
+        EnumOrdinalContractIndex enumOrdinals,
+        CancellationToken cancellationToken)
+    {
+        if (frameworkEvidence.IsUsed(symbol) || enumOrdinals.IsOrdinalBound(symbol))
+        {
+            return true;
+        }
+
+        return symbol is INamedTypeSymbol { IsStatic: true } obsoleteStaticType
+            && await ExtensionMethodUsageQuery.HasAnyUsedExtensionMethodAsync(obsoleteStaticType, solution, usageIndex, cancellationToken).ConfigureAwait(false);
     }
 
     private static bool IsEligibleKind(ISymbol symbol)

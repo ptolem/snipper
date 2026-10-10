@@ -139,7 +139,7 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
 
                 if (!hasReference
                     && candidate.Symbol is INamedTypeSymbol { IsStatic: true } staticType
-                    && await HasAnyUsedExtensionMethodAsync(staticType, solution, usageIndex, searchToken).ConfigureAwait(false))
+                    && await ExtensionMethodUsageQuery.HasAnyUsedExtensionMethodAsync(staticType, solution, usageIndex, searchToken).ConfigureAwait(false))
                 {
                     hasReference = true;
                 }
@@ -290,34 +290,6 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         }
 
         return true;
-    }
-
-    private static async Task<bool> HasAnyUsedExtensionMethodAsync(
-        INamedTypeSymbol staticType,
-        Solution solution,
-        SolutionUsageIndex usageIndex,
-        CancellationToken cancellationToken)
-    {
-        // Extension invocations (value.Method()) bind to the method symbol, not the
-        // class — a heavily used extension-method holder shows zero type references
-        // and its name may never appear in source. The class is alive when any of
-        // its extension methods is.
-        foreach (var member in staticType.GetMembers())
-        {
-            if (member is not IMethodSymbol { IsExtensionMethod: true } extensionMethod)
-            {
-                continue;
-            }
-
-            var candidateDocuments = usageIndex.GetDocumentsUsingName(extensionMethod.Name);
-            if (candidateDocuments.Count > 0
-                && await SymbolReferenceQuery.HasAnyReferenceAsync(extensionMethod, solution, candidateDocuments, cancellationToken).ConfigureAwait(false))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static async Task<bool> HasUsedInterfaceContractAsync(

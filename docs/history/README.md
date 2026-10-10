@@ -57,6 +57,7 @@ mid-name or absent. `git mv` was used throughout so history follows the rename.
 
 - **1.9.0 - SNP0031 per-set reporting.** One finding per clone set instead of one per copy: 4,375 -> 1,092 on the owner's monorepo, -45% of the whole report, with every copy still reported as a related location. [1_9_0_plan.md](1_9_0_plan.md)
 - **1.10.0 - SNP0031 one location per file.** A set reported more copies than it had places: 1,210 of 4,379 (27.6%) were a second-or-later fragment from a file already present. Copies 4,379 -> 3,169, 0 self-contradicting messages. Also closes the SNP0031 normalisation backlog item as a non-issue, with evidence. [1_10_0_plan.md](1_10_0_plan.md)
+- **1.11.0 - F2 + F3 wire-contract evidence (SNP0006 / SNP0018).** Minimal-API typed-result returns, base-type walking in the DTO closure, enum ordinal contracts, extension-holder rescue. SNP0018 49 -> 1 (98%), SNP0006 1,647 -> 1,558, plus 3 SNP0024 nobody asked for. 140 suppressed, 0 new. Also fixes a cross-compilation symbol-identity bug that left the channels inert. [1_11_0_plan.md](1_11_0_plan.md)
 
 ### Specs, by wave
 

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Minimal-API route mapping and JsonConverter live in the ASP.NET Core
+         framework. A FrameworkReference (not the Web SDK) keeps this a plain
+         library the fixture's App project can reference, matching how milkrun's
+         API projects reference the shared framework. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>
