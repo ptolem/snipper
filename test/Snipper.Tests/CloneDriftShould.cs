@@ -86,7 +86,7 @@ public sealed class CloneDriftShould : IDisposable
     [InlineData("if (text.IsNullOrEmpty())")]
     public void Treat_A_Defensive_Construct_As_Fix_Shaped(string line)
     {
-        DefensiveFixMarkers.IsFixShaped([line]).Should().BeTrue();
+        DefensiveFixMarkers.IsFixShaped([line], []).Should().BeTrue();
     }
 
     [Theory]
@@ -96,23 +96,197 @@ public sealed class CloneDriftShould : IDisposable
     [InlineData("builder.Append(caption);")]
     public void Leave_Ordinary_Code_Unclassified(string line)
     {
-        DefensiveFixMarkers.IsFixShaped([line]).Should().BeFalse();
+        DefensiveFixMarkers.IsFixShaped([line], []).Should().BeFalse();
     }
 
     [Fact]
     public void Treat_No_Added_Lines_As_Not_Fix_Shaped()
     {
         // A pure deletion carries no added text; calling that a defensive fix would be backwards.
-        DefensiveFixMarkers.IsFixShaped([]).Should().BeFalse();
+        DefensiveFixMarkers.IsFixShaped([], []).Should().BeFalse();
     }
 
     [Fact]
     public void Match_Markers_Regardless_Of_Case_Or_Indentation()
     {
-        DefensiveFixMarkers.IsFixShaped(["        IF (VALUE IS NULL)"]).Should().BeTrue();
+        DefensiveFixMarkers.IsFixShaped(["        IF (VALUE IS NULL)"], []).Should().BeTrue();
     }
 
-    // ---------- patch parsing ----------
+    // ---------- F5: the matcher promoted non-defensive text to High ----------
+    //
+    // Every line below was lifted from a High finding on the reference monorepo. They are the
+    // reason the marker set is shapes: none of them is a guard, and each one reached High.
+
+    /// <summary>A bare <c>null</c> is an initialiser or an argument, not a comparison.</summary>
+    [Theory]
+    [InlineData("        string? successRedirectUrl = null;")]
+    [InlineData("        OrderDispatchedMessage? dispatchedMessage = null;")]
+    [InlineData("        public IndividualWeightPickedItem(string stockCode, string? note = null)")]
+    public void Not_Treat_A_Bare_Null_Assignment_As_A_Guard(string line)
+    {
+        DefensiveFixMarkers.IsFixShaped([line], []).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A property declared <c>Count</c>, and a test asserting on it, are not bounds checks. The
+    /// difference from <c>list.Count &gt; 0</c> is what follows the name.
+    /// </summary>
+    [Theory]
+    [InlineData("        public int Count { get; set; }")]
+    [InlineData("        actualLineItems.Count.Should().Be(1);")]
+    [InlineData("        var degree = (object)array.Length;")]
+    public void Not_Treat_A_Bounds_Name_Outside_A_Comparison_As_A_Guard(string line)
+    {
+        DefensiveFixMarkers.IsFixShaped([line], []).Should().BeFalse();
+    }
+
+    /// <summary>A comparison is a bounds check, and still counts.</summary>
+    [Theory]
+    [InlineData("        if (list.Count > 0)")]
+    [InlineData("        if (items.Length == 0)")]
+    public void Treat_A_Bounds_Comparison_As_A_Guard(params string[] lines)
+    {
+        DefensiveFixMarkers.IsFixShaped(lines, []).Should().BeTrue();
+    }
+
+    /// <summary>A metric name is a string, and prose is not code.</summary>
+    [Theory]
+    [InlineData("        [Counter<int>(typeof(FavesRequestTags), Name = \"milkrun.products.faves-requests.count\")]")]
+    [InlineData("    /// Fills the tag; null = tag omitted")]
+    [InlineData("    // guard: Count must match Length")]
+    [InlineData("        var expected = \"{\\\"priceFamilyId\\\":null,\\\"quantity\\\":1}\";")]
+    public void Not_Scan_Comments_And_String_Literals_For_Markers(string line)
+    {
+        DefensiveFixMarkers.IsFixShaped([line], []).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A marker inside a verbatim string that spills onto the next line stays opaque. Carrying the
+    /// literal's state is what stops line two of a JSON fixture being read as code.
+    /// </summary>
+    [Fact]
+    public void Not_Scan_A_Multi_Line_Verbatim_String_For_Markers()
+    {
+        DefensiveFixMarkers.IsFixShaped(
+            [
+                "        var payload = @\"{",
+                "            \\\"priceFamilyId\\\": null,",
+                "            \\\"quantity\\\": 1\";",
+            ],
+            []).Should().BeFalse();
+    }
+
+    /// <summary>A method declaring such a helper is not calling one.</summary>
+    [Fact]
+    public void Not_Treat_A_Method_Declaration_As_A_Guard_Call()
+    {
+        // The entire diff of the commit that produced this High finding was one signature.
+        DefensiveFixMarkers.IsFixShaped(
+            ["    public static bool IsNullOrEmpty<T>([NotNullWhen(false)] this IEnumerable<T>? source)"],
+            []).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Treat_A_Guard_Call_In_A_Condition_As_A_Guard()
+    {
+        DefensiveFixMarkers.IsFixShaped(
+            ["            if (definedEnumValues.IsNullOrEmpty() || expectedEnumValues.IsNullOrEmpty())"],
+            []).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The commonest guard-call shape puts a negation and a member access between the arrow and
+    /// the call. A trailing-token test alone misses it, and the cost is a real one-sided fix
+    /// demoted to Advisory - which is what happened to <c>UpdateCustomerRequest.cs</c> on the
+    /// reference monorepo before this case was fixed.
+    /// </summary>
+    [Fact]
+    public void Treat_A_Guard_Call_In_A_Returned_Expression_As_A_Guard()
+    {
+        DefensiveFixMarkers.IsFixShaped(
+            ["        => !string.IsNullOrWhiteSpace(DateOfBirth) ? DateOnly.Parse(DateOfBirth) : null;"],
+            []).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A nullable type declared earlier on the line is not a consuming position. Widening the
+    /// leading form to <c>?</c> would promote every initialised property in a constructor.
+    /// </summary>
+    [Fact]
+    public void Not_Treat_A_Nullable_Declaration_As_A_Consuming_Position()
+    {
+        DefensiveFixMarkers.IsFixShaped(
+            ["    public string? Name { get; init; } = values.IsNullOrEmpty();"],
+            []).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Git reports a re-indent or a relocated block as removed-then-added, so a guard that was
+    /// already there reads as a new one. If the added text was already on the removed side, this
+    /// commit introduced nothing.
+    /// <para>
+    /// The split-across-lines case is the one a whole-hunk line-set comparison misses: the single
+    /// removed line is not among the two added ones.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Not_Treat_A_Reformatted_Guard_As_A_Fix()
+    {
+        DefensiveFixMarkers.IsFixShaped(
+            [
+                "        if (checkpoint != null)",
+                "            return checkpoint;",
+            ],
+            ["        if (checkpoint != null) return checkpoint;"]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Not_Treat_A_Relocated_Block_As_A_Fix()
+    {
+        // Re-indentation only: same text, different nesting depth.
+        DefensiveFixMarkers.IsFixShaped(
+            ["                MaximumWaitTime = source.MaximumWaitTimeSeconds.HasValue ? TimeSpan.FromSeconds(2) : null"],
+            ["            MaximumWaitTime = source.MaximumWaitTimeSeconds.HasValue ? TimeSpan.FromSeconds(2) : null"])
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A hunk that both reformats and genuinely fixes still reports the fix. The pre-existence test
+    /// is per line for exactly this reason.
+    /// </summary>
+    [Fact]
+    public void Still_Treat_A_Real_Guard_In_A_Reformatting_Hunk_As_A_Fix()
+    {
+        DefensiveFixMarkers.IsFixShaped(
+            [
+                "        if (checkpoint != null)",
+                "            return checkpoint;",
+                "        if (tenant == null) throw new ArgumentNullException(nameof(tenant));",
+            ],
+            ["        if (checkpoint != null) return checkpoint;"]).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// <c>!= null</c> is the commonest null guard in C# and is what the 1.7.1 proposal's shape list
+    /// omitted. Demoting it would have cost a real High finding.
+    /// </summary>
+    [Fact]
+    public void Treat_Inequality_Null_Guards_As_Fix_Shaped()
+    {
+        DefensiveFixMarkers.IsFixShaped(
+            ["        return latestChargeTransaction != null && latestChargeTransaction.State == ITransactionState.Failure;"],
+            []).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A pure insertion has no pre-image, so nothing can have pre-existed - otherwise the test
+    /// above would pass by accident on every added line.
+    /// </summary>
+    [Fact]
+    public void Treat_Short_Text_As_New_Rather_Than_Relocated()
+    {
+        DefensiveFixMarkers.IsFixShaped(["        return value ?? fallback;"], ["}"]).Should().BeTrue();
+    }
 
     [Fact]
     public void Parse_Hunk_Coordinates_And_Added_Lines()

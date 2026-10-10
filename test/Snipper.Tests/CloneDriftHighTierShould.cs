@@ -196,12 +196,12 @@ public sealed class CloneDriftHighTierShould
     [InlineData("Nullable<int> value", false)]
     [InlineData("var country = GetCountry();", false)]
     [InlineData("if (Discount > 0)", false)]
-    [InlineData("var length = items.Length;", true)]
+    [InlineData("var length = items.Length;", false)]
     [InlineData("value ?? fallback", true)]
     [InlineData("if (value is null) throw new ArgumentNullException();", true)]
     public void Markers_Match_On_Identifier_Boundaries(string line, bool expected)
     {
-        DefensiveFixMarkers.IsFixShaped([line]).Should().Be(expected);
+        DefensiveFixMarkers.IsFixShaped([line], []).Should().Be(expected);
     }
 
     [Fact]
@@ -248,7 +248,7 @@ public sealed class CloneDriftHighTierShould
     public void Marker_Matching_Stays_Case_Insensitive()
     {
         // Pre-existing contract, and cheap to keep once matching is boundary-anchored.
-        DefensiveFixMarkers.IsFixShaped(["        IF (VALUE IS NULL)"]).Should().BeTrue();
+        DefensiveFixMarkers.IsFixShaped(["        IF (VALUE IS NULL)"], []).Should().BeTrue();
     }
 
     /// <summary>
@@ -264,13 +264,13 @@ public sealed class CloneDriftHighTierShould
     [InlineData("        }")]
     public void A_Hunk_That_Adds_No_Code_Is_Not_A_Fix(params string[] addedLines)
     {
-        DefensiveFixMarkers.IsFixShaped(addedLines).Should().BeFalse();
+        DefensiveFixMarkers.IsFixShaped(addedLines, []).Should().BeFalse();
     }
 
     [Fact]
     public void One_Real_Line_Among_Blank_Ones_Still_Counts()
     {
-        DefensiveFixMarkers.IsFixShaped(["", "{", "    var total = count ?? 0;"]).Should().BeTrue();
+        DefensiveFixMarkers.IsFixShaped(["", "{", "    var total = count ?? 0;"], []).Should().BeTrue();
     }
 
     // ---------- helpers: mirror the production formatting so the tests cannot drift from it ----------

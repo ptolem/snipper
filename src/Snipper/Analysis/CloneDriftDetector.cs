@@ -265,64 +265,480 @@ internal static class RenameDetector
 /// </summary>
 internal static class DefensiveFixMarkers
 {
-    /// <summary>Word-shaped markers, matched on identifier boundaries.</summary>
-    private static readonly FrozenSet<string> WordMarkers = new[]
+    /// <summary>
+    /// Shape markers: null-defence as *structure* rather than as a word.
+    /// <para>
+    /// The 1.7.1 sweep matched bare <c>null</c>, <c>Length</c> and <c>Count</c>, and every one of
+    /// those reached <c>High</c> on the reference monorepo as something that is not a guard:
+    /// <c>string? url = null;</c> (an initialiser), a property declared <c>public int Count</c>, a
+    /// FluentAssertions <c>actualLineItems.Count.Should().Be(1)</c>, and a metric whose name is
+    /// <c>"…-requests.count"</c>. A guard needs a comparison or a fallback, so the set is shapes.
+    /// <c>!= null</c> and <c>== null</c> are in it because they are the commonest null guards in C#
+    /// and dropping them - as the 1.7.1 proposal did - demotes a real one-sided fix.
+    /// </para>
+    /// </summary>
+    private static readonly FrozenSet<string> ShapeMarkers = new[]
     {
-        "null", "IsNullOrEmpty", "IsNullOrWhiteSpace", "try", "catch", "finally", "throw",
-        "ArgumentNullException", "ArgumentOutOfRangeException",
-        "NullReferenceException", "InvalidOperationException", "Length", "Count",
+        "== null", "!= null", "is null", "is not null", "?.", "??",
     }.ToFrozenSet(StringComparer.Ordinal);
 
-    /// <summary>Punctuation markers, which have no boundaries to anchor to.</summary>
-    private static readonly FrozenSet<string> SymbolMarkers = new[]
+    /// <summary>The <c>ThrowIf*</c> family, which needs no comparison to be a guard.</summary>
+    private static readonly FrozenSet<string> GuardThrows = new[]
     {
-        "??", "?.",
+        "ThrowIfNull", "ThrowIfEmpty", "ThrowIfNegative", "ThrowIfZero", "ThrowIfNegativeOrZero",
     }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Bounds names, counted only when a comparison operator follows them.
+    /// <para>
+    /// <c>list.Count &gt; 0</c> is a bounds guard and has always been reported as one. What the
+    /// 1.7.1 sweep added by accident was every other line containing <c>Count</c> or <c>Length</c>:
+    /// a property declared <c>public int Count</c>, a FluentAssertions
+    /// <c>actualLineItems.Count.Should().Be(1)</c>, and a metric named <c>"…-requests.count"</c>.
+    /// Requiring the name to be followed by a comparison separates the two without weakening the
+    /// rule that was always meant to be there - the bounds check is in
+    /// <c>competitive-analysis.md</c> 6.1's marker list.
+    /// </para>
+    /// </summary>
+    private static readonly FrozenSet<string> BoundsNames = new[]
+    {
+        "Count", "Length",
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Comparison operators, which are what turn a bounds name into a bounds <em>check</em>. A
+    /// bare identifier is a property or an argument, not a guard.
+    /// </summary>
+    private static readonly string[] ComparisonOperators =
+    [
+        "==", "!=", ">=", "<=", ">", "<",
+    ];
+
+    /// <summary>
+    /// Null-checking helpers, matched in invocation form only. <c>public static bool
+    /// IsNullOrEmpty&lt;T&gt;(…)</c> declares such a method and matched its own name, which put a
+    /// High on a commit whose entire diff was that one signature; requiring the open paren
+    /// immediately after the name excludes the declaration, because the type parameters sit
+    /// between. The remaining ambiguity - a *call* to such a helper that guards nothing - is
+    /// settled by <see cref="HasConsumingGuardCall"/>.
+    /// </summary>
+    private static readonly FrozenSet<string> GuardCalls = new[]
+    {
+        "IsNullOrEmpty", "IsNullOrWhiteSpace",
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Statement keywords, matched only at statement position. Substring matching let <c>try</c>
+    /// fire on <c>Country</c> and on a 1.5 KB JSON fixture's test name; anchoring to the start of
+    /// the line keeps <c>throw new …</c> and drops <c>trying</c>.
+    /// </summary>
+    private static readonly FrozenSet<string> StatementKeywords = new[]
+    {
+        "try", "catch", "finally", "throw",
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Tokens that put what follows them in a consuming position - a condition, a return, a
+    /// propagation. A guard call outside one of these is incidental to the line.
+    /// </summary>
+    private static readonly string[] ConsumingTokens =
+    [
+        "&&", "||", "=>", "==", "!=", "?", ":", "!", "return",
+    ];
+
+    /// <summary>
+    /// Tokens that establish the <em>whole line</em> as a consumed expression, so a guard call
+    /// anywhere after one of them counts however much syntax sits between.
+    /// <para>
+    /// Needed because the commonest shape is <c>=&gt; !string.IsNullOrWhiteSpace(x) ? …</c>: the
+    /// negation and the member access both land between the arrow and the call, so a
+    /// trailing-token test alone misses the guard and demotes a real one-sided fix to Advisory.
+    /// </para>
+    /// </summary>
+    private static readonly string[] LeadingConsumingTokens =
+    [
+        "=>", "return",
+    ];
+
+    /// <summary>
+    /// Below this length, added and removed text overlap by accident rather than by relocation.
+    /// <c>}</c>, <c>);</c> and <c>{</c> are substrings of nearly any hunk, and treating them as
+    /// evidence would make every hunk look relocated.
+    /// </summary>
+    private const int MinimumRelocatableLength = 12;
 
     /// <summary>
     /// Whether the added lines read as a defensive fix. A pure deletion carries no added text and
     /// is never fix-shaped - calling that a fix would be backwards.
     /// <para>
-    /// Word markers match on identifier boundaries rather than as loose substrings. Substring
-    /// matching meant <c>null</c> fired on <c>Nullable</c>, <c>Count</c> on <c>Discount</c> and
-    /// <c>try</c> on <c>Country</c>, which is how a rename reached <c>High</c> during gate 5. The
-    /// looseness was previously justified as "gated by one-sided", but that gate proved too weak:
-    /// it stops a change being reported twice, not a cosmetic change being called a fix.
+    /// Three things are checked per line, and the order matters. Comments and string/char literals
+    /// come off first, because a marker inside prose or a JSON fixture is not code: the 1.7.1 sweep
+    /// put a High on <c>/// … (null = tag omitted)</c> and another on a serialised order payload.
+    /// Then the line is compared against the removed side, so a marker that was <em>already there</em>
+    /// cannot be this commit's contribution. Only then is shape matched.
+    /// </para>
+    /// <para>
+    /// The removed-side test is what catches relocation, and it is deliberately per-line rather than
+    /// per-hunk. Git reports a re-indent or a relocated block as removed-then-added, so
+    /// <c>if (checkpoint != null) return checkpoint;</c> split across two lines reads as a new
+    /// guard. A whole-hunk line-set comparison misses that, because the one removed line is not
+    /// among the two added ones; testing whether the added text was already present catches it, and
+    /// still lets a hunk that reformats <em>and</em> genuinely fixes report the real fix.
     /// </para>
     /// </summary>
-    public static bool IsFixShaped(IReadOnlyList<string> addedLines)
+    public static bool IsFixShaped(IReadOnlyList<string> addedLines, IReadOnlyList<string> removedLines)
     {
         ArgumentNullException.ThrowIfNull(addedLines);
+        ArgumentNullException.ThrowIfNull(removedLines);
 
-        // Only lines that actually carry code are considered. A hunk that adds nothing but
-        // whitespace, braces or semicolons changed no behaviour, so calling it a defensive fix was
-        // both wrong and unanchored: 4 High findings landed on a blank line because the hunk behind
-        // them had no code to point at. That is drift, and is reported as drift.
+        // Carried across lines so a verbatim string opened on one line cannot leak its body into
+        // the next as if it were code.
+        var insideString = false;
+
         foreach (var line in addedLines)
         {
-            if (!CloneDriftClassifier.CarriesCode(line))
+            var code = StripCommentsAndLiterals(line, ref insideString);
+
+            // Only lines that actually carry code are considered. A hunk that adds nothing but
+            // whitespace, braces or semicolons changed no behaviour, so calling it a defensive fix
+            // was both wrong and unanchored: 4 High findings landed on a blank line because the hunk
+            // behind them had no code to point at. That is drift, and is reported as drift.
+            if (!CloneDriftClassifier.CarriesCode(code) || PreExisted(code, removedLines))
             {
                 continue;
             }
 
-            foreach (var marker in SymbolMarkers)
+            if (IsFixShape(code))
             {
-                if (line.Contains(marker, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
-
-            foreach (var word in WordMarkers)
-            {
-                if (ContainsWord(line, word))
-                {
-                    return true;
-                }
+                return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>Whether any marker shape appears in already-stripped code.</summary>
+    private static bool IsFixShape(string code)
+    {
+        // Case-insensitive throughout, which is the contract this method had before F5 and is why
+        // `IF (VALUE IS NULL)` still counts. Symbol markers are unaffected by casing.
+        foreach (var shape in ShapeMarkers)
+        {
+            if (code.Contains(shape, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        foreach (var guard in GuardThrows)
+        {
+            if (code.Contains(guard + "(", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        foreach (var name in BoundsNames)
+        {
+            if (HasBoundsComparison(code, name))
+            {
+                return true;
+            }
+        }
+
+        foreach (var call in GuardCalls)
+        {
+            if (HasConsumingGuardCall(code, call))
+            {
+                return true;
+            }
+        }
+
+        foreach (var keyword in StatementKeywords)
+        {
+            if (StartsStatement(code, keyword))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether a bounds name appears on identifier boundaries with a comparison operator after it.
+    /// </summary>
+    private static bool HasBoundsComparison(string code, string name)
+    {
+        var index = code.IndexOf(name, StringComparison.Ordinal);
+
+        while (index >= 0)
+        {
+            var before = index == 0 ? '\0' : code[index - 1];
+            var afterIndex = index + name.Length;
+            var after = afterIndex >= code.Length ? '\0' : code[afterIndex];
+
+            if (!IsIdentifierCharacter(before) && !IsIdentifierCharacter(after))
+            {
+                var rest = code[afterIndex..].TrimStart();
+
+                foreach (var comparison in ComparisonOperators)
+                {
+                    if (rest.StartsWith(comparison, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            index = code.IndexOf(name, index + 1, StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether this marker text was already on the removed side of the hunk.
+    /// <para>
+    /// A one-sided *fix* adds something the sibling does not have. When the added text is already
+    /// contained in - or already contains - a removed line, the commit rearranged existing code and
+    /// introduced nothing, which is the case that must not reach <c>High</c>. This errs toward
+    /// demoting real drift to <c>Advisory</c>, which loses a tier rather than inventing one; F5 is
+    /// a precision fix and that is the direction it should fail.
+    /// </para>
+    /// </summary>
+    private static bool PreExisted(string code, IReadOnlyList<string> removedLines)
+    {
+        if (removedLines.Count == 0)
+        {
+            // A pure insertion has no pre-image, so nothing can have pre-existed.
+            return false;
+        }
+
+        var added = code.Trim();
+
+        if (added.Length < MinimumRelocatableLength)
+        {
+            return false;
+        }
+
+        foreach (var removed in removedLines)
+        {
+            var before = removed.Trim();
+
+            if (before.Length < MinimumRelocatableLength)
+            {
+                continue;
+            }
+
+            if (before.Contains(added, StringComparison.Ordinal)
+                || added.Contains(before, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether a null-checking helper is called somewhere that consumes its result - a condition, a
+    /// return, a propagation - rather than merely appearing in the line.
+    /// </summary>
+    private static bool HasConsumingGuardCall(string code, string name)
+    {
+        var needle = name + "(";
+        var index = code.IndexOf(needle, StringComparison.Ordinal);
+
+        while (index >= 0)
+        {
+            var before = code[..index].TrimEnd();
+
+            if (before.Length == 0 || IsConsuming(before))
+            {
+                return true;
+            }
+
+            index = code.IndexOf(needle, index + 1, StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    private static bool IsConsuming(string before)
+    {
+        foreach (var token in ConsumingTokens)
+        {
+            if (before.EndsWith(token, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        // `if (values.IsNullOrEmpty())` puts the guard inside a condition, so the text before the
+        // call ends in the callee rather than in a token.
+        if (ContainsWord(before, "if"))
+        {
+            return true;
+        }
+
+        // `=> !string.IsNullOrWhiteSpace(x) ? …` puts it in a returned expression with a negation
+        // and a member access in between, so the leading form is what has to catch it. Kept to
+        // the three tokens that make the *line* a consumed expression: a bare `?` or `:` would
+        // also match a nullable type declared earlier on the same line.
+        foreach (var token in LeadingConsumingTokens)
+        {
+            if (before.Contains(token, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Whether the trimmed line begins with a statement keyword.</summary>
+    private static bool StartsStatement(string code, string keyword)
+    {
+        var trimmed = code.TrimStart();
+
+        if (!trimmed.StartsWith(keyword, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (trimmed.Length == keyword.Length)
+        {
+            return true;
+        }
+
+        var next = trimmed[keyword.Length];
+
+        return !char.IsLetterOrDigit(next) && next != '_';
+    }
+
+    /// <summary>
+    /// Removes comments and string/char literals, leaving the code they decorate.
+    /// <para>
+    /// Text-based rather than syntax-based on purpose: the input is a patch's added lines, which
+    /// have no syntax tree and no context lines. Verbatim strings carry their state across lines so
+    /// a multi-line JSON fixture stays opaque; raw (<c>"""</c>) literals are not tracked and would
+    /// need the same treatment, which is noted rather than claimed.
+    /// </para>
+    /// </summary>
+    private static string StripCommentsAndLiterals(string line, ref bool insideString)
+    {
+        var builder = new StringBuilder(line.Length);
+        var index = 0;
+
+        if (insideString)
+        {
+            index = ConsumeLiteral(line, 0, ref insideString);
+
+            if (index == 0)
+            {
+                return string.Empty;
+            }
+        }
+
+        while (index < line.Length)
+        {
+            var current = line[index];
+            var next = index + 1 < line.Length ? line[index + 1] : '\0';
+
+            if (current == '/' && next == '/')
+            {
+                break;
+            }
+
+            if (current == '/' && next == '*')
+            {
+                var close = line.IndexOf("*/", index + 2, StringComparison.Ordinal);
+
+                if (close < 0)
+                {
+                    // Unterminated on this line: everything after it is comment.
+                    break;
+                }
+
+                index = close + 2;
+                continue;
+            }
+
+            if (current == '"' || current == '\'')
+            {
+                index = ConsumeLiteral(line, index, ref insideString);
+                continue;
+            }
+
+            builder.Append(current);
+            index++;
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Skips past a string or char literal starting at <paramref name="start"/>, returning the
+    /// index just after it. Sets <paramref name="insideString"/> when a verbatim literal continues
+    /// onto the next line.
+    /// </summary>
+    private static int ConsumeLiteral(string line, int start, ref bool insideString)
+    {
+        var quote = line[start];
+        var verbatim = IsVerbatimStart(line, start);
+        var index = start + 1;
+
+        while (index < line.Length)
+        {
+            var current = line[index];
+
+            if (verbatim && current == '"')
+            {
+                if (index + 1 < line.Length && line[index + 1] == '"')
+                {
+                    index += 2;
+                    continue;
+                }
+
+                return index + 1;
+            }
+
+            if (!verbatim)
+            {
+                if (current == '\\')
+                {
+                    index += 2;
+                    continue;
+                }
+
+                if (current == quote)
+                {
+                    return index + 1;
+                }
+            }
+
+            index++;
+        }
+
+        // Only a verbatim literal can survive a line break; anything else is malformed.
+        insideString = verbatim;
+        return line.Length;
+    }
+
+    private static bool IsVerbatimStart(string line, int quoteIndex)
+    {
+        if (quoteIndex == 0)
+        {
+            return false;
+        }
+
+        if (line[quoteIndex - 1] == '@')
+        {
+            return true;
+        }
+
+        return quoteIndex >= 2 && line[quoteIndex - 1] == '$' && line[quoteIndex - 2] == '@';
     }
 
     /// <summary>Case-insensitive substring match that will not start or end mid-identifier.</summary>
@@ -506,7 +922,7 @@ public sealed class CloneDriftDetector
                 }
 
                 var renameOnly = RenameDetector.IsRenameOnly(hunk.AddedLines, hunk.RemovedLines);
-                var fixShaped = !renameOnly && DefensiveFixMarkers.IsFixShaped(hunk.AddedLines);
+                var fixShaped = !renameOnly && DefensiveFixMarkers.IsFixShaped(hunk.AddedLines, hunk.RemovedLines);
                 var tier = CloneDriftClassifier.Classify(oneSided, fixShaped, renameOnly);
                 if (tier is null)
                 {
