@@ -52,6 +52,25 @@ public sealed class TighteningScenarios
     private static void BumpRef(ref int value) => value += 1;
 }
 
+// A primary-constructor parameter used inside an instance method is NOT a
+// field symbol, so GetSymbolInfo on the bare name surfaces an IParameterSymbol
+// (or nothing) and the instance-state bail-out finds nothing. The method uses
+// captured state — it cannot be static. `PrimaryCtorCapture` must not be
+// flagged; `PrimaryCtorUnrelated` is the negative control: same class, a
+// primary constructor exists, but this method touches none of its parameters.
+public sealed class PrimaryCtorCapture(int seed, string name)
+{
+    private readonly int _field = seed;
+
+    // Reads `name`, a primary-constructor parameter → captures instance state.
+    public int LogName() => name.Length;
+
+    // Reads nothing from the primary constructor → genuinely stateless.
+    public int ComputeValue(int a, int b) => a * b + 1;
+
+    public int ReadField() => _field + LogName() + ComputeValue(2, 3);
+}
+
 // Stand-in for a lifecycle/callback attribute: any attribute on a method
 // excludes it from can-be-static (serialization callbacks, framework hooks).
 public sealed class LifecycleHookAttribute : Attribute
@@ -128,6 +147,7 @@ public static class TighteningExercise
         total += new DerivedFromUnsealed().BasePing();
         total += new ConcreteTighteningLeaf().AbstractValue();
         total += new AlreadySealedLeaf().LeafValue();
+        total += new PrimaryCtorCapture(1, "n").ReadField();
         return total;
     }
 }

@@ -215,6 +215,56 @@ public async Task Flag_A_File_Scope_Fragment_For_AnalyzeAsync()
         findings.Should().OnlyContain(f => f.Category == FindingCategory.DuplicateFragment);
     }
 
+[Fact]
+        public async Task Give_Every_Clone_Set_A_Distinct_Message_For_AnalyzeAsync()
+    {
+        // The baseline fingerprint is RuleId|path|message and carries no position, so two
+        // clone sets anchored in the same file that report the same token and line counts
+        // used to produce one message between them — and one fingerprint. Suppressing one
+        // then suppressed the other. Counts alone cannot identify a set; the message must.
+        var findings = await AnalyzeAsync();
+
+        findings.Select(f => f.Message)
+            .Should().OnlyHaveUniqueItems("each clone set needs its own message to fingerprint separately");
+    }
+
+[Fact]
+        public async Task Separate_Two_Same_Count_Sets_Anchored_In_One_File_For_AnalyzeAsync()
+        {
+            // SameCountCloneSets.cs holds two sets of identical shape and length, each
+            // paired with a different partner — the milkrun line-109 case, reproduced.
+            // Both anchor in the same file and report the same token and line counts,
+            // so counts alone cannot tell them apart. Deduplicating by
+            // (rule, file, span) would have merged these into one and lost a real clone;
+            // they must survive as two findings naming different partners.
+            var findings = await AnalyzeAsync();
+
+            var anchored = findings
+                .Where(f => Path.GetFileName(f.FilePath).Equals("SameCountAnchor.cs", StringComparison.Ordinal))
+                .ToList();
+
+            anchored.Should().HaveCountGreaterThanOrEqualTo(2, "two distinct sets share this anchor file");
+            anchored.Select(f => f.Message).Should().OnlyHaveUniqueItems();
+
+            // The two sets differ only in which partner they name, so that is what has
+            // to differ in the message — and therefore in the baseline fingerprint. The
+            // partner classes sit in one file, so the message names its location; the
+            // two entries below are the two distinct sets, at different line numbers.
+            var rendered = anchored.Select(f => f.Message).ToList();
+            rendered.Should().OnlyHaveUniqueItems();
+            rendered.Should().Contain(m => m.Contains("SameCountCloneSets.cs", StringComparison.Ordinal));
+            anchored.Select(f => f.LineNumber).Should().OnlyHaveUniqueItems("two sets anchor at two places");
+        }
+
+    [Fact]
+    public async Task Name_The_Other_Copies_In_The_Message_For_AnalyzeAsync()
+    {
+        var findings = await AnalyzeAsync();
+
+        findings.Should().NotBeEmpty();
+        findings.Should().OnlyContain(f => f.Message.Contains("Duplicated in:", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task Report_A_Line_Number_For_AnalyzeAsync()
     {

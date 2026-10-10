@@ -174,10 +174,23 @@ public sealed class BaselineChurnShould : IDisposable
     {
         // The fix must not turn suppression into reporting: excluded findings belong in the
         // baseline but must stay out of the findings a user sees.
+        //
+        // Compared against the unconfigured run rather than by counting fingerprints: since
+        // 1.13.0 a fingerprint count is no longer a proxy for the number of findings, because
+        // two findings that render the same message in one file share a fingerprint by
+        // design (F6c). Asserting on the count would have measured the deduplication instead
+        // of the suppression.
         var baseline = BaselinePath("hidden");
+        var unconfigured = await RunAsync(null, BaselinePath("hidden-unconfigured"));
         var result = await RunAsync(ExcludeShadowing, baseline);
 
-        result.FingerprintCount.Should().BeGreaterThan(result.ReportedCount);
+        result.ReportedCount.Should().BeLessThan(
+            unconfigured.ReportedCount,
+            "namespace-excluded findings must be suppressed from the report, not reported");
+
+        // Suppression must not shrink the baseline either: it covers every finding, so a
+        // configuration change cannot churn it.
+        result.FingerprintCount.Should().Be(unconfigured.FingerprintCount);
     }
 
     public void Dispose()

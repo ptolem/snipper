@@ -18,5 +18,9 @@
     <!-- Same shape, but PrivateAssets=all blocks the transitive flow: consumer
          usage must NOT save this one - SNP0003 target. -->
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" PrivateAssets="all" />
+    <!-- Unused in CoreLib and in every LOADED consumer. DetachedLib (on disk,
+         outside the solution) references CoreLib and could still use it, so
+         SNP0003 caps this one at Moderate and names DetachedLib - F6. -->
+    <PackageReference Include="Humanizer.Core" Version="2.14.1" />
   </ItemGroup>
 </Project>

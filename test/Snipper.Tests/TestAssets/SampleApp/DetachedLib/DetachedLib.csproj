@@ -5,4 +5,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- This project is on disk but never opened into the workspace, so it is
+         an unanalysable consumer of CoreLib. CoreLib's Swagger package is
+         flagged by SNP0003 either way, but the "or its consumers" clause cannot
+         be verified while this exists: F6 caps the tier to Moderate. -->
+    <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
+  </ItemGroup>
 </Project>

@@ -730,6 +730,7 @@ What changes for you when you upgrade, and whether it disturbs a baseline.
 | `1.10.0` | SNP0031 lists each **file at most once** across a finding and its `relatedLocations`, so the copy count always equals the file count. Before 1.10.0 a set could report more copies than it had locations, and 93 sets contradicted their own message. | **Re-baseline.** Both counts in the message changed. Findings dropped by roughly the average set size (about 3 copies per set on the reference repo). |
 | `1.11.0` | SNP0006 and SNP0018 gained wire-contract evidence: minimal-API typed-result returns seed the DTO closure, the closure walks base types, obsolete enum ordinals are recognised, and used obsolete extension holders are rescued. | **Re-baseline.** 140 findings removed on the reference repo (SNP0018 49 to 1, SNP0006 1,647 to 1,558), none added. Nothing needs removing by hand - they simply stop being reported. |
 | `1.12.0` | SNP0032 `High` is now earned by a **shape** rather than a bare word: comments and string literals are stripped before matching, `Count`/`Length` need a following comparison, and an added line whose text already existed on the removed side is a rearrangement, not a fix. | **Re-baseline.** No finding is added or removed, but 13 on the reference repo change **tier**, and the tier is the first words of the message. Each therefore re-fingerprints and surfaces as new. This is the one release whose baseline effect is invisible in the finding count - see below. |
+| `1.13.0` | SNP0024 no longer proposes `static` on a method that captures a primary-constructor parameter; SNP0003 caps at `Moderate` and names the unloaded project when a `.csproj` outside the solution may still consume the reference; SNP0031 messages name their copies. | **Re-baseline, and the count is a misleading summary.** 282 SNP0024 findings disappear on the reference repo (701 to 419), 7 SNP0003 findings change tier, and all 1,094 SNP0031 findings change message while *none* is added or removed. Two findings that used to share a fingerprint now have their own - see below. |
 
 **Finding-count changes move a baseline, but they are not the only thing that does.** Fingerprints are
 derived from `RuleId | path | message` - no version stamp - so a rule that emits the same finding
@@ -742,6 +743,13 @@ removed nothing. Thirteen findings changed *tier* - from `One-sided defensive fi
 change` - and because the tier opens the message, all thirteen re-fingerprinted and surfaced as new
 against a `1.11.0` baseline. A consumer reading only the finding count would have concluded nothing
 changed.
+
+**`1.13.0` shows why the fingerprint deliberately omits the line number - and what that costs.** A
+fingerprint is `RuleId | path | message`, so two findings in the *same file* that render the *same
+message* hash to one value. On the reference repo, 205 of 4,166 findings shared a fingerprint with
+another finding; 8 of those were SNP0031 sets. Because 1.13.0 names the copies in the message, each
+of those findings now has its own fingerprint. If you suppress one of a colliding pair today,
+1.13.0 will report the survivor as new.
 
 The practical consequence for gates that count *new* findings is unchanged and worth restating: a
 rule getting quieter never creates new findings, so it can only make such a gate pass more often -

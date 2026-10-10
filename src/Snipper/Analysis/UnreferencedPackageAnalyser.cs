@@ -24,6 +24,10 @@ using Snipper.Models;
 ///    just the referenced assembly but the project/package assemblies that flow
 ///    through it; when the project uses one of those (and cannot reach it via
 ///    any other reference), the reference is load-bearing.
+/// 4. Unloaded consumers (F6) — gates 2 and 3 reason over the loaded workspace
+///    only. A .csproj on disk but absent from the solution is a real consumer
+///    that cannot be analysed, so "no consumer uses this" is unverifiable while
+///    one exists. The finding is capped at Moderate and names the project.
 /// </summary>
 public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
 {
@@ -80,6 +84,12 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
 
         var consumersClosure = ComputeConsumersClosure(projectFileInfos);
         var flowMemo = new Dictionary<string, FrozenSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // Projects on disk that the workspace never loaded. They cannot be analysed —
+        // no compilation, so no symbol usage — but they are real consumers, and a
+        // message that claims "no symbol is used in this project or its consumers"
+        // cannot be verified while one exists. The claim is capped, not dropped.
+        var detachedConsumers = FindDetachedConsumerPaths(solution, projectFileInfos);
 
         // Multi-targeted projects surface as one Project per TFM; usage is judged per
         // csproj (the cache unions all TFM instances) so each file is analysed once.
@@ -147,8 +157,8 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
                 findings.Add(new SnipperFinding(
                     RuleId: "SNP0003",
                     Title: "Unreferenced Package",
-                    Message: $"Package '{package.Id}' contributes assemblies but no symbol from it is used in project '{project.Name}' or its consumers.",
-                    Certainty: CertaintyTier.High,
+                    Message: BuildPackageMessage(package.Id, project.Name, project.FilePath, detachedConsumers, package.PrivateAssetsAll),
+                    Certainty: CertifyForDetachedConsumers(detachedConsumers, project.FilePath, package.PrivateAssetsAll),
                     Category: FindingCategory.UnreferencedPackage,
                     FilePath: project.FilePath,
                     LineNumber: package.LineNumber,
@@ -236,8 +246,8 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
                 findings.Add(new SnipperFinding(
                     RuleId: "SNP0004",
                     Title: "Unreferenced Project Reference",
-                    Message: $"Project reference '{Path.GetFileNameWithoutExtension(projectReference.FullPath)}' is declared but no symbol from it or its transitive flow is used in project '{project.Name}' or its consumers.",
-                    Certainty: CertaintyTier.High,
+                    Message: BuildProjectReferenceMessage(projectReference.FullPath, project.Name, project.FilePath, detachedConsumers, projectReference.PrivateAssetsAll),
+                    Certainty: CertifyForDetachedConsumers(detachedConsumers, project.FilePath, projectReference.PrivateAssetsAll),
                     Category: FindingCategory.UnreferencedProject,
                     FilePath: project.FilePath,
                     LineNumber: projectReference.LineNumber,
@@ -247,6 +257,178 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
         }
 
         return findings;
+    }
+
+    /// <summary>
+    /// Loaded projects reachable — directly or transitively — from a <c>.csproj</c> that
+    /// exists on disk but is absent from the workspace.
+    /// <para>
+    /// The consumers closure above is built from loaded projects only, so a project
+    /// dropped from the solution but never deleted is invisible to it. The reference
+    /// report says a package is unused "<em>in this project or its consumers</em>";
+    /// when an unanalysable consumer exists that sentence is an assumption, not a
+    /// measurement. Callers use this map to cap the tier and say so.
+    /// </para>
+    /// </summary>
+    private static FrozenDictionary<string, FrozenSet<string>> FindDetachedConsumerPaths(
+        Solution solution,
+        IReadOnlyDictionary<string, ProjectFileInfo> loadedProjects)
+    {
+        var rootDirectory = DetachedProjectScanner.ResolveRootDirectory(solution);
+        var loadedPaths = loadedProjects.Keys.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+        var detachedPaths = rootDirectory is null
+            ? []
+            : DetachedProjectScanner.FindUnattachedProjectFiles(rootDirectory, loadedPaths);
+        if (detachedPaths.Count == 0)
+        {
+            return FrozenDictionary<string, FrozenSet<string>>.Empty;
+        }
+
+        // Project references declared BY the detached projects. Their own references
+        // matter too: a detached web host reaches a hub through another project.
+        var detachedProjectFiles = new Dictionary<string, ProjectFileInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (var detachedPath in detachedPaths)
+        {
+            if (ProjectFileReader.Read(detachedPath) is { } info)
+            {
+                detachedProjectFiles[detachedPath] = info;
+            }
+        }
+
+        var byPath = new Dictionary<string, ProjectFileInfo>(loadedProjects, StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, info) in detachedProjectFiles)
+        {
+            byPath[path] = info;
+        }
+
+        var result = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var detachedPath in detachedProjectFiles.Keys)
+        {
+            // Walk outward through every reference edge, loading or detached. An edge
+            // marked PrivateAssets=all stops the flow past this project, matching the
+            // consumers closure: a consumer that cannot see the assembly cannot use it.
+            var frontier = new Queue<(string Path, bool Onward)>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var reference in detachedProjectFiles[detachedPath].ProjectReferences)
+            {
+                if (reference.ReferenceOutputAssemblyDisabled || reference.IsAnalyser)
+                {
+                    continue;
+                }
+
+                frontier.Enqueue((reference.FullPath, !reference.PrivateAssetsAll));
+            }
+
+            while (frontier.Count > 0)
+            {
+                var (path, onward) = frontier.Dequeue();
+                if (!seen.Add(path) || !byPath.TryGetValue(path, out var info))
+                {
+                    continue;
+                }
+
+                if (loadedPaths.Contains(path))
+                {
+                    if (!result.TryGetValue(path, out var detached))
+                    {
+                        detached = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        result[path] = detached;
+                    }
+
+                    detached.Add(detachedPath);
+                }
+
+                if (!onward)
+                {
+                    continue;
+                }
+
+                foreach (var reference in info.ProjectReferences)
+                {
+                    if (reference.ReferenceOutputAssemblyDisabled || reference.IsAnalyser)
+                    {
+                        continue;
+                    }
+
+                    frontier.Enqueue((reference.FullPath, !reference.PrivateAssetsAll));
+                }
+            }
+        }
+
+        return result.ToFrozenDictionary(
+            static pair => pair.Key,
+            static pair => pair.Value.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// High normally: the reference is unused across every project the workspace
+    /// could analyse. Capped to Moderate when an unloaded project on disk could
+    /// still be consuming it, because then the evidence behind "no consumer uses
+    /// this" is incomplete — the reference may well be load-bearing.
+    /// <para>
+    /// A reference marked PrivateAssets=all never reaches consumers at all, so an
+    /// unloaded consumer is irrelevant to it and it keeps its tier. Same rule the
+    /// hub gate above uses to ignore consumer usage: nothing flows, so nothing
+    /// can be proven by a consumer.
+    /// </para>
+    /// </summary>
+    private static CertaintyTier CertifyForDetachedConsumers(
+        FrozenDictionary<string, FrozenSet<string>> detachedConsumers,
+        string projectPath,
+        bool privateAssetsAll)
+    {
+        return !privateAssetsAll && detachedConsumers.ContainsKey(projectPath)
+            ? CertaintyTier.Moderate
+            : CertaintyTier.High;
+    }
+
+    private static string BuildPackageMessage(
+        string packageId,
+        string projectName,
+        string projectPath,
+        FrozenDictionary<string, FrozenSet<string>> detachedConsumers,
+        bool privateAssetsAll)
+    {
+        var suffix = privateAssetsAll ? string.Empty : DescribeDetachedConsumers(detachedConsumers, projectPath);
+        return suffix.Length == 0
+            ? $"Package '{packageId}' contributes assemblies but no symbol from it is used in project '{projectName}' or its consumers."
+            : $"Package '{packageId}' contributes assemblies but no symbol from it is used in project '{projectName}' or its loaded consumers.{suffix}";
+    }
+
+    private static string BuildProjectReferenceMessage(
+        string referencePath,
+        string projectName,
+        string projectPath,
+        FrozenDictionary<string, FrozenSet<string>> detachedConsumers,
+        bool privateAssetsAll)
+    {
+        var referenceName = Path.GetFileNameWithoutExtension(referencePath);
+        var suffix = privateAssetsAll ? string.Empty : DescribeDetachedConsumers(detachedConsumers, projectPath);
+        return suffix.Length == 0
+            ? $"Project reference '{referenceName}' is declared but no symbol from it or its transitive flow is used in project '{projectName}' or its consumers."
+            : $"Project reference '{referenceName}' is declared but no symbol from it or its transitive flow is used in project '{projectName}' or its loaded consumers.{suffix}";
+    }
+
+    /// <summary>
+    /// Names the unloaded projects that could still be consuming this one, so the
+    /// capped finding says what to check instead of only being less certain.
+    /// </summary>
+    private static string DescribeDetachedConsumers(
+        FrozenDictionary<string, FrozenSet<string>> detachedConsumers,
+        string projectPath)
+    {
+        if (!detachedConsumers.TryGetValue(projectPath, out var consumers) || consumers.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var named = consumers
+            .Select(path => Path.GetFileNameWithoutExtension(path))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        return $" Unloaded project(s) outside the solution may still use it: {string.Join(", ", named)}.";
     }
 
     /// <summary>

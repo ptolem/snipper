@@ -597,7 +597,8 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
             findings.Add(new SnipperFinding(
                 RuleId: "SNP0031",
                 Title: "Duplicate Clone Set",
-                Message: $"{tokenCount}-token block ({lines} lines) duplicated {fileCount} time(s) across {fileCount} file(s).",
+                Message: $"{tokenCount}-token block ({lines} lines) duplicated {fileCount} time(s) across {fileCount} file(s). "
+                        + $"Duplicated in: {DescribeDuplicationPartners(located.Select(m => (m.Path, m.StartLine)))}.",
                 Certainty: CertaintyTier.Advisory,
                 Category: FindingCategory.DuplicateFragment,
                 FilePath: anchor.Path,
@@ -613,6 +614,30 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
         }
 
         return (findings, cloneSets);
+    }
+
+    /// <summary>
+    /// The copies of a clone set as repository-relative <c>path:line</c>, ordinally ordered,
+    /// skipping the anchor the finding already points at.
+    /// <para>
+    /// Counts alone do not identify a set. The baseline fingerprint is
+    /// <c>RuleId | path | message</c> — it carries no line number — so two different
+    /// clone sets anchored in the same file and reported with the same token and line
+    /// counts produced a byte-identical message and therefore one fingerprint between
+    /// them: a suppression of one silently suppressed the other, and the finding could
+    /// not be told apart from its own neighbour in a report. Naming the partners makes
+    /// each message distinct, which is what makes the fingerprint distinct.
+    /// </para>
+    /// </summary>
+    private static string DescribeDuplicationPartners(IEnumerable<(string Path, int StartLine)> locations)
+    {
+        ArgumentNullException.ThrowIfNull(locations);
+
+        return string.Join(
+            ", ",
+            locations
+                .Select(location => $"{location.Path}:{location.StartLine}")
+                .OrderBy(text => text, StringComparer.Ordinal));
     }
 
     /// <summary>

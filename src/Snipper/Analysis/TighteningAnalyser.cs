@@ -238,6 +238,20 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
         foreach (var name in body.DescendantNodes().OfType<SimpleNameSyntax>())
         {
             var symbol = semanticModel.GetSymbolInfo(name, cancellationToken).Symbol;
+
+            // A primary-constructor parameter read inside an instance method is
+            // captured instance state, but it binds to an IParameterSymbol owned
+            // by the type's constructor — none of the member kinds below — so the
+            // hierarchy walk never saw it and the method was proposed as static
+            // when making it static would not compile. Only a *constructor*-owned
+            // parameter counts: the method's own parameters are parameters too,
+            // and a method using only those is genuinely static (see ParamsOnly).
+            if (symbol is IParameterSymbol { ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Constructor } capturedBy }
+                && IsInHierarchy(capturedBy.ContainingType, method.ContainingType))
+            {
+                return null;
+            }
+
             if (symbol is IFieldSymbol or IPropertySymbol or IMethodSymbol or IEventSymbol
                 && !symbol.IsStatic
                 && IsInHierarchy(symbol.ContainingType, method.ContainingType))

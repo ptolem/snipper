@@ -66,6 +66,35 @@ public sealed class TighteningAnalyserShould(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Not_Flag_Method_That_Captures_A_Primary_Constructor_Parameter_For_AnalyzeAsync()
+    {
+        var analyser = new TighteningAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().NotContain(f =>
+            f.RuleId == "SNP0024"
+            && f.Message.Contains("can be static", StringComparison.Ordinal)
+            && f.Message.Contains("LogName", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Still_Flag_Method_In_A_Class_With_A_Primary_Constructor_When_It_Uses_None_Of_Its_Parameters_For_AnalyzeAsync()
+    {
+        // Negative control for the test above: the bail-out has to key on the
+        // captured parameter, not on the mere presence of a primary constructor,
+        // or it would silence can-be-static for an entire class.
+        var analyser = new TighteningAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0024"
+            && f.Message.Contains("can be static", StringComparison.Ordinal)
+            && f.Message.Contains("ComputeValue", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Not_Flag_Method_When_It_Implements_An_Interface_For_AnalyzeAsync()
     {
         var analyser = new TighteningAnalyser();

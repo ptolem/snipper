@@ -54,6 +54,33 @@ public sealed class BaselineServiceShould
     }
 
     [Fact]
+    public void Collapse_Repeated_Fingerprints_When_Baseline_Is_Written_For_Write()
+    {
+        // The fingerprint carries no line number, so two findings rendering the same
+        // message in one file hash to one value. Writing both grew the file on every
+        // run and implied two suppressed findings where there is one — the same
+        // identity defect F6 fixes on the reporting side.
+        var baselinePath = Path.Combine(Path.GetTempPath(), $"snipper-baseline-{Guid.NewGuid():N}.json");
+
+        try
+        {
+            BaselineService.Write(baselinePath, ["abc123", "abc123", "def456"]);
+
+            var loaded = BaselineService.Load(baselinePath).Fingerprints;
+
+            loaded.Should().BeEquivalentTo(["abc123", "def456"]);
+            loaded.Should().OnlyHaveUniqueItems();
+        }
+        finally
+        {
+            if (File.Exists(baselinePath))
+            {
+                File.Delete(baselinePath);
+            }
+        }
+    }
+
+    [Fact]
     public void Return_Empty_Set_When_Baseline_File_Does_Not_Exist_For_Load()
     {
         var loaded = BaselineService.Load(Path.Combine(Path.GetTempPath(), $"does-not-exist-{Guid.NewGuid():N}.json"));

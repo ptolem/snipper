@@ -81,6 +81,55 @@ public sealed class UnreferencedPackageAnalyserShould(SampleSolutionFixture fixt
     }
 
     [Fact]
+    public async Task Cap_Package_At_Moderate_When_An_Unloaded_Project_On_Disk_Could_Consume_It_For_AnalyzeAsync()
+    {
+        // DetachedLib exists on disk and references CoreLib but is never opened into
+        // the workspace, so its symbol usage cannot be analysed. "No consumer uses
+        // this package" is unverifiable while it exists — the milkrun
+        // Microsoft.AspNetCore.Mvc.NewtonsoftJson finding. High would overstate the
+        // evidence; dropping the finding would hide a real candidate.
+        var analyser = new UnreferencedPackageAnalyser();
+
+        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        var capped = findings.Should().ContainSingle(f =>
+            f.RuleId == "SNP0003"
+            && f.Message.Contains("Humanizer.Core", StringComparison.Ordinal)
+            && f.FilePath.Contains("CoreLib", StringComparison.Ordinal)).Subject;
+
+        capped.Certainty.Should().Be(CertaintyTier.Moderate);
+    }
+
+    [Fact]
+    public async Task Name_The_Unloaded_Consumer_In_A_Capped_Package_Finding_For_AnalyzeAsync()
+    {
+        // A capped tier that does not say why leaves the reader guessing. The
+        // message has to point at the project to add or remove.
+        var findings = await new UnreferencedPackageAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0003"
+            && f.Message.Contains("Humanizer.Core", StringComparison.Ordinal)
+            && f.Message.Contains("DetachedLib", StringComparison.Ordinal)
+            && f.Message.Contains("may still use it", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Keep_An_Unimpacted_Package_At_High_While_Another_Has_An_Unloaded_Consumer_For_AnalyzeAsync()
+    {
+        // The cap is per-project, not global: Serilog.Sinks.Console is declared by
+        // the SAME CoreLib but PrivateAssets=all keeps it away from every consumer,
+        // including the unloaded one, so nothing about it is in doubt.
+        var findings = await new UnreferencedPackageAnalyser().AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        findings.Should().Contain(f =>
+            f.RuleId == "SNP0003"
+            && f.Message.Contains("Serilog.Sinks.Console", StringComparison.Ordinal)
+            && f.Certainty == CertaintyTier.High
+            && !f.Message.Contains("may still use it", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Not_Flag_ProjectReference_When_Its_Transitive_Flow_Is_Used_For_AnalyzeAsync()
     {
         // App → FacadeLib: FacadeLib's own assembly is empty, but the reference

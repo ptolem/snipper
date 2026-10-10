@@ -50,6 +50,14 @@ public static class Worker
         _ = RedundantTypeArgScenarios.ExerciseTypeArgs();
         _ = HierarchyScenarios.Exercise();
         _ = TighteningExercise.Run(3);
+
+        // Both halves of the two same-count clone sets: the anchor lives here and the
+        // partners in CoreLib/SameCountCloneSets.cs. Every member is read so the
+        // fixture stays free of dead-code findings that are not the point of it.
+        _ = SameCountAnchor.RenderFirst(8, 4, 2);
+        _ = SameCountAnchor.RenderSecond(8, 4, 2);
+        _ = CoreLib.SameCountPartnerOne.RenderFirst(8, 4, 2);
+        _ = CoreLib.SameCountPartnerTwo.RenderSecond(8, 4, 2);
         _ = InternalFixtureBridge.ConsumeCanBePrivate();
         InternalFixtureBridge.ExerciseCanBePrivate();
         _ = RedundantCastScenarios.Exercise();

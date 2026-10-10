@@ -32,7 +32,7 @@ public sealed class OrphanProjectAnalyser : IWorkspaceAnalyser
             return Task.FromResult<IReadOnlyList<SnipperFinding>>(findings);
         }
 
-        var rootDirectory = ResolveRootDirectory(solution);
+        var rootDirectory = DetachedProjectScanner.ResolveRootDirectory(solution);
         var loadedProjectPaths = graph.NodesByPath.Keys.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
         // In-degree pass: one count per inbound ProjectReference edge. ReferenceOutputAssembly=false
@@ -140,52 +140,4 @@ public sealed class OrphanProjectAnalyser : IWorkspaceAnalyser
     /// of all project directories (single-csproj runs scope the sweep to that project's
     /// own directory subtree rather than the whole repository).
     /// </summary>
-    private static string? ResolveRootDirectory(Solution solution)
-    {
-        if (solution.FilePath is { Length: > 0 } solutionPath
-            && Path.GetDirectoryName(solutionPath) is { Length: > 0 } solutionDirectory)
-        {
-            return solutionDirectory;
-        }
-
-        string? common = null;
-        foreach (var project in solution.Projects)
-        {
-            if (project.FilePath is not { Length: > 0 } projectPath || Path.GetDirectoryName(projectPath) is not { Length: > 0 } projectDirectory)
-            {
-                continue;
-            }
-
-            if (common is null)
-            {
-                common = projectDirectory;
-                continue;
-            }
-
-            common = CommonAncestor(common, projectDirectory);
-            if (common is null)
-            {
-                return null;
-            }
-        }
-
-        return common;
-    }
-
-    private static string? CommonAncestor(string first, string second)
-    {
-        var candidate = first;
-        while (candidate is { Length: > 0 })
-        {
-            if (second.StartsWith(candidate + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(second, candidate, StringComparison.OrdinalIgnoreCase))
-            {
-                return candidate;
-            }
-
-            candidate = Path.GetDirectoryName(candidate);
-        }
-
-        return null;
-    }
 }

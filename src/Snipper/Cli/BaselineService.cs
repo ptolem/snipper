@@ -90,9 +90,13 @@ internal static class BaselineService
             Directory.CreateDirectory(parentDirectory);
         }
 
+        // Distinct: the fingerprint deliberately carries no line number, so two findings
+        // that render the same message in the same file hash to one value. Writing both
+        // would grow the file on every run and imply two suppressed findings where there
+        // is one.
         var baseline = new BaselineFile(
             Version: "1",
-            Fingerprints: [.. fingerprints.Order(StringComparer.Ordinal)],
+            Fingerprints: [.. fingerprints.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)],
             CommitSha: commitSha);
         var json = JsonSerializer.Serialize(baseline, JsonReportSerializerContext.Default.BaselineFile);
         File.WriteAllText(baselinePath, json);
