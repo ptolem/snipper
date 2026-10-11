@@ -4,8 +4,8 @@ A map of the codebase for people who want to contribute to it. It explains how S
 memory, how analysers run, and how findings become a report — and, importantly, which invariants you
 must not break when adding to it.
 
-Written against the 1.7.4 tree, ~14,990 lines of C# across 80 files in `src/Snipper` (19 registered
-analysers, 28 rule IDs, 590 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
+Written against the 1.14.0 tree, ~15,290 lines of C# across 92 files in `src/Snipper` (21 registered
+analysers, 30 rule IDs, 689 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
 Spectre.Console.
 
 For *using* the tool see the [usage guide](usage.md). For *why* the design is the way it is see
@@ -97,7 +97,7 @@ flowchart TB
         subgraph PROC["Analysis process"]
             direction TB
             AR{{"<b>AnalysisRunner</b><br/>warm-up + parallel fan-out"}}
-            AN["<b>20 analysers</b><br/><i>IWorkspaceAnalyser</i><br/>SNP0001-SNP0033"]
+            AN["<b>21 analysers</b><br/><i>IWorkspaceAnalyser</i><br/>SNP0001-SNP0034"]
             IDX["<b>Shared indexes</b><br/><i>solution-keyed, memoized</i><br/>usage / framework / inheritance / packages"]
         end
 
