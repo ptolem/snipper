@@ -130,7 +130,7 @@ The doc answers three questions, in order:
 | Coverage-driven "never executed" code | — (tracked) | ✓ dotCover; Qodana fresh/total coverage | — | ✓ (imports coverage) | ~ | — |
 | Dead code kept alive *only* by tests | — | — | — | ~ (derivable) | ~ | ~ (`--dead-code` confidence, JS/TS/Py/Rust) |
 | **Complexity / size** | | | | | | |
-| Cyclomatic / cognitive complexity, nesting | — | ✓ | ~ | ✓ | ✓ | ~ (`--complexity` ranking) |
+| Cyclomatic / cognitive complexity, nesting | ✓ SNP0033 + **SNP0034** (1.14.0: nesting-weighted, SonarSource spec; both report, neither suppresses the other) | ✓ | ~ | ✓ | ✓ | ~ (`--complexity` ranking) |
 | **Workflow** | | | | | | |
 | Auto-fix / bulk cleanup | — (read-only tenet) | ✓ CleanupCode; Qodana CLEANUP/APPLY; Quick-Fix | ✓ Code Cleanup + `dotnet format` | — | ~ (AI CodeFix) | — |
 | Safe-delete with usage preview | — | ~ | ~ | — | — | — |

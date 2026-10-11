@@ -394,23 +394,35 @@ public class AnalyserFactoryShould
         };
 
     [Fact]
-    public void Build_The_Default_Eighteen_Analysers()
+    public void Build_The_Default_Nineteen_Analysers()
     {
         var built = AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".");
 
-        built.Should().HaveCount(18);
+        built.Should().HaveCount(19);
+    }
+
+    [Fact]
+    public void Build_Both_Complexity_Rules_By_Default()
+    {
+        var built = AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".");
+
+        // Both complexity rules are default-on, and they are separate analysers rather
+        // than one with a mode flag: the metrics disagree by construction, so a consumer
+        // who wants only one must be able to turn the other off by ID.
+        built.Should().ContainSingle(a => a.RuleIds.Contains("SNP0033"));
+        built.Should().ContainSingle(a => a.RuleIds.Contains("SNP0034"));
     }
 
     [Fact]
     public void Add_The_Opt_In_Analysers_Only_When_Asked()
     {
-        AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".").Should().HaveCount(18);
+        AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".").Should().HaveCount(19);
         AnalyserFactory.Build(Options(configAnalysis: true), AnalysisExclusions.None, ".")
-            .Should().HaveCount(19);
-        AnalyserFactory.Build(Options(duplicateDetection: true), AnalysisExclusions.None, ".")
-            .Should().HaveCount(19);
-        AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), AnalysisExclusions.None, ".")
             .Should().HaveCount(20);
+        AnalyserFactory.Build(Options(duplicateDetection: true), AnalysisExclusions.None, ".")
+            .Should().HaveCount(20);
+        AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), AnalysisExclusions.None, ".")
+            .Should().HaveCount(21);
     }
 
     [Fact]
@@ -435,7 +447,7 @@ public class AnalyserFactoryShould
         var built = AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), AnalysisExclusions.None, ".");
         var partition = AnalyserFactory.PartitionByExclusionSensitivity(built);
 
-        partition.Aware.Should().HaveCount(16);
+        partition.Aware.Should().HaveCount(17);
         partition.Agnostic.Select(a => a.GetType().Name).Should().BeEquivalentTo(
         [
             "UnreferencedPackageAnalyser",

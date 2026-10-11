@@ -44,6 +44,14 @@ internal sealed record CommandLineOptions
     /// </summary>
     public int MaxCyclomaticComplexity { get; init; } = CyclomaticComplexityAnalyser.DefaultMaxComplexity;
 
+    /// <summary>
+    /// Cognitive-complexity ceiling for SNP0034, or null to leave the rule at its
+    /// calibrated default. Kept separate from <see cref="MaxCyclomaticComplexity"/>
+    /// because the two metrics disagree by construction — one method can breach
+    /// either — and a single flag would make it impossible to move one without the other.
+    /// </summary>
+    public int? MaxCognitiveComplexity { get; init; }
+
     public FrozenSet<string> ExcludedNamespaces { get; init; } = FrozenSet<string>.Empty;
 
     /// <summary>
@@ -76,7 +84,7 @@ internal static class CommandLineParser
         "[[--exclude-namespaces <list>]] [[--config-analysis]] [[--duplicate-detection]] " +
         "[[--clone-drift]] [[--audit-suppressions]] [[--entropy-rate]] " +
         "[[--entropy-budget <per-kloc>]] [[--entropy-ledger <path>]] " +
-        "[[--entropy-min-lines <n>]] [[--max-complexity <n>]] [[--version]]";
+        "[[--entropy-min-lines <n>]] [[--max-complexity <n>]] [[--max-cognitive-complexity <n>]] [[--version]]";
 
     public static bool TryParse(string[] args, out CommandLineOptions options, out string? error)
     {
@@ -110,6 +118,7 @@ internal static class CommandLineParser
         string? entropyLedgerPath = null;
         var entropyMinimumLines = EntropyRateCalculator.DefaultMinimumLines;
         var maxCyclomaticComplexity = CyclomaticComplexityAnalyser.DefaultMaxComplexity;
+        int? maxCognitiveComplexity = null;
         var excludedNamespaces = new List<string>();
         var malformedNamespaces = new List<string>();
 
@@ -203,7 +212,18 @@ internal static class CommandLineParser
                     return false;
                 }
 
-                maxCyclomaticComplexity = complexityMax;
+maxCyclomaticComplexity = complexityMax;
+                i++;
+            }
+            else if (string.Equals(args[i], "--max-cognitive-complexity", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out var cognitiveMax) || cognitiveMax < 1)
+                {
+                    error = "Error: --max-cognitive-complexity requires a positive integer.";
+                    return false;
+                }
+
+                maxCognitiveComplexity = cognitiveMax;
                 i++;
             }
             else if (string.Equals(args[i], "--exclude-namespaces", StringComparison.OrdinalIgnoreCase))
@@ -284,6 +304,7 @@ internal static class CommandLineParser
             EntropyLedgerPath = entropyLedgerPath,
             EntropyMinimumLines = entropyMinimumLines,
             MaxCyclomaticComplexity = maxCyclomaticComplexity,
+            MaxCognitiveComplexity = maxCognitiveComplexity,
             ExcludedNamespaces = excludedNamespaces.ToFrozenSet(StringComparer.Ordinal),
             MalformedNamespaces = malformedNamespaces,
         };

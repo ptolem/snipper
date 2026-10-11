@@ -161,28 +161,8 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
     /// The body of <paramref name="node"/> if it introduces a scope that is scored
     /// on its own, otherwise null.
     /// </summary>
-    private static SyntaxNode? GetFunctionBody(SyntaxNode node) => node switch
-    {
-        MethodDeclarationSyntax method => method.Body ?? (SyntaxNode?)method.ExpressionBody,
-        ConstructorDeclarationSyntax constructor => constructor.Body ?? (SyntaxNode?)constructor.ExpressionBody,
-        DestructorDeclarationSyntax destructor => destructor.Body ?? (SyntaxNode?)destructor.ExpressionBody,
-        OperatorDeclarationSyntax op => op.Body ?? (SyntaxNode?)op.ExpressionBody,
-        ConversionOperatorDeclarationSyntax conversion => conversion.Body ?? (SyntaxNode?)conversion.ExpressionBody,
-        LocalFunctionStatementSyntax local => local.Body ?? (SyntaxNode?)local.ExpressionBody,
-        AccessorDeclarationSyntax accessor => accessor.Body ?? (SyntaxNode?)accessor.ExpressionBody,
-
-        // An expression-bodied property or indexer is a single implicit accessor. One
-        // with a real accessor list is scored through those accessors, never here, so
-        // it cannot be counted twice.
-        PropertyDeclarationSyntax property when property.AccessorList is null => property.ExpressionBody,
-        IndexerDeclarationSyntax indexer when indexer.AccessorList is null => indexer.ExpressionBody,
-
-        SimpleLambdaExpressionSyntax simple => simple.Body,
-        ParenthesizedLambdaExpressionSyntax parenthesized => parenthesized.Body,
-        AnonymousMethodExpressionSyntax anonymous => anonymous.Body,
-
-        _ => null,
-    };
+    private static SyntaxNode? GetFunctionBody(SyntaxNode node) =>
+        ComplexityFunctionBody.TryGetBody(node, includeLambdas: true);
 
     /// <summary>
     /// Counts decision points in one function body, starting from ReSharper's

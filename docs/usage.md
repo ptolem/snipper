@@ -116,6 +116,27 @@ A real failure outranks a policy failure: if the report cannot be written, you g
 | `--duplicate-detection` | — | Enables SNP0031 (duplicated fragments). |
 | `--clone-drift` | — | Enables SNP0032 (clone drift). **Implies `--duplicate-detection`** — they share one shingling pass, so asking for two flags to get one feature would be user-hostile. |
 
+### Complexity thresholds
+
+Both complexity rules are on by default and have their own ceiling.
+
+| Option | Value | Notes |
+| --- | --- | --- |
+| `--max-complexity` | n | Cyclomatic ceiling for SNP0033. Default 15. |
+| `--max-cognitive-complexity` | n | Cognitive ceiling for SNP0034. Default 15. |
+
+The two flags exist separately because the metrics **disagree by construction** — one method can breach
+either without breaching the other. A single flag would make it impossible to move one threshold
+without dragging the other along, and would hide the disagreement.
+
+Neither rule suppresses the other: a method can be reported by both, by one, or by neither, and each
+message names the rule it can disagree with. On the reference monorepo at the defaults, **29**
+methods breach both, **51** breach only SNP0034, and **13** breach only SNP0033. If you want only one
+metric, turn the other off by ID in `snipper.json` rather than raising a threshold.
+
+These thresholds are **CLI-only**, like `--certainty-tier`. A committed config that pinned a
+complexity ceiling would churn every baseline whenever a team adjusted it.
+
 ### Baselines and entropy (4B)
 
 | Option | Value | Notes |
@@ -496,6 +517,8 @@ analyser".
 | `TighteningAnalyser` | SNP0024 | Advisory | yes |
 | `CommentedCodeAnalyser` | SNP0020 | Advisory | yes |
 | `EventNeverInvokedAnalyser` | SNP0030 | Advisory | yes |
+| `CyclomaticComplexityAnalyser` | SNP0033 | Advisory | yes |
+| `CognitiveComplexityAnalyser` | SNP0034 | Advisory | yes |
 | `ConfigurationBindingAnalyser` | SNP0007, SNP0008 | Advisory | **no** — `--config-analysis` |
 | `DuplicateFragmentAnalyser` | SNP0031 (Advisory), SNP0032 (High/Advisory) | Advisory, High/Advisory | **no** — `--duplicate-detection` / `--clone-drift` |
 
@@ -731,6 +754,7 @@ What changes for you when you upgrade, and whether it disturbs a baseline.
 | `1.11.0` | SNP0006 and SNP0018 gained wire-contract evidence: minimal-API typed-result returns seed the DTO closure, the closure walks base types, obsolete enum ordinals are recognised, and used obsolete extension holders are rescued. | **Re-baseline.** 140 findings removed on the reference repo (SNP0018 49 to 1, SNP0006 1,647 to 1,558), none added. Nothing needs removing by hand - they simply stop being reported. |
 | `1.12.0` | SNP0032 `High` is now earned by a **shape** rather than a bare word: comments and string literals are stripped before matching, `Count`/`Length` need a following comparison, and an added line whose text already existed on the removed side is a rearrangement, not a fix. | **Re-baseline.** No finding is added or removed, but 13 on the reference repo change **tier**, and the tier is the first words of the message. Each therefore re-fingerprints and surfaces as new. This is the one release whose baseline effect is invisible in the finding count - see below. |
 | `1.13.0` | SNP0024 no longer proposes `static` on a method that captures a primary-constructor parameter; SNP0003 caps at `Moderate` and names the unloaded project when a `.csproj` outside the solution may still consume the reference; SNP0031 messages name their copies. | **Re-baseline, and the count is a misleading summary.** 282 SNP0024 findings disappear on the reference repo (701 to 419), 7 SNP0003 findings change tier, and all 1,094 SNP0031 findings change message while *none* is added or removed. Two findings that used to share a fingerprint now have their own - see below. |
+| `1.14.0` | **SNP0034 (cognitive complexity) is added**, on by default, alongside SNP0033. It weights nesting, which cyclomatic ignores, so it finds deeply-nested methods that pass SNP0033. A new `--max-cognitive-complexity` flag sets its ceiling independently. | **Re-baseline.** 80 new findings on the reference repo, **0 removed, every other rule byte-identical**. All 80 are new by definition, so they will all surface as new on the first run. |
 
 **Finding-count changes move a baseline, but they are not the only thing that does.** Fingerprints are
 derived from `RuleId | path | message` - no version stamp - so a rule that emits the same finding

@@ -50,6 +50,12 @@ internal static class AnalyserFactory
 new TighteningAnalyser(exclusions),
               new EventNeverInvokedAnalyser(exclusions),
               new CyclomaticComplexityAnalyser(exclusions, options.MaxCyclomaticComplexity),
+
+              // Both complexity rules ship by default and are suppressed together. The
+              // metrics disagree by construction, so a consumer who only wants one turns
+              // the other off by ID in snipper.json — the report shows both scores, which
+              // is the point: the disagreement is the signal.
+              new CognitiveComplexityAnalyser(exclusions, options.MaxCognitiveComplexity),
           };
 
         if (options.IncludeConfigAnalysis)
