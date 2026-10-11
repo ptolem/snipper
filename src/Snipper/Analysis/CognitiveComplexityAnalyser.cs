@@ -132,6 +132,13 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
                     continue;
                 }
 
+                // Complexity thresholds are a review trigger, and nobody reviews a test
+                // fixture. Shared with SNP0033 - see ExclusionEngine.IsTestCode.
+                if (ExclusionEngine.IsTestCode(document.FilePath, project.Name))
+                {
+                    continue;
+                }
+
                 // Lambdas are excluded here because their bodies are scored inside the
                 // method that declares them, at a raised nesting level.
                 foreach (var node in root.DescendantNodes())

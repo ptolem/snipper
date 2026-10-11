@@ -129,6 +129,25 @@ The two flags exist separately because the metrics **disagree by construction** 
 either without breaching the other. A single flag would make it impossible to move one threshold
 without dragging the other along, and would hide the disagreement.
 
+**Both complexity rules skip test code by default.** A document is treated as test code when it sits
+under a directory named exactly `test` or `tests`, or when its project's final dotted segment is
+`Test`/`Tests` or ends with `Tests` (`Widget.UnitTests`, `Widget.E2ETests`). This is deliberately
+**not** a substring match: production code in a folder called `Contest`, `Testing` or `Latest` is
+still analysed, because silently dropping real code is a worse failure than a noisy finding.
+
+The reasoning is in [`history/1_14_0_plan.md`](history/1_14_0_plan.md) — in short, the highest
+cognitive score on the reference monorepo (39) was a test fixture that was 39 sibling null guards
+with no nesting at all, and a threshold that fires on code nobody reviews stops being read as a
+threshold at all.
+
+The exclusion applies to SNP0033 and SNP0034 **only**. Every other rule, including the
+reference-checking rules, still analyses test code: a private member that is genuinely dead is just
+as dead in a test project.
+
+**Known behaviour:** a flat wall of independent conditions (`if (a is not null) …` repeated 30
+times) scores as high as a genuinely nested method, because cognitive complexity counts conditions
+and cannot tell that they do not interact. This matches SonarSource's S3776.
+
 Neither rule suppresses the other: a method can be reported by both, by one, or by neither, and each
 message names the rule it can disagree with. On the reference monorepo at the defaults, **29**
 methods breach both, **51** breach only SNP0034, and **13** breach only SNP0033. If you want only one

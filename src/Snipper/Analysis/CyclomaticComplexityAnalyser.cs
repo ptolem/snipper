@@ -98,6 +98,13 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
                     continue;
                 }
 
+                // Complexity thresholds are a review trigger, and nobody reviews a test
+                // fixture. Shared with SNP0034 - see ExclusionEngine.IsTestCode.
+                if (ExclusionEngine.IsTestCode(document.FilePath, project.Name))
+                {
+                    continue;
+                }
+
                 // One walk per document, scoring each callable body it finds. The
                 // inner Measure walk prunes nested function scopes, so a lambda is
                 // counted once as itself and never again as part of its parent.
