@@ -24,7 +24,8 @@ using Snipper.Models;
 /// </summary>
 public sealed class DuplicateFragmentAnalyser(
     AnalysisExclusions? exclusions = null,
-    CloneDriftDetector? cloneDrift = null) : IWorkspaceAnalyser
+    CloneDriftDetector? cloneDrift = null,
+    string? baseDirectory = null) : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = cloneDrift is null ? ["SNP0031"] : ["SNP0031", "SNP0032"];
 
@@ -45,6 +46,21 @@ public sealed class DuplicateFragmentAnalyser(
     private const int MaxLocationsPerBucket = 512;
 
     private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
+
+    /// <summary>
+    /// The directory named paths are made relative to, or null to derive one from the
+    /// analysed files themselves.
+    /// <para>
+    /// This is the same root <c>BaselineService.ComputeFingerprint</c> shortens
+    /// <see cref="SnipperFinding.FilePath"/> against, and it has to be. The fingerprint is
+    /// <c>RuleId | relativePath | Message</c>, and the message is hashed verbatim - so
+    /// naming an absolute path in the message re-introduces through the message exactly the
+    /// machine dependence that shortening the path field exists to remove. A baseline
+    /// recorded at <c>C:\build\repo</c> would report every SNP0031 finding as new on
+    /// <c>C:\Users\someone\repo</c>.
+    /// </para>
+    /// </summary>
+    private readonly string? _baseDirectory = baseDirectory;
 
     /// <summary>
     /// Optional 4C drift pass. Null disables SNP0032 entirely, so the default cost and output of
@@ -473,6 +489,11 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
         }
 
         var byPath = files.ToDictionary(f => f.Path, StringComparer.Ordinal);
+
+        // Resolved once per run, not per finding: every message in this pass has to be
+        // spelled against the same root or the set would not be internally consistent.
+        var root = _baseDirectory ?? CommonRoot([.. files.Select(f => f.Path)]);
+
         var parent = new int[fragments.Count];
         for (var index = 0; index < parent.Length; index++)
         {
@@ -598,7 +619,7 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
                 RuleId: "SNP0031",
                 Title: "Duplicate Clone Set",
                 Message: $"{tokenCount}-token block ({lines} lines) duplicated {fileCount} time(s) across {fileCount} file(s). "
-                        + $"Duplicated in: {DescribeDuplicationPartners(located.Select(m => (m.Path, m.StartLine)))}.",
+                        + $"Duplicated in: {DescribeDuplicationPartners(located.Select(m => (m.Path, m.StartLine)), root)}.",
                 Certainty: CertaintyTier.Advisory,
                 Category: FindingCategory.DuplicateFragment,
                 FilePath: anchor.Path,
@@ -617,6 +638,7 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
     }
 
     /// <summary>
+    /// <summary>
     /// The copies of a clone set as repository-relative <c>path:line</c>, ordinally ordered,
     /// skipping the anchor the finding already points at.
     /// <para>
@@ -628,16 +650,78 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
     /// not be told apart from its own neighbour in a report. Naming the partners makes
     /// each message distinct, which is what makes the fingerprint distinct.
     /// </para>
+    /// <para>
+    /// The paths are shortened against <paramref name="root"/> and written with forward
+    /// slashes, matching how <c>BaselineService</c> spells the finding's own path field.
+    /// Both halves are load-bearing: an absolute path here makes the message - and
+    /// therefore the fingerprint, which hashes the message verbatim - a function of where
+    /// the repository happens to be checked out, so a baseline stops matching on any other
+    /// machine, and the report carries the analysing user's directory layout to whoever
+    /// reads it.
+    /// </para>
     /// </summary>
-    private static string DescribeDuplicationPartners(IEnumerable<(string Path, int StartLine)> locations)
+    private static string DescribeDuplicationPartners(
+        IEnumerable<(string Path, int StartLine)> locations,
+        string root)
     {
         ArgumentNullException.ThrowIfNull(locations);
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
 
         return string.Join(
             ", ",
             locations
-                .Select(location => $"{location.Path}:{location.StartLine}")
+                .Select(location =>
+                    $"{Path.GetRelativePath(root, location.Path).Replace('\\', '/')}:{location.StartLine}")
                 .OrderBy(text => text, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// The deepest directory containing every analysed file, used when the caller supplied
+    /// no root of its own.
+    /// <para>
+    /// Deriving one rather than falling back to absolute paths is the point: a caller that
+    /// forgets the argument should get the portable spelling, not the leaky one. The result
+    /// is a function of the analysed file set alone, so two checkouts of the same commit
+    /// agree, which is the property the message is relying on.
+    /// </para>
+    /// </summary>
+    internal static string CommonRoot(IReadOnlyList<string> paths)
+    {
+        if (paths.Count == 0)
+        {
+            return Directory.GetCurrentDirectory();
+        }
+
+        var root = Path.GetDirectoryName(paths[0]);
+        if (string.IsNullOrEmpty(root))
+        {
+            return Directory.GetCurrentDirectory();
+        }
+
+        foreach (var path in paths)
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(directory))
+            {
+                continue;
+            }
+
+            // Shrink the candidate until it is a prefix of this file's directory. Both
+            // sides move: the file's own directory is fixed, the root walks upward until
+            // it covers it.
+            while (!directory.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            {
+                var parent = Path.GetDirectoryName(root);
+                if (string.IsNullOrEmpty(parent) || string.Equals(parent, root, StringComparison.Ordinal))
+                {
+                    return parent ?? Directory.GetCurrentDirectory();
+                }
+
+                root = parent;
+            }
+        }
+
+        return root;
     }
 
     /// <summary>

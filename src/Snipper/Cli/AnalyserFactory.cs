@@ -25,10 +25,15 @@ internal static class AnalyserFactory
     /// token-normalized clone detection flags structurally uniform code, which is
     /// duplication by design in most codebases.
     /// </summary>
-    public static List<IWorkspaceAnalyser> Build(CommandLineOptions options, AnalysisExclusions exclusions, string targetPath)
+    public static List<IWorkspaceAnalyser> Build(
+        CommandLineOptions options,
+        AnalysisExclusions exclusions,
+        string targetPath,
+        string baseDirectory)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(exclusions);
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
 
         var built = new List<IWorkspaceAnalyser>
         {
@@ -67,9 +72,16 @@ new TighteningAnalyser(exclusions),
         {
             // The repository root for drift detection is the directory git reports, not the
             // analysed project, so paths resolve identically to the history index.
+            //
+            // baseDirectory is a different root on purpose: it is the one
+            // BaselineService shortens finding paths against, and SNP0031 names its
+            // other copies in the message it hashes. Passing the same root to both is
+            // what stops the message reintroducing machine dependence through the back
+            // door.
             built.Add(new DuplicateFragmentAnalyser(
                 exclusions,
-                options.IncludeCloneDrift ? new CloneDriftDetector(FindRepositoryRoot(targetPath)) : null));
+                options.IncludeCloneDrift ? new CloneDriftDetector(FindRepositoryRoot(targetPath)) : null,
+                baseDirectory));
         }
 
         return built;

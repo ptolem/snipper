@@ -16,12 +16,36 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
 {
     private const string Rule = "SNP0031";
 
-    private async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(AnalysisExclusions? exclusions = null)
+    private async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
+        AnalysisExclusions? exclusions = null,
+        string? baseDirectory = null)
     {
-        var analyser = new DuplicateFragmentAnalyser(exclusions);
+        var analyser = new DuplicateFragmentAnalyser(exclusions, cloneDrift: null, baseDirectory);
         var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
 
         return findings.Where(f => f.RuleId == Rule).ToList();
+    }
+
+    /// <summary>
+    /// The <c>path:line</c> entries a finding names after "Duplicated in:", each with
+    /// its line number stripped.
+    /// </summary>
+    private static IReadOnlyList<string> NamedCopies(SnipperFinding finding)
+    {
+        const string marker = "Duplicated in: ";
+        var start = finding.Message.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return [];
+        }
+
+        return
+        [
+            .. finding.Message[(start + marker.Length)..]
+                .Split(", ", StringSplitOptions.RemoveEmptyEntries)
+                .Select(entry => entry[..entry.LastIndexOf(':')])
+                .OfType<string>()
+        ];
     }
 
     private static string ShortName(SnipperFinding finding)
@@ -85,15 +109,15 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
     }
 
     [Fact]
-public async Task Flag_A_Cross_Project_Exact_Clone_For_AnalyzeAsync()
-        {
-            var findings = await AnalyzeAsync();
+    public async Task Flag_A_Cross_Project_Exact_Clone_For_AnalyzeAsync()
+    {
+        var findings = await AnalyzeAsync();
 
-            // The set is reported once, anchored at whichever member sorts first, so
-            // the assertion is over the whole set rather than over FilePath alone.
-            findings.Should().Contain(f =>
-                FilesOf(f).Contains("CloneFixtures.cs", StringComparer.Ordinal));
-        }
+        // The set is reported once, anchored at whichever member sorts first, so
+        // the assertion is over the whole set rather than over FilePath alone.
+        findings.Should().Contain(f =>
+            FilesOf(f).Contains("CloneFixtures.cs", StringComparer.Ordinal));
+    }
 
     [Fact]
     public async Task Report_The_Counterpart_Project_For_AnalyzeAsync()
@@ -116,20 +140,20 @@ public async Task Flag_A_Cross_Project_Exact_Clone_For_AnalyzeAsync()
     }
 
     [Fact]
-public async Task State_The_Occurrence_Count_And_Other_Location_For_AnalyzeAsync()
-        {
-            var findings = await AnalyzeAsync();
+    public async Task State_The_Occurrence_Count_And_Other_Location_For_AnalyzeAsync()
+    {
+        var findings = await AnalyzeAsync();
 
-            // The count and the sibling locations are the whole point of the finding,
-            // so both must survive the collapse: the count in the message, the copies
-            // as related locations.
-            findings.Should().Contain(f =>
-                f.Message.Contains("duplicated", StringComparison.Ordinal)
-                && f.Message.Contains("time(s)", StringComparison.Ordinal)
-                && f.Message.Contains("file(s)", StringComparison.Ordinal));
+        // The count and the sibling locations are the whole point of the finding,
+        // so both must survive the collapse: the count in the message, the copies
+        // as related locations.
+        findings.Should().Contain(f =>
+            f.Message.Contains("duplicated", StringComparison.Ordinal)
+            && f.Message.Contains("time(s)", StringComparison.Ordinal)
+            && f.Message.Contains("file(s)", StringComparison.Ordinal));
 
-            findings.Count(f => f.RelatedLocations is { Count: > 0 }).Should().BeGreaterThan(0);
-        }
+        findings.Count(f => f.RelatedLocations is { Count: > 0 }).Should().BeGreaterThan(0);
+    }
 
     [Fact]
     public async Task Not_Flag_A_Short_Identical_Helper_For_AnalyzeAsync()
@@ -165,48 +189,48 @@ public async Task State_The_Occurrence_Count_And_Other_Location_For_AnalyzeAsync
     }
 
     [Fact]
-public async Task Flag_A_File_Scope_Fragment_For_AnalyzeAsync()
-        {
-            var findings = await AnalyzeAsync();
+    public async Task Flag_A_File_Scope_Fragment_For_AnalyzeAsync()
+    {
+        var findings = await AnalyzeAsync();
 
-            // FileScopeClone.cs and its mirror carry duplicated helpers with no
-            // enclosing type declaration at file scope. One set, one finding - so both
-            // files must be reachable from that single finding.
-            var covering = findings
-                .Where(f => FilesOf(f).Contains("FileScopeClone.cs", StringComparer.Ordinal))
-                .ToList();
+        // FileScopeClone.cs and its mirror carry duplicated helpers with no
+        // enclosing type declaration at file scope. One set, one finding - so both
+        // files must be reachable from that single finding.
+        var covering = findings
+            .Where(f => FilesOf(f).Contains("FileScopeClone.cs", StringComparer.Ordinal))
+            .ToList();
 
-            covering.Should().NotBeEmpty();
-            covering.Should().Contain(f =>
-                FilesOf(f).Contains("FileScopeCloneMirror.cs", StringComparer.Ordinal));
-        }
+        covering.Should().NotBeEmpty();
+        covering.Should().Contain(f =>
+            FilesOf(f).Contains("FileScopeCloneMirror.cs", StringComparer.Ordinal));
+    }
 
-        [Fact]
-        public async Task Report_One_Finding_Per_Set_Not_One_Per_Copy_For_AnalyzeAsync()
-        {
-            // The defect this change exists for: a skeleton copied N times was N
-            // findings, so one duplication could dominate a threshold table. Each set
-            // must now yield exactly one finding, and that finding must list the rest.
-            var findings = await AnalyzeAsync();
+    [Fact]
+    public async Task Report_One_Finding_Per_Set_Not_One_Per_Copy_For_AnalyzeAsync()
+    {
+        // The defect this change exists for: a skeleton copied N times was N
+        // findings, so one duplication could dominate a threshold table. Each set
+        // must now yield exactly one finding, and that finding must list the rest.
+        var findings = await AnalyzeAsync();
 
-            findings.Should().NotBeEmpty();
+        findings.Should().NotBeEmpty();
 
-            // Uniqueness is per anchor *span*, not per file and not per line: one file can
-            // legitimately anchor several distinct clone sets, and two different fragments
-            // can begin on the same line. What must never repeat is one anchor, which is
-            // what per-window reporting produced ~140 times over for a single clone.
-            findings.Select(f => (f.FilePath, f.LineNumber, f.CharacterOffset))
-                .Should().OnlyHaveUniqueItems("one anchor fragment per clone set");
+        // Uniqueness is per anchor *span*, not per file and not per line: one file can
+        // legitimately anchor several distinct clone sets, and two different fragments
+        // can begin on the same line. What must never repeat is one anchor, which is
+        // what per-window reporting produced ~140 times over for a single clone.
+        findings.Select(f => (f.FilePath, f.LineNumber, f.CharacterOffset))
+            .Should().OnlyHaveUniqueItems("one anchor fragment per clone set");
 
-            // A set of two or more always leaves at least one other copy to point at, so every
-            // finding must carry related locations. Count(...) rather than OnlyContain(...)
-            // because the latter compiles to an expression tree, where `is` is illegal.
-            findings.Count(f => f.RelatedLocations is { Count: > 0 })
-                .Should().Be(findings.Count);
-        }
+        // A set of two or more always leaves at least one other copy to point at, so every
+        // finding must carry related locations. Count(...) rather than OnlyContain(...)
+        // because the latter compiles to an expression tree, where `is` is illegal.
+        findings.Count(f => f.RelatedLocations is { Count: > 0 })
+            .Should().Be(findings.Count);
+    }
 
-        [Fact]
-        public async Task Use_Advisory_Certainty_And_Duplicate_Category_For_AnalyzeAsync()
+    [Fact]
+    public async Task Use_Advisory_Certainty_And_Duplicate_Category_For_AnalyzeAsync()
     {
         var findings = await AnalyzeAsync();
 
@@ -215,8 +239,8 @@ public async Task Flag_A_File_Scope_Fragment_For_AnalyzeAsync()
         findings.Should().OnlyContain(f => f.Category == FindingCategory.DuplicateFragment);
     }
 
-[Fact]
-        public async Task Give_Every_Clone_Set_A_Distinct_Message_For_AnalyzeAsync()
+    [Fact]
+    public async Task Give_Every_Clone_Set_A_Distinct_Message_For_AnalyzeAsync()
     {
         // The baseline fingerprint is RuleId|path|message and carries no position, so two
         // clone sets anchored in the same file that report the same token and line counts
@@ -228,33 +252,33 @@ public async Task Flag_A_File_Scope_Fragment_For_AnalyzeAsync()
             .Should().OnlyHaveUniqueItems("each clone set needs its own message to fingerprint separately");
     }
 
-[Fact]
-        public async Task Separate_Two_Same_Count_Sets_Anchored_In_One_File_For_AnalyzeAsync()
-        {
-            // SameCountCloneSets.cs holds two sets of identical shape and length, each
-            // paired with a different partner — the milkrun line-109 case, reproduced.
-            // Both anchor in the same file and report the same token and line counts,
-            // so counts alone cannot tell them apart. Deduplicating by
-            // (rule, file, span) would have merged these into one and lost a real clone;
-            // they must survive as two findings naming different partners.
-            var findings = await AnalyzeAsync();
+    [Fact]
+    public async Task Separate_Two_Same_Count_Sets_Anchored_In_One_File_For_AnalyzeAsync()
+    {
+        // SameCountCloneSets.cs holds two sets of identical shape and length, each
+        // paired with a different partner — the milkrun line-109 case, reproduced.
+        // Both anchor in the same file and report the same token and line counts,
+        // so counts alone cannot tell them apart. Deduplicating by
+        // (rule, file, span) would have merged these into one and lost a real clone;
+        // they must survive as two findings naming different partners.
+        var findings = await AnalyzeAsync();
 
-            var anchored = findings
-                .Where(f => Path.GetFileName(f.FilePath).Equals("SameCountAnchor.cs", StringComparison.Ordinal))
-                .ToList();
+        var anchored = findings
+            .Where(f => Path.GetFileName(f.FilePath).Equals("SameCountAnchor.cs", StringComparison.Ordinal))
+            .ToList();
 
-            anchored.Should().HaveCountGreaterThanOrEqualTo(2, "two distinct sets share this anchor file");
-            anchored.Select(f => f.Message).Should().OnlyHaveUniqueItems();
+        anchored.Should().HaveCountGreaterThanOrEqualTo(2, "two distinct sets share this anchor file");
+        anchored.Select(f => f.Message).Should().OnlyHaveUniqueItems();
 
-            // The two sets differ only in which partner they name, so that is what has
-            // to differ in the message — and therefore in the baseline fingerprint. The
-            // partner classes sit in one file, so the message names its location; the
-            // two entries below are the two distinct sets, at different line numbers.
-            var rendered = anchored.Select(f => f.Message).ToList();
-            rendered.Should().OnlyHaveUniqueItems();
-            rendered.Should().Contain(m => m.Contains("SameCountCloneSets.cs", StringComparison.Ordinal));
-            anchored.Select(f => f.LineNumber).Should().OnlyHaveUniqueItems("two sets anchor at two places");
-        }
+        // The two sets differ only in which partner they name, so that is what has
+        // to differ in the message — and therefore in the baseline fingerprint. The
+        // partner classes sit in one file, so the message names its location; the
+        // two entries below are the two distinct sets, at different line numbers.
+        var rendered = anchored.Select(f => f.Message).ToList();
+        rendered.Should().OnlyHaveUniqueItems();
+        rendered.Should().Contain(m => m.Contains("SameCountCloneSets.cs", StringComparison.Ordinal));
+        anchored.Select(f => f.LineNumber).Should().OnlyHaveUniqueItems("two sets anchor at two places");
+    }
 
     [Fact]
     public async Task Name_The_Other_Copies_In_The_Message_For_AnalyzeAsync()
@@ -263,6 +287,64 @@ public async Task Flag_A_File_Scope_Fragment_For_AnalyzeAsync()
 
         findings.Should().NotBeEmpty();
         findings.Should().OnlyContain(f => f.Message.Contains("Duplicated in:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Not_Name_The_Absolute_Workspace_Root_In_The_Message_For_AnalyzeAsync()
+    {
+        // The finding's own FilePath is absolute tool-wide, and deliberately so - it is the
+        // message that has to stay portable. An absolute path here leaks the analysing
+        // machine's directory layout into the report, and worse, BaselineService hashes the
+        // message verbatim, so a baseline recorded at C:\build\repo reads every SNP0031
+        // finding as new on C:\Users\someone\repo.
+        var findings = await AnalyzeAsync(baseDirectory: fixture.SampleAppPath);
+
+        findings.Should().NotBeEmpty();
+        findings.Should().OnlyContain(f =>
+            !f.Message.Contains(fixture.SampleAppPath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Use_Forward_Slashes_In_The_Named_Copies_For_AnalyzeAsync()
+    {
+        // Same reason, one level down: BaselineService already rewrites the finding's own
+        // path separator when fingerprinting. A message that kept Windows separators would
+        // fingerprint differently on Windows and Linux for the same tree.
+        var findings = await AnalyzeAsync(baseDirectory: fixture.SampleAppPath);
+
+        var copies = findings.SelectMany(NamedCopies).ToList();
+
+        copies.Should().NotBeEmpty();
+        copies.Should().OnlyContain(text => !text.Contains('\\'));
+    }
+
+    [Fact]
+    public async Task Keep_The_Named_Copies_Relative_But_Resolvable_For_AnalyzeAsync()
+    {
+        // Shortening a path is only allowed to change how it is spelled, not where it
+        // points. Every named copy has to resolve back under the same root to a file that
+        // really is part of the set.
+        var findings = await AnalyzeAsync(baseDirectory: fixture.SampleAppPath);
+
+        foreach (var copy in findings.SelectMany(NamedCopies))
+        {
+            Path.IsPathRooted(copy).Should().BeFalse($"{copy} should be relative");
+            File.Exists(Path.Combine(fixture.SampleAppPath, copy))
+                .Should().BeTrue($"{copy} should resolve to a real file");
+        }
+    }
+
+    [Fact]
+    public async Task Name_The_Copies_Relative_Even_Without_A_Supplied_Root_For_AnalyzeAsync()
+    {
+        // The contract is not "relative when the caller cooperates". With no root
+        // supplied the analyser derives one, so no caller can leak an absolute path by
+        // omitting a constructor argument.
+        var findings = await AnalyzeAsync();
+
+        findings.Should().NotBeEmpty();
+        findings.Should().OnlyContain(f =>
+            !f.Message.Contains(fixture.SampleAppPath, StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -334,23 +416,23 @@ public async Task Flag_A_File_Scope_Fragment_For_AnalyzeAsync()
     }
 
     [Fact]
-public async Task Report_A_Clone_Once_Not_Once_Per_Window_For_AnalyzeAsync()
-        {
-            // Regression: extension walks backwards one token at a time, so a
-            // 220-token clone between two files arrives as ~140 nested matches.
-            // Collapsing them is what keeps one clone to one finding.
-            var findings = await AnalyzeAsync();
+    public async Task Report_A_Clone_Once_Not_Once_Per_Window_For_AnalyzeAsync()
+    {
+        // Regression: extension walks backwards one token at a time, so a
+        // 220-token clone between two files arrives as ~140 nested matches.
+        // Collapsing them is what keeps one clone to one finding.
+        var findings = await AnalyzeAsync();
 
-            var seed = findings
-                .Where(f => FilesOf(f).Contains("CloneFixtures.cs", StringComparer.Ordinal))
-                .ToList();
+        var seed = findings
+            .Where(f => FilesOf(f).Contains("CloneFixtures.cs", StringComparer.Ordinal))
+            .ToList();
 
-            seed.Should().NotBeEmpty();
-            seed.Select(f => (f.FilePath, f.LineNumber, f.CharacterOffset)).Should().OnlyHaveUniqueItems();
-        }
+        seed.Should().NotBeEmpty();
+        seed.Select(f => (f.FilePath, f.LineNumber, f.CharacterOffset)).Should().OnlyHaveUniqueItems();
+    }
 
     [Fact]
-        public async Task Report_One_Location_Per_File_So_The_Copy_Count_Means_It_Says_For_AnalyzeAsync()
+    public async Task Report_One_Location_Per_File_So_The_Copy_Count_Means_It_Says_For_AnalyzeAsync()
     {
         // The same-path guard skips a file matching ITSELF, not against its
         // siblings, so A-B and B-C are both legal pairs and union-find merges

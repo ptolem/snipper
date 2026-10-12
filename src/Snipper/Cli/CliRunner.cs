@@ -163,7 +163,13 @@ public static class CliRunner
             AnsiConsole.MarkupLine($"[grey]Excluding namespaces (findings suppressed, usage evidence retained): {Markup.Escape(string.Join(", ", excludedNamespaces))}[/]");
         }
 
-        var analysers = AnalyserFactory.Build(options, exclusions, targetPath);
+        // Hoisted ahead of the analyser construction: the baseline block, the suppression
+        // audit and SNP0031's copy-naming all resolve paths against this one root, and
+        // a second derivation of it is a drift risk that shows up as a baseline that
+        // stops matching.
+        var baseDirectory = Path.GetDirectoryName(targetPath) ?? Directory.GetCurrentDirectory();
+
+        var analysers = AnalyserFactory.Build(options, exclusions, targetPath, baseDirectory);
 
         if (!options.IncludeCloneDrift && !options.IncludeDuplicateDetection)
         {
@@ -197,10 +203,6 @@ public static class CliRunner
             });
 
         AnsiConsole.MarkupLine($"[grey]Analysis completed in {totalStopwatch.Elapsed.TotalSeconds:0.0}s.[/]");
-
-        // Hoisted: the baseline block and the suppression audit both need it to compute
-        // stable, path-relative fingerprints.
-        var baseDirectory = Path.GetDirectoryName(targetPath) ?? Directory.GetCurrentDirectory();
 
         // ---------------------------------------------------------------------
         // Wave 4 / 4A-2 + 4A: the suppression-independent finding set.
@@ -276,7 +278,7 @@ public static class CliRunner
 
             if (options.AuditSuppressions && !needsSuppressionIndependentPass)
             {
-                var liftedAll = AnalyserFactory.Build(options, AnalysisExclusions.None, targetPath);
+                var liftedAll = AnalyserFactory.Build(options, AnalysisExclusions.None, targetPath, baseDirectory);
                 liftedAnalysers = [.. AnalyserFactory.PartitionByExclusionSensitivity(liftedAll).Aware];
                 reusableFindings = FindingsFromExclusionAgnosticAnalysers(analysers, allFindings);
             }
@@ -286,7 +288,7 @@ public static class CliRunner
                 .StartAsync($"Re-running analysis with suppressions lifted ({reason})...", async ctx =>
                 {
                     var liftedFindings = await AnalysisRunner.RunAsync(
-                        liftedAnalysers ?? AnalyserFactory.Build(options, AnalysisExclusions.None, targetPath),
+                        liftedAnalysers ?? AnalyserFactory.Build(options, AnalysisExclusions.None, targetPath, baseDirectory),
                         solution,
                         ctx,
                         CancellationToken.None).ConfigureAwait(false);
