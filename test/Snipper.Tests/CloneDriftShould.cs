@@ -74,6 +74,37 @@ public sealed class CloneDriftShould : IDisposable
         CloneDriftClassifier.Classify(oneSided: false, fixShaped: false).Should().BeNull();
     }
 
+    // ---------- comparability ----------
+
+    [Fact]
+    public void Cap_A_Shape_Collision_At_Advisory_However_Fix_Shaped_The_Text()
+    {
+        // The fix-shaped text is real and the commit is real; what is missing is any evidence the
+        // copies are the same code. High asserts a defect in a peer, and here there is no peer -
+        // token-identity is the whole of the similarity, which is the claim 4C cannot support.
+        CloneDriftClassifier.Classify(oneSided: true, fixShaped: true, comparable: false)
+            .Should().Be(CloneDriftTier.Advisory);
+    }
+
+    [Fact]
+    public void Keep_A_Comparable_Set_High_Even_When_Rename_Only_Is_False()
+    {
+        // Positive control for the cap above: the default has to keep earning High, or the guard
+        // would be indistinguishable from demoting every fix-shaped one-sided change.
+        CloneDriftClassifier.Classify(oneSided: true, fixShaped: true, comparable: true)
+            .Should().Be(CloneDriftTier.High);
+    }
+
+    [Fact]
+    public void Still_Report_Drift_For_A_Shape_Collision_Just_Never_As_High()
+    {
+        // Capping the tier is not suppressing the finding. A shape collision is still a one-sided
+        // change to a similarly-shaped region, and dropping it would hide evidence rather than
+        // just decline to assert a defect.
+        CloneDriftClassifier.Classify(oneSided: true, fixShaped: true, comparable: false)
+            .Should().NotBeNull();
+    }
+
     // ---------- defensive-fix markers ----------
 
     [Theory]

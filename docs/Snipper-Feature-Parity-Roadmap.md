@@ -266,7 +266,7 @@ here, not in [`competitive-analysis.md`], because the sweep measured them on a r
 | ~~**Normalisation**~~ | SNP0031 | *Closed by measurement, not by code.* The premise was that over-aggressive token normalisation collapsed unrelated DI registrations into one shape. Tested before changing anything: `AddScoped<IFoo,Foo>` vs `AddScoped<IBar,Bar>` **satisfies a bijective identifier map** — every left identifier maps to exactly one right and back. That is a genuine Type-2 rename clone, so the rule is correct to report it, and no normalisation change would remove it. There was nothing to normalise. | — | **CLOSED as a non-issue (1.10.0).** The DI family is real-but-worthless duplication by design, which is the already-documented tuning answer. |
 | **One location per file** | SNP0031 | A set reported **more copies than it had places**: 1,210 of 4,379 copies (27.6%) were a second-or-later fragment from a file already in the set. `duplicated 257 time(s) across 13 file(s)` meant 13 files with a constant table sliding through them at shifted token offsets, `CTConstants.cs` alone claiming 85. The `same-path` guard is on *pairs*, not on sets — A–B and B–C are both legal, so union-find merged them and A appeared twice. | 93 sets self-contradictory | **SHIPPED in 1.10.0** — copies 4,379 → 3,169, 0 sets list a file twice, 0 self-contradicting messages, every other rule byte-identical. [`1_10_0_plan.md`](history/1_10_0_plan.md) |
 | **Clone-set breakup** | SNP0032 | A one-sided fix still in place removes the copies from the clone set, so 4C is silent about the case it exists to find. | — | **Open.** The documented blind spot since 1.7.0. |
-| **Shape-collision clone sets** | SNP0032 | 4C reports a one-sided fix between two members that are not meaningfully the same code, so the claim "an equivalent change reached the sibling later" is unverifiable. Token normalisation erases identifiers, so a run of nullable auto-properties — `public string? Name { get; init; }` — is one shape regardless of what it is a property of, and two unrelated DTO bags match without either having been copied. The same mechanism already acknowledged for `const` tables, applied to DTOs. Traced to two High survivors in [`1_12_0_plan.md`](history/1_12_0_plan.md) §4, which recorded them as "F6 territory"; **F6 shipped as 1.13.0 and did not cover this** — its SNP0031 item fixed two findings sharing one fingerprint, the opposite problem from two findings wrongly sharing a clone set. | See the calibration below — **larger than the 2 High findings implied**: 34.7% of all SNP0031 sets on the reference monorepo are declaration-only | **Open, and now measured. Filed 2026-10-12 (1.14.0).** A suppression guard was designed, measured, and **rejected on evidence** — see the calibration note below. |
+| **Shape-collision clone sets** | SNP0032 | 4C reports a one-sided fix between two members that are not meaningfully the same code, so the claim "an equivalent change reached the sibling later" is unverifiable. Token normalisation erases identifiers, so a run of nullable auto-properties — `public string? Name { get; init; }` — is one shape regardless of what it is a property of, and two unrelated DTO bags match without either having been copied. The same mechanism already acknowledged for `const` tables, applied to DTOs. Traced to two High survivors in [`1_12_0_plan.md`](history/1_12_0_plan.md) §4, which recorded them as "F6 territory"; **F6 shipped as 1.13.0 and did not cover this** — its SNP0031 item fixed two findings sharing one fingerprint, the opposite problem from two findings wrongly sharing a clone set. | See the calibration below — **larger than the 2 High findings implied**: 34.7% of all SNP0031 sets on the reference monorepo are declaration-only | **SHIPPED after 1.14.0, in 4C.** A 1C suppression guard was designed, measured, and **rejected on evidence** (below). What shipped is a tier change: `Classify` takes `comparable`, SNP0031 computes it per set while it still holds the syntax trees, and an incomparable set is capped at Advisory with a caveat rather than dropped. **High 6 → 5** on the reference monorepo, 3,790 → 3,790 total. |
 
 ### Calibration: shape-collision clone sets, measured 2026-10-12
 
@@ -326,10 +326,24 @@ not be tightened.**
 The part that is actually wrong is narrower and downstream: **4C's assertion, not 1C's detection.**
 SNP0032 tells you "an equivalent change reached the sibling later", which claims the two members are
 comparable code. For `IOrderApi.cs`↔`NashJob.cs` nothing supports that — there is no reason to
-believe a Nash job needed the Bloomreach fix. The candidate change is to withhold the High tier and
-the sibling claim when a set's members are declaration-only *and* identifier-disjoint, leaving SNP0031
-untouched. That is a tier change like 1.12.0, so it needs its own measurement and release — and the
-measurement above is the input it would be decided on.
+believe a Nash job needed the Bloomreach fix.
+
+**What shipped.** A tier change, not a suppression. `CloneDriftClassifier.Classify` takes a fourth
+input, `comparable`, and an incomparable set is capped at `Advisory` however fix-shaped its text
+reads. SNP0031 computes the flag per set while it still holds the syntax trees — a set is
+incomparable only when **every** member's region is declaration-only **and** no member shares an
+identifier with the anchor. Both halves are required, and that conjunction is why only
+`IOrderApi.cs` was demoted and `UpdateCustomerRequest.cs` was not: the latter shares a set with
+`CustomerDetailsRequest.cs`, whose region contains a method body. The guard declines on ambiguous
+ground by design; widening it to reach that case is the over-broad version already rejected above.
+
+Incomparable findings are **kept, not dropped**, and carry a caveat naming what is missing. A shape
+collision is still a one-sided change to a similarly-shaped region, and suppressing it would hide
+evidence rather than decline to assert a defect.
+
+Measured on the reference monorepo: **3,790 → 3,790 total**, SNP0032 `High` **6 → 5**,
+`Advisory` 189 → 190, 38 findings carrying the caveat. One of the two cases named in 1.12.0 §4 is
+demoted; the other is deliberately retained, as above.
 
 **The pattern worth naming:** F2, F3 and F6 are all the same defect — *a rule has no channel for
 evidence that only exists outside the compiler's model* (serialiser contracts, JSON shape, framework
@@ -359,10 +373,11 @@ had survived 1.7.1 → 1.9.0 on the strength of a plausible mechanism that a ten
 
 Current order: **SNP0034** (cognitive complexity) shipped in **1.14.0**. That was the last item on this
 backlog: F2, F3, F5 and F6 are all shipped, and SNP0031's normalisation is closed as a non-issue.
-**Two entries remain Open** — clone-set breakup, and shape-collision clone sets, which was filed on
-2026-10-12 and calibrated the same day (a suppression guard was designed, measured, and rejected on
-evidence; the surviving candidate is a tier change in 4C). Neither is a bug: both are documented
-limits with the measurement attached. F2/F3 closed in 1.11.0 — and the pattern held up.
+**Two entries remain Open** — clone-set breakup, and (until this change) shape-collision clone sets,
+which was filed on 2026-10-12, calibrated the same day, and shipped as a tier change in 4C after a
+1C suppression guard was rejected on evidence. **Clone-set breakup is now the only one still Open.**
+Neither is a bug: both are documented limits with the measurement attached. F2/F3 closed in 1.11.0 —
+and the pattern held up.
 
 ### Cognitive complexity (SNP0034) — SHIPPED in 1.14.0
 

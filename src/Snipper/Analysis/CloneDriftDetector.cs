@@ -43,14 +43,25 @@ internal static class CloneDriftClassifier
     /// defensive fix, so it is capped at <see cref="CloneDriftTier.Advisory"/> however fix-shaped
     /// its text looks.
     /// </param>
-    public static CloneDriftTier? Classify(bool oneSided, bool fixShaped, bool renameOnly = false)
+    /// <param name="comparable">
+    /// Whether the set's members are recognisably the same code. When false, SNP0031 proved only
+    /// that normalisation mapped every region to the same token string — the copies share no
+    /// identifier and hold no executable statement — so there is no evidence they are the same
+    /// code at all, and a `High` "defensive fix" verdict would be asserting a relationship nothing
+    /// supports. Capped at <see cref="CloneDriftTier.Advisory"/> however fix-shaped the text reads.
+    /// </param>
+    public static CloneDriftTier? Classify(
+        bool oneSided,
+        bool fixShaped,
+        bool renameOnly = false,
+        bool comparable = true)
     {
         if (!oneSided)
         {
             return null;
         }
 
-        return fixShaped && !renameOnly ? CloneDriftTier.High : CloneDriftTier.Advisory;
+        return fixShaped && !renameOnly && comparable ? CloneDriftTier.High : CloneDriftTier.Advisory;
     }
 
     /// <summary>
@@ -923,7 +934,8 @@ public sealed class CloneDriftDetector
 
                 var renameOnly = RenameDetector.IsRenameOnly(hunk.AddedLines, hunk.RemovedLines);
                 var fixShaped = !renameOnly && DefensiveFixMarkers.IsFixShaped(hunk.AddedLines, hunk.RemovedLines);
-                var tier = CloneDriftClassifier.Classify(oneSided, fixShaped, renameOnly);
+                var comparable = set.MembersComparable;
+                var tier = CloneDriftClassifier.Classify(oneSided, fixShaped, renameOnly, comparable);
                 if (tier is null)
                 {
                     continue;
@@ -977,6 +989,7 @@ public sealed class CloneDriftDetector
                     .Append("; ")
                     .Append(outcome)
                     .Append('.')
+                    .Append(ComparabilityCaveat(comparable))
                     .ToString();
 
                 // Anchor at the line the hunk actually changed rather than at the start of the
@@ -1051,6 +1064,23 @@ public sealed class CloneDriftDetector
         return false;
     }
 
+    /// <summary>
+    /// The clause that states what is missing when a clone set is only a shape collision, or
+    /// nothing at all when the members are recognisably the same code.
+    /// <para>
+    /// Extracted for the same reason as <c>DuplicateFragmentAnalyser.EvidenceFor</c>:
+    /// <see cref="Evaluate"/> is a foreach over hunks inside a foreach over members inside a
+    /// guard chain, and a multi-line conditional written there is charged nesting that belongs
+    /// to the sentence rather than to the control flow. Kept as one method so the wording of
+    /// the caveat lives in one place.
+    /// </para>
+    /// </summary>
+    private static string ComparabilityCaveat(bool comparable) => comparable
+        ? string.Empty
+        : " The copies share no identifier and hold no executable statement, so"
+          + " token-identity is the only evidence they are the same code; the catch-up"
+          + " above is a change to a similarly-shaped region, not a demonstrated peer.";
+
     private string ToRepositoryRelative(string path) =>
         Path.GetRelativePath(_repositoryRoot, path).Replace('\\', '/');
 }
@@ -1059,4 +1089,10 @@ public sealed class CloneDriftDetector
 internal sealed record CloneSetMember(string Path, int StartLine, int StartCharacter, int EndLine);
 
 /// <summary>A group of copies proven token-identical by SNP0031.</summary>
-internal sealed record CloneSet(IReadOnlyList<CloneSetMember> Members);
+/// <param name="Members">The copies, one location per file.</param>
+/// <param name="MembersComparable">
+/// Whether the members are recognisably the same code, or only shape-collide. Computed by SNP0031
+/// while it still had the syntax trees: false means every region is declaration-only and no member
+/// shares an identifier with the anchor, so token-identity is the *only* evidence of similarity.
+/// </param>
+internal sealed record CloneSet(IReadOnlyList<CloneSetMember> Members, bool MembersComparable = true);

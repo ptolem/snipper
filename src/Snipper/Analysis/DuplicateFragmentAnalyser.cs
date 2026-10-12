@@ -2,6 +2,7 @@ namespace Snipper.Analysis;
 
 using System.Diagnostics;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using Snipper.Models;
@@ -87,7 +88,23 @@ public sealed class DuplicateFragmentAnalyser(
         string Path,
         CompilationUnitSyntax Unit,
         IReadOnlyList<string> Tokens,
-        IReadOnlyList<(int Line, int Character)> Lines);
+        IReadOnlyList<(int Line, int Character)> Lines,
+        RegionEvidence? Evidence = null);
+
+    /// <summary>
+    /// What a file's identifiers and executable content look like, by line.
+    /// <para>
+    /// This is the evidence token normalisation discards. Normalisation is what lets SNP0031
+    /// find Type-2 rename-only clones, and it is also why two unrelated DTO property bags match:
+    /// <c>public string? Name { get; init; }</c> is one shape whatever it is a property of, so
+    /// identifiers being equal says nothing until you ask whether the names are the same. Here
+    /// they are not thrown away - they are recorded alongside, keyed by line, so a region can be
+    /// asked that question afterwards.
+    /// </para>
+    /// </summary>
+    private sealed record RegionEvidence(
+        IReadOnlyList<(int Line, string Text)> Identifiers,
+        int[] ExecutableLines);
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -183,7 +200,12 @@ public sealed class DuplicateFragmentAnalyser(
                 // re-derive both from the same tree - four walks per file to produce one result.
                 // The token stream collected here is the one Build consumes.
                 var tokenized = TokenShingleIndex.Collect(unit, path);
-                byPath[path] = new SourceFile(path, unit, tokenized.Tokens, tokenized.Lines);
+
+                // Only 4C asks the question these answer, and 4C is opt-in on top of an
+                // opt-in rule, so the walk is not paid unless --clone-drift is passed.
+                var evidence = EvidenceFor(unit);
+
+                byPath[path] = new SourceFile(path, unit, tokenized.Tokens, tokenized.Lines, evidence);
             }
         }
 
@@ -465,6 +487,162 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
     }
 
     /// <summary>
+    /// Per-file evidence for 4C's comparability check, or null when nothing downstream asked
+    /// for it.
+    /// <para>
+    /// Extracted rather than written inline: the collection loop is already two foreach deep
+    /// behind a guard chain, and a conditional evaluated there is charged nesting it has no
+    /// business paying. SNP0034 reported this method at 17 while it was inlined.
+    /// </para>
+    /// </summary>
+    private RegionEvidence? EvidenceFor(CompilationUnitSyntax unit) =>
+        _cloneDrift is null ? null : CollectEvidence(unit);
+
+    /// <summary>
+    /// One walk over a file, recording every identifier by line and every line carrying
+    /// something executable.
+    /// <para>
+    /// One walk, not two. <see cref="CompilationUnitSyntax.DescendantNodes"/> is enumerated
+    /// once and each node's <c>ChildTokens</c> taken as it goes, which yields both collections
+    /// in a single traversal — the tokens are owned by exactly one node each, so no token is
+    /// visited twice.
+    /// </para>
+    /// <para>
+    /// <see cref="ArrowExpressionClauseSyntax"/> and <see cref="InvocationExpressionSyntax"/>
+    /// count as executable even though neither is a statement. A region that only calls out to
+    /// something, or that computes a property through an expression body, carries logic, and the
+    /// whole point of the comparison is to withhold the drift verdict only from regions that
+    /// carry none. Erring toward "executable" demotes nothing on ambiguous ground.
+    /// </para>
+    /// </summary>
+    private static RegionEvidence CollectEvidence(CompilationUnitSyntax unit)
+    {
+        var identifiers = new List<(int Line, string Text)>();
+        var executable = new List<int>();
+
+        foreach (var node in unit.DescendantNodes())
+        {
+            if (node is StatementSyntax or ArrowExpressionClauseSyntax or InvocationExpressionSyntax)
+            {
+                executable.Add(node.GetLocation().GetLineSpan().StartLinePosition.Line + 1);
+            }
+
+            foreach (var token in node.ChildTokens())
+            {
+                if (token.IsKind(SyntaxKind.IdentifierToken))
+                {
+                    identifiers.Add((token.GetLocation().GetLineSpan().StartLinePosition.Line + 1, token.Text));
+                }
+            }
+        }
+
+        executable.Sort();
+
+        return new RegionEvidence(identifiers, [.. executable]);
+    }
+
+    /// <summary>
+    /// Whether a clone set's members are recognisably the same code.
+    /// <para>
+    /// Returns false only when <em>both</em> hold for every member: the region carries no
+    /// executable statement, and no member shares a single identifier with the anchor. That
+    /// conjunction is the whole design. Either half alone is too broad — identifier-disjointness
+    /// on its own would reject genuine Type-2 method clones, which are the rule's headline feature
+    /// — and declaration-onlyness on its own would reject any two identically-shaped
+    /// configuration classes. Together they describe a set whose only claim to similarity is that
+    /// normalisation mapped both regions to the same token string.
+    /// <para>
+    /// Missing evidence returns true. A set whose files were not tokenised for evidence cannot be
+    /// shown to be incomparable, and the alternative — demoting on absent data — would make the
+    /// verdict depend on which flags were passed.
+    /// </para>
+    /// </summary>
+    private static bool MembersAreComparable(
+        IReadOnlyList<CloneSetMember> members,
+        IReadOnlyDictionary<string, SourceFile> byPath)
+    {
+        if (members.Count < 2)
+        {
+            return true;
+        }
+
+        var evidence = new Dictionary<string, RegionEvidence>(StringComparer.Ordinal);
+        foreach (var member in members)
+        {
+            if (!byPath.TryGetValue(member.Path, out var file) || file.Evidence is null)
+            {
+                return true;
+            }
+
+            evidence[member.Path] = file.Evidence;
+        }
+
+        foreach (var member in members)
+        {
+            if (AnyExecutableLine(evidence[member.Path], member))
+            {
+                return true;
+            }
+        }
+
+        var anchorNames = IdentifierSet(evidence[members[0].Path], members[0]);
+
+        foreach (var member in members.Skip(1))
+        {
+            if (anchorNames.Overlaps(IdentifierSet(evidence[member.Path], member)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool AnyExecutableLine(RegionEvidence evidence, CloneSetMember member) =>
+        Between(evidence.ExecutableLines, member.StartLine, member.EndLine);
+
+    /// <summary>
+    /// Whether a sorted array holds a value in [start, end]. Starts from the first entry at or
+    /// after <paramref name="start"/> — BinarySearch returns the complement of that insertion
+    /// point when the exact value is absent — and walks while entries stay in range.
+    /// </summary>
+    private static bool Between(int[] sorted, int start, int end)
+    {
+        var index = sorted.AsSpan().BinarySearch(start);
+        if (index < 0)
+        {
+            index = ~index;
+        }
+
+        for (; index < sorted.Length && sorted[index] <= end; index++)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static HashSet<string> IdentifierSet(RegionEvidence evidence, CloneSetMember member)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var (line, text) in evidence.Identifiers)
+        {
+            if (line > member.EndLine)
+            {
+                break;
+            }
+
+            if (line >= member.StartLine)
+            {
+                names.Add(text);
+            }
+        }
+
+        return names;
+    }
+
+    /// <summary>
     /// Group fragments into clone sets using the matches actually proven during
     /// extension, transitively closed by union-find. Grouping on the proven
     /// edges - rather than on equal token offsets - is what lets two copies of
@@ -597,7 +775,7 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
                 continue;
             }
 
-            cloneSets.Add(new CloneSet(located));
+            cloneSets.Add(new CloneSet(located, MembersAreComparable(located, byPath)));
 
             var anchor = located[0];
             var lines = anchor.EndLine - anchor.StartLine + 1;
