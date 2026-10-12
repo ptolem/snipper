@@ -266,12 +266,79 @@ here, not in [`competitive-analysis.md`], because the sweep measured them on a r
 | ~~**Normalisation**~~ | SNP0031 | *Closed by measurement, not by code.* The premise was that over-aggressive token normalisation collapsed unrelated DI registrations into one shape. Tested before changing anything: `AddScoped<IFoo,Foo>` vs `AddScoped<IBar,Bar>` **satisfies a bijective identifier map** — every left identifier maps to exactly one right and back. That is a genuine Type-2 rename clone, so the rule is correct to report it, and no normalisation change would remove it. There was nothing to normalise. | — | **CLOSED as a non-issue (1.10.0).** The DI family is real-but-worthless duplication by design, which is the already-documented tuning answer. |
 | **One location per file** | SNP0031 | A set reported **more copies than it had places**: 1,210 of 4,379 copies (27.6%) were a second-or-later fragment from a file already in the set. `duplicated 257 time(s) across 13 file(s)` meant 13 files with a constant table sliding through them at shifted token offsets, `CTConstants.cs` alone claiming 85. The `same-path` guard is on *pairs*, not on sets — A–B and B–C are both legal, so union-find merged them and A appeared twice. | 93 sets self-contradictory | **SHIPPED in 1.10.0** — copies 4,379 → 3,169, 0 sets list a file twice, 0 self-contradicting messages, every other rule byte-identical. [`1_10_0_plan.md`](history/1_10_0_plan.md) |
 | **Clone-set breakup** | SNP0032 | A one-sided fix still in place removes the copies from the clone set, so 4C is silent about the case it exists to find. | — | **Open.** The documented blind spot since 1.7.0. |
-| **Shape-collision clone sets** | SNP0032 | 4C reports a one-sided fix between two members that are not meaningfully the same code, so the claim "an equivalent change reached the sibling later" is unverifiable. Token normalisation erases identifiers, so a run of nullable auto-properties — `public string? Name { get; init; }` — is one shape regardless of what it is a property of, and two unrelated DTO bags match without either having been copied. The same mechanism already acknowledged for `const` tables, applied to DTOs. Traced to two High survivors in [`1_12_0_plan.md`](history/1_12_0_plan.md) §4, which recorded them as "F6 territory"; **F6 shipped as 1.13.0 and did not cover this** — its SNP0031 item fixed two findings sharing one fingerprint, the opposite problem from two findings wrongly sharing a clone set. | 2 of 6 High on the reference monorepo at 1.14.0 (`IOrderApi.cs`↔`NashJob.cs`, `UpdateCustomerRequest.cs`↔`BloomreachImageSetData.cs`/`CustomerDetailsRequest.cs`), both still firing | **Open. Filed 2026-10-12 (1.14.0).** Deliberately not fixed: a guard broad enough to drop property-bag sets also drops genuinely copy-pasted DTOs, which are worth reporting, so it needs its own measurement and release rather than a patch to a shipped rule. Two examples cannot calibrate it. |
+| **Shape-collision clone sets** | SNP0032 | 4C reports a one-sided fix between two members that are not meaningfully the same code, so the claim "an equivalent change reached the sibling later" is unverifiable. Token normalisation erases identifiers, so a run of nullable auto-properties — `public string? Name { get; init; }` — is one shape regardless of what it is a property of, and two unrelated DTO bags match without either having been copied. The same mechanism already acknowledged for `const` tables, applied to DTOs. Traced to two High survivors in [`1_12_0_plan.md`](history/1_12_0_plan.md) §4, which recorded them as "F6 territory"; **F6 shipped as 1.13.0 and did not cover this** — its SNP0031 item fixed two findings sharing one fingerprint, the opposite problem from two findings wrongly sharing a clone set. | See the calibration below — **larger than the 2 High findings implied**: 34.7% of all SNP0031 sets on the reference monorepo are declaration-only | **Open, and now measured. Filed 2026-10-12 (1.14.0).** A suppression guard was designed, measured, and **rejected on evidence** — see the calibration note below. |
+
+### Calibration: shape-collision clone sets, measured 2026-10-12
+
+The 1.12.0 note deferred this on the grounds that *two examples cannot calibrate a suppression
+guard*. All **1,131** SNP0031 sets on the reference monorepo have now been classified, so the guard
+can be tested rather than assumed. Method: each anchored region is re-read from source, comments and
+string literals stripped, and split into declarations / statements; property names are recovered and
+compared against the sibling named in `relatedLocations`. Identifier recovery is syntax-only, so this
+is the same evidence budget SNP0031 itself runs on.
+
+**Shape of all 1,131 sets:**
+
+| Shape | Sets | Share |
+| --- | ---: | ---: |
+| contains a method body | 535 | 47.3% |
+| declarations, unclassified | 230 | 20.3% |
+| const/enum table | 193 | 17.1% |
+| **DTO property bag** | **173** | **15.3%** |
+| *declaration-only total* | *596* | *52.7%* |
+
+So the class is **far bigger than the 2 High findings that exposed it** — over half of SNP0031's
+output is declaration-only. That also means the const-table share already conceded in the README
+understates the problem: auto-property bags are the same mechanism wearing a different hat.
+
+**The proposed guard, and why it was rejected.** The discriminator is property-name overlap —
+token normalisation throws the names away, but they are sitting in the syntax tree, so a guard is
+implementable without a semantic model and without breaking SNP0031's cheapness. Of the 171 sets
+where both sides expose ≥3 auto-properties:
+
+| Property-name overlap (Jaccard) | Sets |
+| --- | ---: |
+| **0.0 — completely different names** | **111** |
+| 0.0–0.3 | 16 |
+| 0.3–0.6 | 9 |
+| 0.6–1.0 | 19 |
+| 1.0 — identical | 16 |
+
+**65% of property-bag sets are coincidental, and the guard would have removed them.** That looked
+like the fix. It is not, and the counterexample is concrete:
+`Metro60ExtendedProductAttributeDefinitions.cs` ↔ `WoolworthsProductAttributeDefinitions.cs` scores
+**zero** name overlap — and is genuine duplication, the same CommmerceTools product-type schema
+maintained once per brand. A name-overlap guard suppresses it.
+
+That is not an unlucky threshold; it is the feature. SNP0031 advertises **Type-2 rename-only**
+clones, so *identifier-disjoint and still duplicated* is precisely the class it exists to find, and
+any guard keyed on identifier overlap trades the feature for a quieter report. The genuine
+copy-paste also survives — `ProductItem.cs`↔`ProductItem.cs` (14/14 shared), `GoogleService.cs`
+(10/10), `StoreDetailsModel.cs`↔`StoreModel.cs`, `BwsOrderRequest.cs`↔`BWSOrder.cs` — but the cost
+is real true positives of a kind the rule was built to find. **Rejected.**
+
+**What survives, and the recommendation.** SNP0031's behaviour here is *as documented*: it detects
+Type-1/Type-2 token clones, and two unrelated DTO bags genuinely are Type-2 clones under that
+definition. It is opt-in behind `--duplicate-detection` for exactly this reason, and the README
+already concedes the output is "real but not worth removing duplication by design". **SNP0031 should
+not be tightened.**
+
+The part that is actually wrong is narrower and downstream: **4C's assertion, not 1C's detection.**
+SNP0032 tells you "an equivalent change reached the sibling later", which claims the two members are
+comparable code. For `IOrderApi.cs`↔`NashJob.cs` nothing supports that — there is no reason to
+believe a Nash job needed the Bloomreach fix. The candidate change is to withhold the High tier and
+the sibling claim when a set's members are declaration-only *and* identifier-disjoint, leaving SNP0031
+untouched. That is a tier change like 1.12.0, so it needs its own measurement and release — and the
+measurement above is the input it would be decided on.
 
 **The pattern worth naming:** F2, F3 and F6 are all the same defect — *a rule has no channel for
 evidence that only exists outside the compiler's model* (serialiser contracts, JSON shape, framework
 dispatch). F1 was the one case where the evidence already existed and the rule simply did not consult
 it. That is a cheaper class of fix, and it is where a new rule should look first.
+
+Shape collision is a **fourth instance, and the cheapest of them** — the identifiers *were* in the
+syntax tree the whole time, discarded by normalisation and never recovered. That is F1's shape, not
+F2's.
 
 **F2/F3 closed in 1.11.0 — and the pattern held up.** Both shipped as *channels*, not suppressions:
 minimal-API typed-result returns, base-type walking in the DTO closure, enum ordinal contracts, and
@@ -291,8 +358,11 @@ lesson worth keeping is about the backlog's shape — an item's *diagnosis* is n
 had survived 1.7.1 → 1.9.0 on the strength of a plausible mechanism that a ten-minute test refuted.
 
 Current order: **SNP0034** (cognitive complexity) shipped in **1.14.0**. That was the last item on this
-backlog: F2, F3, F5 and F6 are all shipped, SNP0031's normalisation is closed as a non-issue, and
-clone-set breakup is the only entry still marked Open. F2/F3 closed in 1.11.0 — and the pattern held up.
+backlog: F2, F3, F5 and F6 are all shipped, and SNP0031's normalisation is closed as a non-issue.
+**Two entries remain Open** — clone-set breakup, and shape-collision clone sets, which was filed on
+2026-10-12 and calibrated the same day (a suppression guard was designed, measured, and rejected on
+evidence; the surviving candidate is a tier change in 4C). Neither is a bug: both are documented
+limits with the measurement attached. F2/F3 closed in 1.11.0 — and the pattern held up.
 
 ### Cognitive complexity (SNP0034) — SHIPPED in 1.14.0
 
