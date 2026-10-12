@@ -552,11 +552,26 @@ The things most likely to cost you time. Each is a real, verified behaviour, not
       declarations are duplication by design. If you gate on SNP0031, gate on **new** findings via a
       committed baseline, and expect to spend the first month tuning rather than deleting.
 
-      **If your baseline predates 1.9.0, re-baseline before gating.** SNP0031 fingerprints cover the
+**If your baseline predates 1.9.0, re-baseline before gating.** SNP0031 fingerprints cover the
       message, which now carries the clone *set* size rather than a per-copy description, so every
       pre-1.9.0 SNP0031 entry reads as new on the next run. It is a one-time cost, but it will look like
       a mass of new findings if you are not expecting it.
-16. **Measure duplicate-detection cost on an idle machine or not at all.** On a loaded agent the same
+16. **`--clone-drift` changes the SNP0031/SNP0032 message after 1.14.0, so an old baseline reports every
+    duplication finding as new.** Two separate message changes land in the same window. SNP0031 now
+    names the other copies as **workspace-relative** `path:line` instead of absolute, and SNP0032's
+    message gains a caveat on clone sets that are only a shape collision. Because fingerprints hash the
+    message verbatim, **both** re-fingerprint: an absolute-path message made a baseline recorded on one
+    machine report every SNP0031 finding as new on another, and a tier cap that only demoted would have
+    re-fingerprinted too. The finding *counts* do not change — 3,790 → 3,790 on the reference repo, with
+    SNP0032 `High` 6 → 5 — so if you gate on counts you will see nothing and if you gate on "new" you
+    will see everything. Re-baseline once, deliberately, and check that the post-baseline run reports
+    zero new before you trust the gate.
+
+    If you gate on SNP0032 `High` specifically, the cap makes that gate *quieter without making it
+    wrong*: a clone set whose members share no identifier and hold no executable statement can no longer
+    be asserted to `High`. Those findings are still emitted at `Advisory` with the caveat attached, so
+    nothing is silently lost — a gate on the tier just stops counting assertions Snipper cannot support.
+17. **Measure duplicate-detection cost on an idle machine or not at all.** On a loaded agent the same
     configuration measured 138 s and 240 s on consecutive runs, and the marginal cost of the flag sat
     inside that noise. Do not derive an SLA from a single run; take a minimum-of-N, and never
     attribute a wall-clock difference to the flag without that.

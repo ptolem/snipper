@@ -1,6 +1,6 @@
 # Competitive Analysis — Snipper vs. the Codebase-Cleaning Ecosystem
 
-**Date:** 2026-09-14 · **Updated:** 2026-10-11 (Snipper's own column re-verified against 1.14.0) · **Snipper version:** 1.14.0 (30 rule IDs: SNP0001–0013, 0018–0034; 21 analysers; 689 tests)
+**Date:** 2026-09-14 · **Updated:** 2026-10-11 (Snipper's own column re-verified against 1.14.0) · **Snipper version:** 1.14.0 (30 rule IDs: SNP0001–0013, 0018–0034; 21 analysers; 713 tests)
 
 > **Two revisions are recorded here. Both are corrections to claims this document made.**
 >
