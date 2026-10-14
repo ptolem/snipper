@@ -26,7 +26,7 @@ internal sealed class DocumentIdentifierIndex
     private readonly Dictionary<string, List<SimpleNameSyntax>> _positionsByName;
 
     /// <summary>
-    /// Per-root memo. Two analysers (SNP0009 unused parameters and SNP0016 unused locals)
+    /// Per-root memo. Two analysers (SNP0010 unused parameters and SNP0009 unused locals)
     /// each built this from the same document root in the same run - two full
     /// <c>DescendantNodes()</c> walks and a fresh <c>List</c> per distinct identifier name,
     /// roughly 150 lists per document, for an index that is a pure function of the root.

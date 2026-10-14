@@ -1,0 +1,31 @@
+# Formatting conventions the codebase already follows. CI runs
+# `dotnet format whitespace --verify-no-changes` against these.
+#
+# end_of_line is pinned because every tracked file is LF in the index and
+# .gitattributes checks them out as LF on every OS. Left unset, dotnet format
+# assumes the platform newline, so the same tree passes on Linux and fails on
+# Windows.
+#
+# Deliberately absent: dotnet_diagnostic.*.severity. SNP0019 reads CS8019 from
+# the compiler's own diagnostics, so a severity entry here could silently change
+# what Snipper reports about itself in the self-analysis gate.
+root = true
+
+[*]
+indent_style = space
+end_of_line = lf
+trim_trailing_whitespace = true
+
+[*.cs]
+indent_size = 4
+charset = utf-8
+csharp_style_namespace_declarations = file_scoped:suggestion
+csharp_using_directive_placement = inside_namespace:suggestion
+# A braced case body sits level with its case label, not one step further in.
+csharp_indent_case_contents_when_block = false
+
+[*.{csproj,props,targets,slnx,xml,json,yml,yaml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

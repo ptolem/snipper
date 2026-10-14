@@ -66,7 +66,7 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
     {
         var files = new List<string> { finding.FilePath };
         files.AddRange(finding.RelatedLocations?.Select(r => r.FilePath) ?? []);
-        return files.Select(Path.GetFileName).ToList();
+        return files.Select(static file => Path.GetFileName(file)).ToList();
     }
 
     /// <summary>

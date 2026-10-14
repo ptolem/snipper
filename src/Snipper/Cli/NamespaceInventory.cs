@@ -122,8 +122,6 @@ internal static class NamespaceInventory
     /// </summary>
     public static Func<string, bool> ExistenceProbe(NamespaceInventoryResult inventory)
     {
-        ArgumentNullException.ThrowIfNull(inventory);
-
         var declared = inventory.Declared;
 
         return candidate =>

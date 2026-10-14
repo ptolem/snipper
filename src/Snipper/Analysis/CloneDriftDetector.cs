@@ -779,7 +779,7 @@ internal static class DefensiveFixMarkers
         return false;
     }
 
-private static bool IsIdentifierCharacter(char value) => char.IsLetterOrDigit(value) || value == '_';
+    private static bool IsIdentifierCharacter(char value) => char.IsLetterOrDigit(value) || value == '_';
 }
 
 /// <summary>
@@ -955,7 +955,7 @@ public sealed class CloneDriftDetector
                         .Where(other => !string.Equals(other.Path, member.Path, StringComparison.Ordinal))
                         .Select(other => (RelativePath: ToRepositoryRelative(other.Path), other.StartLine)));
 
-// Whether the sibling was eventually brought in line, and which commit did it.
+                // Whether the sibling was eventually brought in line, and which commit did it.
                 // This dates the window in which the copies were out of sync - the actionable half
                 // of the finding - or shows that no equivalent change ever arrived.
                 var catchUps = siblingPaths

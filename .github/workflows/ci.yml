@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore Snipper.slnx
+
+      - name: Formatting
+        run: dotnet format whitespace Snipper.slnx --verify-no-changes
+
+      - name: Build
+        # TreatWarningsAsErrors comes from Directory.Build.props.
+        run: dotnet build Snipper.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test Snipper.slnx -c Release --no-build
+
+      - name: Vulnerable packages
+        # Directory.Build.props keeps NuGet audit a warning so a newly published advisory does
+        # not break local builds; this is where it fails instead.
+        run: |
+          dotnet list Snipper.slnx package --vulnerable --include-transitive --format json > "$RUNNER_TEMP/vulnerable.json"
+          if ! jq -e '[.. | .vulnerabilities? // empty] | length == 0' "$RUNNER_TEMP/vulnerable.json" > /dev/null; then
+            cat "$RUNNER_TEMP/vulnerable.json"
+            echo "::error::Vulnerable packages in the dependency graph"
+            exit 1
+          fi
+
+      - name: Snipper on itself
+        # snipper-baseline.json is recorded with default flags, so this run must use them too:
+        # adding --duplicate-detection here would report every clone set as new.
+        # --baseline rewrites the file it reads, so the gate runs against a copy.
+        run: |
+          cp snipper-baseline.json "$RUNNER_TEMP/baseline.json"
+          dotnet src/Snipper/bin/Release/net10.0/Snipper.dll Snipper.slnx "$RUNNER_TEMP/snipper.json" \
+            --baseline "$RUNNER_TEMP/baseline.json"
+          if ! jq -e '.findings | length == 0' "$RUNNER_TEMP/snipper.json" > /dev/null; then
+            jq -r --arg root "$GITHUB_WORKSPACE/" \
+              '.findings[] | "::error file=\(.filePath | ltrimstr($root)),line=\(.lineNumber)::\(.ruleId) \(.message)"' \
+              "$RUNNER_TEMP/snipper.json"
+            exit 1
+          fi
+
+      - name: Upload self-analysis report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snipper-self-report
+          path: ${{ runner.temp }}/snipper.json
+          if-no-files-found: ignore

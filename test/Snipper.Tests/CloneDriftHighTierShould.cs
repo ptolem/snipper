@@ -73,7 +73,7 @@ public sealed class CloneDriftHighTierShould
 
     // ---------- defect 3: the anchor must point at the change ----------
 
-/// <summary>
+    /// <summary>
     /// The finding was anchored at the start of the clone region, which for a maximal run is often
     /// wherever the duplicated text happened to begin - a stray ';' on line 1. Three of 111 High
     /// findings pointed at a line containing only ';', '{' or '}'.
@@ -244,7 +244,7 @@ public sealed class CloneDriftHighTierShould
         RenameDetector.IsRenameOnly(addedLines, removedLines).Should().BeFalse();
     }
 
-[Fact]
+    [Fact]
     public void Marker_Matching_Stays_Case_Insensitive()
     {
         // Pre-existing contract, and cheap to keep once matching is boundary-anchored.

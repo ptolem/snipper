@@ -1,0 +1,20 @@
+<Project>
+  <!-- Settings shared by Snipper and its tests.
+
+       TargetFramework deliberately stays in each project file: ProjectFileReader reads it
+       from the project XML rather than from MSBuild evaluation, so moving it here would make
+       SNP0012 and SNP0013 silently skip Snipper's own projects in the self-analysis gate.
+
+       The fixture projects under test/Snipper.Tests/TestAssets are analysis inputs full of
+       deliberate warnings; their own Directory.Build.props stops this file applying there. -->
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- NuGet audit stays a warning locally: an advisory published overnight, or an offline
+         restore that cannot fetch advisory data (NU1900), should not break unrelated work.
+         CI fails on vulnerable packages explicitly instead - see .github/workflows/ci.yml. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+  </PropertyGroup>
+</Project>

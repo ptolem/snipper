@@ -511,7 +511,7 @@ monorepo-scale generated code this is the difference between a minutes-long run 
 
 ## Analyser catalogue
 
-19 analysers, 28 rules. 17 run by default; 2 are opt-in.
+21 analysers, 30 rules. 19 run by default; 2 are opt-in.
 
 `RuleIds` is the authoritative mapping — this is the same property the tool uses to decide whether an
 analyser is worth running, so "disable every rule id in this row" is exactly equivalent to "skip this

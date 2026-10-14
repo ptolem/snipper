@@ -1,0 +1,4 @@
+# Every tracked file is LF in the index; check it out as LF on every OS so the
+# working tree matches .editorconfig and `dotnet format --verify-no-changes`
+# gives the same answer on Windows and Linux.
+* text=auto eol=lf

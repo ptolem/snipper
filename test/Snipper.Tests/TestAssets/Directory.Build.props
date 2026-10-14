@@ -1,0 +1,7 @@
+<Project>
+  <!-- Stops the repository's Directory.Build.props applying to the fixture projects.
+       They are analysis inputs written to contain unused and unreachable code, so they keep
+       the compiler defaults: TreatWarningsAsErrors would turn that deliberate dead code into
+       build errors, and would change the compilation options Snipper sees when the fixture
+       is analysed in place rather than from the temp copy the tests make. -->
+</Project>

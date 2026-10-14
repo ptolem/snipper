@@ -37,11 +37,10 @@ internal static class AnalysisRunner
         ArgumentNullException.ThrowIfNull(analysers);
         ArgumentNullException.ThrowIfNull(solution);
         ArgumentNullException.ThrowIfNull(ctx);
-        ArgumentNullException.ThrowIfNull(cancellationToken);
 
         // Every analyser opens with the same sequence: GetCompilationAsync then
-        // GetSemanticModelAsync per document. Left to the fan-out, 17 analysers
-        // discover the same cold compilations simultaneously and serialize on
+        // GetSemanticModelAsync per document. Left to the fan-out, every analyser
+        // discovers the same cold compilations simultaneously and serializes on
         // Roslyn's compilation tracker — the fan-out then spends its first seconds
         // in lock contention rather than analysis. Warming sequentially pays each
         // compilation build exactly once, and concurrent readers of an

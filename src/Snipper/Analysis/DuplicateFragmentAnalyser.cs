@@ -4,7 +4,6 @@ using System.Diagnostics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Text;
 using Snipper.Models;
 
 /// <summary>
@@ -235,7 +234,7 @@ public sealed class DuplicateFragmentAnalyser(
                 continue;
             }
 
-// Same-path pairs are skipped below, so a bucket holding one window 500 times in a
+            // Same-path pairs are skipped below, so a bucket holding one window 500 times in a
             // single file pairs 500 locations against every location in every other file, and
             // each surviving pair calls Extend, which walks tokens in both directions. The pass
             // is therefore O(K^2 * L) in the raw bucket size K: generated DTO/entity layers put
@@ -279,15 +278,15 @@ public sealed class DuplicateFragmentAnalyser(
                     var left = candidates[i];
                     var right = candidates[j];
 
-if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
-    {
-                            // A file is never matched against itself (decision 5). Note this is a
-                            // guard on PAIRS, not on sets: A-B and B-C are each legal, so union-find
-                            // merges them and A ends up in the set twice. BuildFindings collapses
-                            // that to one location per file - see CollapseToOneLocationPerFile -
-                            // so a set's copy count equals its file count.
-                            continue;
-                        }
+                    if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
+                    {
+                        // A file is never matched against itself (decision 5). Note this is a
+                        // guard on PAIRS, not on sets: A-B and B-C are each legal, so union-find
+                        // merges them and A ends up in the set twice. BuildFindings collapses
+                        // that to one location per file - see CollapseToOneLocationPerFile -
+                        // so a set's copy count equals its file count.
+                        continue;
+                    }
 
                     if (!byPath.TryGetValue(left.Path, out var leftFile)
                         || !byPath.TryGetValue(right.Path, out var rightFile))
@@ -602,9 +601,10 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
         Between(evidence.ExecutableLines, member.StartLine, member.EndLine);
 
     /// <summary>
-    /// Whether a sorted array holds a value in [start, end]. Starts from the first entry at or
-    /// after <paramref name="start"/> — BinarySearch returns the complement of that insertion
-    /// point when the exact value is absent — and walks while entries stay in range.
+    /// Whether a sorted array holds a value in [start, end]. The first entry at or after
+    /// <paramref name="start"/> — BinarySearch returns the complement of that insertion point
+    /// when the exact value is absent — is the only one that needs checking: if it is past
+    /// <paramref name="end"/>, every later entry is too.
     /// </summary>
     private static bool Between(int[] sorted, int start, int end)
     {
@@ -614,12 +614,7 @@ if (string.Equals(left.Path, right.Path, StringComparison.Ordinal))
             index = ~index;
         }
 
-        for (; index < sorted.Length && sorted[index] <= end; index++)
-        {
-            return true;
-        }
-
-        return false;
+        return index < sorted.Length && sorted[index] <= end;
     }
 
     private static HashSet<string> IdentifierSet(RegionEvidence evidence, CloneSetMember member)

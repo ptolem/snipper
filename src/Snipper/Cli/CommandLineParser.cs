@@ -38,7 +38,7 @@ internal sealed record CommandLineOptions
 
     public int EntropyMinimumLines { get; init; }
 
-/// <summary>
+    /// <summary>
     /// Branch count above which a method is reported by SNP0033. Defaults to
     /// <see cref="CyclomaticComplexityAnalyser.DefaultMaxComplexity"/>.
     /// </summary>
@@ -212,7 +212,7 @@ internal static class CommandLineParser
                     return false;
                 }
 
-maxCyclomaticComplexity = complexityMax;
+                maxCyclomaticComplexity = complexityMax;
                 i++;
             }
             else if (string.Equals(args[i], "--max-cognitive-complexity", StringComparison.OrdinalIgnoreCase))

@@ -11,7 +11,8 @@ public sealed class UnusedParameterAnalyserShould(SampleSolutionFixture fixture)
     [Theory]
     [InlineData("unusedParam")]
     [InlineData("anotherUnusedParam")]
-    public async Task Flag_Unused_Parameters_On_Private_Directly_Invoked_Methods_As_Moderate_For_AnalyzeAsync(string parameterName)    {
+    public async Task Flag_Unused_Parameters_On_Private_Directly_Invoked_Methods_As_Moderate_For_AnalyzeAsync(string parameterName)
+    {
         var analyser = new UnusedParameterAnalyser();
 
         var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);

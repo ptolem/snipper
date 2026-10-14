@@ -49,7 +49,9 @@ internal sealed class NuGetLockFileReader
             foreach (var library in target.Libraries)
             {
                 // Only real packages participate; project/workload entries have no version graph.
-                if (!string.Equals(library.Type, "package", StringComparison.OrdinalIgnoreCase) || library.Version is null)
+                if (!string.Equals(library.Type, "package", StringComparison.OrdinalIgnoreCase)
+                    || library.Name is null
+                    || library.Version is null)
                 {
                     continue;
                 }

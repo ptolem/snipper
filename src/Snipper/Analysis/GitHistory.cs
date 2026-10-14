@@ -338,16 +338,16 @@ internal static class GitHistory
         list.Add(hunk);
     }
 
-        private static PatchHunk Build(
-            PatchHunk open, List<string> added, List<string> removed, List<int> changed,
-            bool isFileCreation) =>
-            open with
-            {
-                AddedLines = [.. added],
-                RemovedLines = [.. removed],
-                ChangedNewLines = changed.Count > 0 ? [.. changed] : null,
-                IsFileCreation = isFileCreation,
-            };
+    private static PatchHunk Build(
+        PatchHunk open, List<string> added, List<string> removed, List<int> changed,
+        bool isFileCreation) =>
+        open with
+        {
+            AddedLines = [.. added],
+            RemovedLines = [.. removed],
+            ChangedNewLines = changed.Count > 0 ? [.. changed] : null,
+            IsFileCreation = isFileCreation,
+        };
 
     /// <summary>Parses <c>@@ -old,count +new,count @@</c>, tolerating an omitted count of 1.</summary>
     private static bool TryParseHunkHeader(string line, out PatchHunk hunk)

@@ -56,7 +56,7 @@ public sealed class ComplexityTestExclusionShould
         return builder.ToString();
     }
 
-private static async Task<List<SnipperFinding>> AnalyzeAsync(
+    private static async Task<List<SnipperFinding>> AnalyzeAsync(
         IWorkspaceAnalyser analyser,
         string filePath,
         string projectName,

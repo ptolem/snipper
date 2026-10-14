@@ -59,7 +59,7 @@ Five things to internalise before reading further:
    once. Argument parsing, report serialisation, console rendering and analyser construction live
    in `CommandLineParser`, `ReportWriter`, `ConsoleRenderer` and `AnalyserFactory`, all of which are
    pure with respect to the orchestration. It is the only file you need to read to understand the
-   run order, and at 570 lines it is half the size it was.
+   run order, and it is half the size it was.
 2. **Analysers are independent and stateless.** Each takes the same immutable `Solution` and returns
    its own list. All sharing happens through memoized solution-keyed indexes, never through mutable
    fields.
@@ -1101,7 +1101,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | # | Invariant | Why |
 | --- | --- | --- |
 | 1 | Findings are reassembled in analyser **declaration order**, not completion order. | The report must be byte-identical to a sequential run. |
-| 2 | No mutable state on an analyser instance. | 19 analysers share one `Solution` concurrently. |
+| 2 | No mutable state on an analyser instance. | Every analyser in the run shares one `Solution` concurrently. |
 | 3 | New shared indexes use `ConditionalWeakTable<Solution, Lazy<T>>` with `ExecutionAndPublication`. | Build once; do not leak workspaces; no duplicated work. |
 | 4 | Shared indexes are frozen/immutable after build. | Lock-free concurrent reads. |
 | 5 | `MSBuildLocator.RegisterDefaults()` runs before any MSBuild-touching code. | Runtime MSBuild resolution; a compile-time reference breaks on SDK upgrades. |
@@ -1138,7 +1138,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
    - Declare `RuleIds`.
    - Reuse an existing shared index if one fits; do not add a private full-solution scan.
    - Follow the pre-filter ordering in [Anatomy of a semantic analyser](#anatomy-of-a-semantic-analyser).
-4. **Register it** in `CliRunner.BuildAnalysers`. If it is opt-in, add a flag and say why in a comment
+4. **Register it** in `AnalyserFactory.Build`. If it is opt-in, add a flag and say why in a comment
    with a measurement — both existing opt-in rules have one.
 5. **Choose a certainty tier per outcome.** Most rules emit two tiers for a demotion path
    (SNP0005 is Moderate, Advisory when `InternalsVisibleTo` is present). A tier is a claim about
@@ -1200,7 +1200,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | Path | Holds |
 | --- | --- |
 | `Program.cs` | Entry point. MSBuildLocator. `--version` short-circuit. |
-| `Cli/CliRunner.cs` | **Orchestration only** (570 lines): workspace → passes → baseline → filter → output. The run order lives here and nowhere else. |
+| `Cli/CliRunner.cs` | **Orchestration only**: workspace → passes → baseline → filter → output. The run order lives here and nowhere else. |
 | `Cli/CommandLineParser.cs` | Pure `string[]` → `CommandLineOptions`. No workspace, no console, no git. |
 | `Cli/AnalyserFactory.cs` | Which analysers run, and the exclusion-sensitivity partition the shadow pass depends on. |
 | `Cli/ReportWriter.cs` | JSON and SARIF 2.1.0 serialisation, plus the report DTOs. |
