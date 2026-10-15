@@ -2,7 +2,6 @@ namespace Snipper.Analysis;
 
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
-using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -38,7 +37,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 /// </summary>
 internal sealed class EnumOrdinalContractIndex
 {
-    private static readonly ConditionalWeakTable<Solution, Lazy<EnumOrdinalContractIndex>> Cache = new();
+    private static readonly SolutionIndexCache<EnumOrdinalContractIndex> Cache = new(BuildAsync);
 
     private const string JsonConverterNamespace = "System.Text.Json.Serialization";
 
@@ -51,14 +50,10 @@ internal sealed class EnumOrdinalContractIndex
         _ordinalBoundTypeNames = ordinalBoundTypeNames;
     }
 
-    public static EnumOrdinalContractIndex Get(Solution solution)
-    {
-        ArgumentNullException.ThrowIfNull(solution);
-        return Cache.GetValue(
-                solution,
-                static s => new Lazy<EnumOrdinalContractIndex>(() => Build(s), LazyThreadSafetyMode.ExecutionAndPublication))
-            .Value;
-    }
+    public static Task<EnumOrdinalContractIndex> GetAsync(Solution solution, CancellationToken cancellationToken)
+        => Cache.GetAsync(solution, cancellationToken);
+
+    public static bool IsBuilt(Solution solution) => Cache.IsBuilt(solution);
 
     /// <summary>
     /// True when this member is an enum member whose ordinal is a wire or
@@ -78,19 +73,19 @@ internal sealed class EnumOrdinalContractIndex
             || _ordinalBoundTypeNames.Contains(type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
     }
 
-    private static EnumOrdinalContractIndex Build(Solution solution)
+    private static async Task<EnumOrdinalContractIndex> BuildAsync(Solution solution, CancellationToken cancellationToken)
     {
         // (document, enum type argument, declaring type when the argument came from
         // a base list — null for Enum.GetValues<T>, which needs no declaration).
         var candidates = new ConcurrentBag<(Document Document, TypeSyntax Argument, TypeDeclarationSyntax? Declaration)>();
 
         // Pass 1: syntax only. Neither shape needs a semantic model to spot.
-        Parallel.ForEach(
+        await Parallel.ForEachAsync(
             solution.Projects.SelectMany(static p => p.Documents).Where(static d => d.SupportsSyntaxTree),
-            AnalysisParallelism.CreateOptions(CancellationToken.None),
-            document =>
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (document, documentToken) =>
             {
-                var root = document.GetSyntaxRootAsync().GetAwaiter().GetResult();
+                var root = await document.GetSyntaxRootAsync(documentToken).ConfigureAwait(false);
                 if (root is null)
                 {
                     return;
@@ -120,19 +115,19 @@ internal sealed class EnumOrdinalContractIndex
                             break;
                     }
                 }
-            });
+            }).ConfigureAwait(false);
 
         // Pass 2: semantic resolution, one model per document. Two passes over the
         // same group so the converter check costs one binding per *declaration*
         // rather than one per argument.
         var resolved = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         var sync = new object();
-        Parallel.ForEach(
+        await Parallel.ForEachAsync(
             candidates.GroupBy(static candidate => candidate.Document),
-            AnalysisParallelism.CreateOptions(CancellationToken.None),
-            group =>
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (group, documentToken) =>
             {
-                var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
+                var semanticModel = await group.Key.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
                     return;
@@ -144,7 +139,7 @@ internal sealed class EnumOrdinalContractIndex
 
                 foreach (var (_, argument, declaration) in group)
                 {
-                    if (semanticModel.GetTypeInfo(argument).Type is not INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType)
+                    if (semanticModel.GetTypeInfo(argument, documentToken).Type is not INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType)
                     {
                         continue;
                     }
@@ -165,7 +160,7 @@ internal sealed class EnumOrdinalContractIndex
                 // is not, and must not be mistaken for one.
                 var converterDerived = converterDeclarations.Count > 0
                     && converterDeclarations.Any(declaration =>
-                        semanticModel.GetDeclaredSymbol(declaration) is INamedTypeSymbol type && IsJsonConverterDerived(type));
+                        semanticModel.GetDeclaredSymbol(declaration, documentToken) is INamedTypeSymbol type && IsJsonConverterDerived(type));
 
                 lock (sync)
                 {
@@ -182,7 +177,7 @@ internal sealed class EnumOrdinalContractIndex
                         }
                     }
                 }
-            });
+            }).ConfigureAwait(false);
 
         return new EnumOrdinalContractIndex(
             resolved.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default),

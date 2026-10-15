@@ -22,6 +22,8 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0018"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex | SharedIndex.FrameworkEvidenceIndex | SharedIndex.EnumOrdinalContractIndex;
+
     private const string ObsoleteAttributeMetadataName = "System.ObsoleteAttribute";
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
@@ -31,11 +33,11 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = SolutionUsageIndex.Get(solution);
-        var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
-        var enumOrdinals = EnumOrdinalContractIndex.Get(solution);
+        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var frameworkEvidence = await FrameworkEvidenceIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var enumOrdinals = await EnumOrdinalContractIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"ObsoleteMemberAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

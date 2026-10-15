@@ -11,6 +11,8 @@ public sealed class UnusedPrivateMemberAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0001"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -18,11 +20,11 @@ public sealed class UnusedPrivateMemberAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = SolutionUsageIndex.Get(solution);
+        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         // Documents bind in parallel, and each reference search is restricted to the
         // handful of documents that textually contain the member name.
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"UnusedPrivateMemberAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

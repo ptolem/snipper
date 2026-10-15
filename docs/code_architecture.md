@@ -125,7 +125,8 @@ flowchart TB
     EXT_ROSLYN -->|"reads"| EXT_SDK
     CLI --> AR
     AR --> AN
-    AN -->|"SolutionUsageIndex.Get(solution)"| IDX
+    AR -->|"SharedIndexes.BuildAsync"| IDX
+    AN -->|"SolutionUsageIndex.GetAsync"| IDX
     AN -->|"findings"| FLT
     FLT --> OUT
     AR -.->|"disabled-rule pass"| AUD
@@ -193,9 +194,9 @@ sequenceDiagram
         note over AR,AN: Analysis
         C->>AR: RunAsync(analysers, solution)
         AR->>AR: WarmCompilationsAsync — SEQUENTIAL,<br/>one Compilation build per project
+        AR->>AR: SharedIndexes.BuildAsync — the union of the<br/>indexes the analysers declare, concurrently, timed
         par fan-out, bounded by SNIPPER_FANOUT_DOP
-            AN->>AN: AnalysisScope.Get(solution)<br/>in-scope documents, shared, built once (Lazy)
-            AN->>AN: SolutionUsageIndex.Get(solution)<br/>shared, built once (Lazy)
+            AN->>AN: await AnalysisScope / SolutionUsageIndex<br/>already built, so a cache hit
             AN->>AN: prove or refute each candidate
             AN-->>AR: findings into indexed slot
         and
@@ -633,7 +634,7 @@ confidence at each new exception type.
 Namespace exclusion is not a document gate at all, because a file can hold more than one namespace. It
 is applied to findings after analysis — see [Namespace exclusion is a filter, not a pass](#namespace-exclusion-is-a-filter-not-a-pass).
 
-Most analysers never call the gate themselves: `AnalysisScope.Get(solution)` applies it once per
+Most analysers never call the gate themselves: `AnalysisScope.GetAsync` applies it once per
 solution and hands back one flat list of the surviving documents of every compilable project, each with
 its syntax root and its project's `InternalsVisibleTo` flag, so the skip decision is made before any
 semantic model is fetched. The list is flat so an analyser can bind documents in parallel across the
@@ -706,16 +707,19 @@ public sealed class UnusedPrivateMemberAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0001"];
 
+    // The shared indexes this analyser reads; AnalysisRunner builds them before the fan-out.
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution, CancellationToken cancellationToken, Action<string>? progress = null)
     {
-        var usageIndex = SolutionUsageIndex.Get(solution);   // shared, built once
+        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken);   // shared, built once
 
         // In-scope documents of every compilable project: generated and external
         // code is already gone, decided once per solution.
         var findings = new ConcurrentBag<SnipperFinding>();
         await Parallel.ForEachAsync(
-            AnalysisScope.Get(solution),
+            await AnalysisScope.GetAsync(solution, cancellationToken),
             AnalysisParallelism.CreateOptions(cancellationToken),
             async (scopedDocument, documentToken) =>
             {
@@ -759,37 +763,70 @@ those documents.
 
 ## The shared index pattern
 
-Five indexes are shared across analysers: `AnalysisScope`, `SolutionUsageIndex`,
-`FrameworkEvidenceIndex`, `InheritanceGraph`, `ProjectPackageUsageCache`.
+Five indexes are shared across analysers, listed in the `SharedIndex` enum: `AnalysisScope`,
+`SolutionUsageIndex`, `FrameworkEvidenceIndex`, `InheritanceGraph`, `EnumOrdinalContractIndex`.
+A sixth cache, `ProjectPackageUsageCache`, is per project (below).
 
-They are memoized on the `Solution` instance with a `ConditionalWeakTable<Solution, Lazy<T>>`:
+Each analyser declares the ones it reads, and `AnalysisRunner` builds their union as a stage of its
+own, after the compilations are warm and before the fan-out:
 
 ```csharp
-private static readonly ConditionalWeakTable<Solution, Lazy<SolutionUsageIndex>> Cache = new();
-
-internal static SolutionUsageIndex Get(Solution solution)
-    => Cache.GetOrCreateValue(solution, static s => new Lazy<SolutionUsageIndex>(
-        () => Build(s), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex;
 ```
 
-Four things this buys, all of which matter:
+```
+✓ AnalysisScope: built in 0.3s
+✓ InheritanceGraph: built in 0.9s
+✓ EnumOrdinalContractIndex: built in 0.9s
+✓ SolutionUsageIndex: built in 1.3s
+✓ FrameworkEvidenceIndex: built in 1.3s
+✓ Shared indexes: 5 built in 1.3s
+```
 
-- **Built once, no matter how many analysers ask.** First touch blocks on one build; concurrent
-  readers never duplicate the work.
-- **`LazyThreadSafetyMode.ExecutionAndPublication`** means exactly one build even under the fan-out.
+(MILKRUN, 3,610 findings. The builds overlap, so the stage takes as long as the slowest.)
+
+So an index's cost is reported once, under its own name, instead of being charged to whichever
+analyser touched it first, and the per-analyser times that follow are comparable. Only what the
+run's analysers declare is built: a run limited to the package rules builds none.
+
+Each index is memoized on the `Solution` instance by a `SolutionIndexCache<T>`:
+
+```csharp
+private static readonly SolutionIndexCache<SolutionUsageIndex> Cache = new(BuildAsync);
+
+public static Task<SolutionUsageIndex> GetAsync(Solution solution, CancellationToken cancellationToken)
+    => Cache.GetAsync(solution, cancellationToken);
+```
+
+What this buys, all of which matters:
+
+- **Built once, no matter how many analysers ask.** Concurrent callers await the one build; none
+  duplicates it.
+- **Callers await, they do not block.** The indexes used to sit behind `Lazy<T>` with a synchronous
+  build, so every analyser arriving mid-build parked a thread-pool thread on `Lazy.Value` while the
+  build's own `Parallel.ForEach` wanted threads from the same pool.
+- **Cancellation works.** The build runs under the token of the caller that started it (in a run,
+  the runner's), so Ctrl+C stops it. A cancelled build is dropped from the cache, and a caller still
+  waiting on it with a live token of its own starts a fresh one rather than inheriting somebody
+  else's cancellation.
 - **`ConditionalWeakTable`** keys on object identity, so a discarded `Solution` is collectable. A
   static `Dictionary<Solution, T>` would leak every workspace the process ever opened.
 - **The indexes themselves are immutable and frozen** (`FrozenDictionary`, `FrozenSet`,
   `ImmutableHashSet`) once built, so concurrent reads need no locking.
+
+An analyser that reads an index without declaring it still works, since its `GetAsync` builds the
+index on first use, but the build lands inside that analyser's time. `SharedIndexDeclarationShould`
+runs every analyser on a fresh solution and fails if it built an index it did not declare.
 
 `ProjectPackageUsageCache` applies the pattern per project rather than per solution. Each csproj
 entry is a semantic walk of its own, so the cache keeps one `Lazy<Task<…>>` per project path, and
 the package analysers call `PrefetchAsync` with the projects they are about to visit. That builds
 the missing entries concurrently, bounded by `SNIPPER_MAX_DOP`, before their per-project loops run.
 
-If you add a shared index, follow the same pattern. If you add a mutable field to an analyser, you
-break both the fan-out and the per-document loops inside it - `SNIPPER_MAX_DOP=1` is the escape hatch, and it is also your signal that you have
-done something wrong.
+If you add a shared index, give it a `SolutionIndexCache<T>`, a `SharedIndex` member and an entry in
+`SharedIndexes`, and declare it on the analysers that read it. If you add a mutable field to an
+analyser, you break both the fan-out and the per-document loops inside it - `SNIPPER_MAX_DOP=1` is
+the escape hatch, and it is also your signal that you have done something wrong.
 
 ### Per-symbol and per-node memos
 
@@ -1126,7 +1163,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | --- | --- | --- |
 | 1 | Findings are reassembled in analyser **declaration order**, not completion order, and each analyser's slot is put in `FindingOrder`. | The merged list must be identical to a sequential run's, so an analyser may emit in any order. |
 | 2 | No mutable state on an analyser instance. | Every analyser in the run shares one `Solution` concurrently. |
-| 3 | New shared indexes use `ConditionalWeakTable<Solution, Lazy<T>>` with `ExecutionAndPublication`. | Build once; do not leak workspaces; no duplicated work. |
+| 3 | New shared indexes use `SolutionIndexCache<T>` and are declared through `IWorkspaceAnalyser.SharedIndexes`. | Build once, awaited not blocked on, cancellable; do not leak workspaces; build time reported as its own stage. |
 | 4 | Shared indexes are frozen/immutable after build. | Lock-free concurrent reads. |
 | 5 | `MSBuildLocator.RegisterDefaults()` runs before any MSBuild-touching code. | Runtime MSBuild resolution; a compile-time reference breaks on SDK upgrades. |
 | 6 | Every analyser walks `AnalysisScope`, or calls `ExclusionEngine.ShouldSkipDocument` before binding when it needs its own document set. | Generated code is a correctness problem, not just noise. |
@@ -1230,7 +1267,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | `Cli/ReportWriter.cs` | JSON and SARIF 2.1.0 serialisation, plus the report DTOs. |
 | `Cli/ConsoleRenderer.cs` | Findings table, suppression audit table, entropy table, and the thread-safe analysis progress sink. |
 | `Cli/ToolVersion.cs`, `ReportFormat.cs` | Small shared types, split out so the above do not depend on `CliRunner`. |
-| `Cli/AnalysisRunner.cs` | Compilation warm-up, parallel fan-out, progress reporting, deterministic merge. No console dependency. |
+| `Cli/AnalysisRunner.cs` | Compilation warm-up, the shared-index stage, parallel fan-out, progress reporting, deterministic merge. No console dependency. |
 | `Cli/SnipperConfig.cs`, `SnipperConfigLoader.cs` | `snipper.json` schema and tolerant discovery. |
 | `Cli/FindingFilter.cs` | The three report-time channels and their precedence. Shared with the audit. |
 | `Cli/BaselineService.cs` | Fingerprints, load/write, and the "does a disabled rule need its own pass" predicate. |
@@ -1241,6 +1278,8 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | `Cli/JsonReportSerializerContext.cs`, `SarifModels.cs` | Source-generated JSON and SARIF DTOs. |
 | `Analysis/IWorkspaceAnalyser.cs` | The contract. Read this first. |
 | `Analysis/AnalysisScope.cs` | The in-scope documents most analysers walk, flat across projects. |
+| `Analysis/SharedIndex.cs` | The shared indexes an analyser can declare, and their build as a set. |
+| `Analysis/SolutionIndexCache.cs` | The awaitable, cancellable once-per-solution memo behind each of them. |
 | `Analysis/SolutionUsageIndex.cs` etc. | Shared solution-keyed indexes. |
 | `Analysis/ExclusionEngine.cs` | Generated/external gates, namespace resolution (`ResolveNamespace`), plus `IsTestCode` — complexity-only, never used by `ShouldSkipDocument`. |
 | `Analysis/DuplicateFragmentAnalyser.cs`, `CloneDriftDetector.cs`, `GitHistory.cs` | 4C. |

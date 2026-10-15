@@ -33,6 +33,8 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0003", "SNP0004"];
 
+    public SharedIndex SharedIndexes => SharedIndex.None;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,

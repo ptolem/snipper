@@ -18,6 +18,8 @@ public sealed class OrphanProjectAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0011"];
 
+    public SharedIndex SharedIndexes => SharedIndex.None;
+
     public Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,

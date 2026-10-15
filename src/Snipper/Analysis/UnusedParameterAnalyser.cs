@@ -20,6 +20,8 @@ public sealed class UnusedParameterAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0010"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -27,9 +29,9 @@ public sealed class UnusedParameterAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = SolutionUsageIndex.Get(solution);
+        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"UnusedParameterAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

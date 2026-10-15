@@ -21,6 +21,8 @@ public sealed class WriteOnlyFieldAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0021"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex;
+
     // Name-matched with/without the Attribute suffix so fixture stand-ins and real
     // serializer attributes behave identically: System.Text.Json's JsonInclude,
     // DataContractSerializer's DataMember, XmlSerializer's XmlElement, Newtonsoft's
@@ -40,10 +42,10 @@ public sealed class WriteOnlyFieldAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = SolutionUsageIndex.Get(solution);
+        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         // Same cost profile as UnusedPrivateMemberAnalyser.
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"WriteOnlyFieldAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

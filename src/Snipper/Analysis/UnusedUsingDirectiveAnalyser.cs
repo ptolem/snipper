@@ -18,6 +18,8 @@ public sealed class UnusedUsingDirectiveAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0019"];
 
+    public SharedIndex SharedIndexes => SharedIndex.None;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,

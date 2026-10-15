@@ -15,6 +15,8 @@ public sealed class UnreachableCodeAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0002"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -23,7 +25,7 @@ public sealed class UnreachableCodeAnalyser : IWorkspaceAnalyser
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
 
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"UnreachableCodeAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

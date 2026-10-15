@@ -18,6 +18,8 @@ public sealed class ConfigurationBindingAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0007", "SNP0008"];
 
+    public SharedIndex SharedIndexes => SharedIndex.None;
+
     private static readonly FrozenSet<string> OptionsGenericTypeNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "IOptions",

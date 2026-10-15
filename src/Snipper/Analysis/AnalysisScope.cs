@@ -1,6 +1,5 @@
 namespace Snipper.Analysis;
 
-using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 
 /// <summary>A document an analyser should judge, with the syntax root it was judged by.</summary>
@@ -38,20 +37,14 @@ internal sealed record ScopedDocument(Document Document, SyntaxNode Root)
 /// </summary>
 internal static class AnalysisScope
 {
-    private static readonly ConditionalWeakTable<Solution, Lazy<IReadOnlyList<ScopedDocument>>> Cache = new();
+    private static readonly SolutionIndexCache<IReadOnlyList<ScopedDocument>> Cache = new(BuildAsync);
 
-    public static IReadOnlyList<ScopedDocument> Get(Solution solution)
-    {
-        ArgumentNullException.ThrowIfNull(solution);
+    public static Task<IReadOnlyList<ScopedDocument>> GetAsync(Solution solution, CancellationToken cancellationToken)
+        => Cache.GetAsync(solution, cancellationToken);
 
-        // Lazy + ExecutionAndPublication: exactly one build even if analysers race.
-        return Cache.GetValue(
-                solution,
-                static s => new Lazy<IReadOnlyList<ScopedDocument>>(() => Build(s), LazyThreadSafetyMode.ExecutionAndPublication))
-            .Value;
-    }
+    public static bool IsBuilt(Solution solution) => Cache.IsBuilt(solution);
 
-    private static List<ScopedDocument> Build(Solution solution)
+    private static async Task<IReadOnlyList<ScopedDocument>> BuildAsync(Solution solution, CancellationToken cancellationToken)
     {
         var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
         var documents = new List<ScopedDocument>();
@@ -63,10 +56,9 @@ internal static class AnalysisScope
                 continue;
             }
 
-            // Synchronous like the other solution-keyed indexes: AnalysisRunner has
-            // already built every compilation, so this and the syntax roots below only
-            // read back what is cached.
-            var compilation = project.GetCompilationAsync().GetAwaiter().GetResult();
+            // AnalysisRunner has already built every compilation, so this and the syntax
+            // roots below only read back what is cached.
+            var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
             var hasFriendAssemblies = compilation is not null
                 && compilation.Assembly.GetAttributes()
                     .Any(static a => a.AttributeClass?.Name is "InternalsVisibleTo" or "InternalsVisibleToAttribute");
@@ -78,7 +70,7 @@ internal static class AnalysisScope
                     continue;
                 }
 
-                var root = document.GetSyntaxRootAsync().GetAwaiter().GetResult();
+                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
                 if (root is null || ExclusionEngine.ShouldSkipDocument(document.FilePath, root, analysisRoots))
                 {
                     continue;

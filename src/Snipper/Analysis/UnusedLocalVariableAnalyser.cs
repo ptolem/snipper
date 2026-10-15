@@ -17,14 +17,16 @@ public sealed class UnusedLocalVariableAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0009"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var usageIndex = SolutionUsageIndex.Get(solution);
-        var documents = AnalysisScope.Get(solution);
+        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"UnusedLocalVariableAnalyser: scanning {documents.Count} documents");
 
         // Documents are independent: a local and every read of it live in one

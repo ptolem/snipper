@@ -2,7 +2,6 @@ namespace Snipper.Analysis;
 
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
-using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -24,7 +23,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 /// </summary>
 internal sealed class FrameworkEvidenceIndex
 {
-    private static readonly ConditionalWeakTable<Solution, Lazy<FrameworkEvidenceIndex>> Cache = new();
+    private static readonly SolutionIndexCache<FrameworkEvidenceIndex> Cache = new(BuildAsync);
 
     // JsonSerializer/JsonConvert generic methods (matched with the receiver name).
     private static readonly FrozenSet<string> SerializerGenericMethods = new HashSet<string>(StringComparer.Ordinal)
@@ -180,14 +179,10 @@ internal sealed class FrameworkEvidenceIndex
         _reflectionDiscoveredTypes = reflectionDiscoveredTypes;
     }
 
-    public static FrameworkEvidenceIndex Get(Solution solution)
-    {
-        ArgumentNullException.ThrowIfNull(solution);
-        return Cache.GetValue(
-                solution,
-                static s => new Lazy<FrameworkEvidenceIndex>(() => Build(s), LazyThreadSafetyMode.ExecutionAndPublication))
-            .Value;
-    }
+    public static Task<FrameworkEvidenceIndex> GetAsync(Solution solution, CancellationToken cancellationToken)
+        => Cache.GetAsync(solution, cancellationToken);
+
+    public static bool IsBuilt(Solution solution) => Cache.IsBuilt(solution);
 
     /// <summary>
     /// True when the member carries a serialization attribute — including
@@ -272,7 +267,7 @@ internal sealed class FrameworkEvidenceIndex
         return DerivesFromAbstractValidator(type);
     }
 
-    private static FrameworkEvidenceIndex Build(Solution solution)
+    private static async Task<FrameworkEvidenceIndex> BuildAsync(Solution solution, CancellationToken cancellationToken)
     {
         var serializationSeeds = new ConcurrentBag<(Document Document, TypeSyntax Type)>();
         var routeSeeds = new ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation)>();
@@ -284,27 +279,27 @@ internal sealed class FrameworkEvidenceIndex
         var documents = solution.Projects
             .SelectMany(static p => p.Documents)
             .Where(static d => d.SupportsSyntaxTree);
-        Parallel.ForEach(
+        await Parallel.ForEachAsync(
             documents,
-            AnalysisParallelism.CreateOptions(CancellationToken.None),
-            document =>
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (document, documentToken) =>
             {
-                var root = document.GetSyntaxRootAsync().GetAwaiter().GetResult();
+                var root = await document.GetSyntaxRootAsync(documentToken).ConfigureAwait(false);
                 if (root is null)
                 {
                     return;
                 }
 
                 CollectSeeds(document, root, serializationSeeds, routeSeeds, scanSeeds, classRegistrations);
-            });
+            }).ConfigureAwait(false);
 
         // Pass 2: resolve seed types. Per-document semantic binding parallelised
         // behind the revertible switch (spike-proven drift-free, 2026-09-18);
         // SNIPPER_MAX_DOP=1 restores the sequential path. Only seed-bearing
         // documents need a model.
         var seedTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
-        ResolveSeeds(serializationSeeds, seedTypes, normalizeToDefinition: false);
-        ResolveRouteHandlerReturns(routeSeeds, seedTypes);
+        await ResolveSeedsAsync(serializationSeeds, seedTypes, normalizeToDefinition: false, cancellationToken).ConfigureAwait(false);
+        await ResolveRouteHandlerReturnsAsync(routeSeeds, seedTypes, cancellationToken).ConfigureAwait(false);
 
         // Pass 3: DTO closure — public instance property/field types and generic
         // type arguments, transitively (handles Task<Dto>, IApiResponse<Dto>, and
@@ -360,9 +355,9 @@ internal sealed class FrameworkEvidenceIndex
         // IsAssignableFrom call sites semantically, close over the syntax-level
         // base map by simple name (transitively — a scan discovers subclasses of
         // subclasses), then resolve only the discovered declarations.
-        var scanBaseNames = ResolveScanBaseNames(scanSeeds);
+        var scanBaseNames = await ResolveScanBaseNamesAsync(scanSeeds, cancellationToken).ConfigureAwait(false);
         var discoveredNames = CloseDiscoveredNames(scanBaseNames, classRegistrations);
-        var reflectionDiscoveredTypes = ResolveDiscoveredTypes(discoveredNames, classRegistrations);
+        var reflectionDiscoveredTypes = await ResolveDiscoveredTypesAsync(discoveredNames, classRegistrations, cancellationToken).ConfigureAwait(false);
 
         return new FrameworkEvidenceIndex(
             closure.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default),
@@ -576,9 +571,10 @@ internal sealed class FrameworkEvidenceIndex
     /// cancellation-token overload) have no single <c>Symbol</c>, so
     /// <c>CandidateSymbols</c> is consulted too.
     /// </summary>
-    private static void ResolveRouteHandlerReturns(
+    private static async Task ResolveRouteHandlerReturnsAsync(
         ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation)> routeSeeds,
-        HashSet<INamedTypeSymbol> seedTypes)
+        HashSet<INamedTypeSymbol> seedTypes,
+        CancellationToken cancellationToken)
     {
         if (routeSeeds.IsEmpty)
         {
@@ -586,12 +582,12 @@ internal sealed class FrameworkEvidenceIndex
         }
 
         var sync = new object();
-        Parallel.ForEach(
+        await Parallel.ForEachAsync(
             routeSeeds.GroupBy(static seed => seed.Document),
-            AnalysisParallelism.CreateOptions(CancellationToken.None),
-            group =>
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (group, documentToken) =>
             {
-                var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
+                var semanticModel = await group.Key.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
                     return;
@@ -624,7 +620,7 @@ internal sealed class FrameworkEvidenceIndex
                         }
                     }
                 }
-            });
+            }).ConfigureAwait(false);
     }
 
     private static IEnumerable<IMethodSymbol> HandlersOf(SemanticModel semanticModel, ExpressionSyntax expression)
@@ -710,8 +706,9 @@ internal sealed class FrameworkEvidenceIndex
     /// unresolvable shapes — drifted compilations, missing references: the
     /// named base still counts, per the err-toward-used doctrine.
     /// </summary>
-    private static HashSet<string> ResolveScanBaseNames(
-        ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation, string BaseName)> scanSeeds)
+    private static async Task<HashSet<string>> ResolveScanBaseNamesAsync(
+        ConcurrentBag<(Document Document, InvocationExpressionSyntax Invocation, string BaseName)> scanSeeds,
+        CancellationToken cancellationToken)
     {
         var confirmed = new HashSet<string>(StringComparer.Ordinal);
         if (scanSeeds.IsEmpty)
@@ -720,12 +717,12 @@ internal sealed class FrameworkEvidenceIndex
         }
 
         var sync = new object();
-        Parallel.ForEach(
+        await Parallel.ForEachAsync(
             scanSeeds.GroupBy(static seed => seed.Document),
-            AnalysisParallelism.CreateOptions(CancellationToken.None),
-            group =>
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (group, documentToken) =>
             {
-                var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
+                var semanticModel = await group.Key.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 foreach (var (_, invocation, baseName) in group)
                 {
                     var method = semanticModel?.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
@@ -741,7 +738,7 @@ internal sealed class FrameworkEvidenceIndex
                         confirmed.Add(baseName);
                     }
                 }
-            });
+            }).ConfigureAwait(false);
 
         return confirmed;
     }
@@ -787,9 +784,10 @@ internal sealed class FrameworkEvidenceIndex
         return discovered;
     }
 
-    private static FrozenSet<INamedTypeSymbol> ResolveDiscoveredTypes(
+    private static async Task<FrozenSet<INamedTypeSymbol>> ResolveDiscoveredTypesAsync(
         HashSet<string> discoveredNames,
-        ConcurrentBag<(Document Document, TypeDeclarationSyntax Declaration, string Name, IReadOnlyList<string> BaseNames)> classRegistrations)
+        ConcurrentBag<(Document Document, TypeDeclarationSyntax Declaration, string Name, IReadOnlyList<string> BaseNames)> classRegistrations,
+        CancellationToken cancellationToken)
     {
         var resolved = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         if (discoveredNames.Count == 0)
@@ -798,14 +796,14 @@ internal sealed class FrameworkEvidenceIndex
         }
 
         var sync = new object();
-        Parallel.ForEach(
+        await Parallel.ForEachAsync(
             classRegistrations
                 .Where(registration => discoveredNames.Contains(registration.Name))
                 .GroupBy(static registration => registration.Document),
-            AnalysisParallelism.CreateOptions(CancellationToken.None),
-            group =>
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (group, documentToken) =>
             {
-                var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
+                var semanticModel = await group.Key.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
                     return;
@@ -821,23 +819,24 @@ internal sealed class FrameworkEvidenceIndex
                         }
                     }
                 }
-            });
+            }).ConfigureAwait(false);
 
         return resolved.ToFrozenSet((IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default);
     }
 
-    private static void ResolveSeeds(
+    private static async Task ResolveSeedsAsync(
         ConcurrentBag<(Document Document, TypeSyntax Type)> seeds,
         HashSet<INamedTypeSymbol> resolved,
-        bool normalizeToDefinition)
+        bool normalizeToDefinition,
+        CancellationToken cancellationToken)
     {
         var sync = new object();
-        Parallel.ForEach(
+        await Parallel.ForEachAsync(
             seeds.GroupBy(static seed => seed.Document),
-            AnalysisParallelism.CreateOptions(CancellationToken.None),
-            group =>
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (group, documentToken) =>
             {
-                var semanticModel = group.Key.GetSemanticModelAsync().GetAwaiter().GetResult();
+                var semanticModel = await group.Key.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
                     return;
@@ -854,7 +853,7 @@ internal sealed class FrameworkEvidenceIndex
                         }
                     }
                 }
-            });
+            }).ConfigureAwait(false);
     }
 
     private static bool ImplementsFrameworkContract(INamedTypeSymbol type)

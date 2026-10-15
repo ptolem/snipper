@@ -63,6 +63,8 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
 
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0033"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -72,7 +74,7 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
 
         var findings = new ConcurrentBag<SnipperFinding>();
 
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"CyclomaticComplexityAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

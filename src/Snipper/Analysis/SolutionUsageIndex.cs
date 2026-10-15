@@ -3,7 +3,6 @@ namespace Snipper.Analysis;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using System.Collections.Immutable;
-using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -32,7 +31,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 /// </summary>
 internal sealed class SolutionUsageIndex
 {
-    private static readonly ConditionalWeakTable<Solution, Lazy<SolutionUsageIndex>> Cache = new();
+    private static readonly SolutionIndexCache<SolutionUsageIndex> Cache = new(BuildAsync);
 
     private static readonly IEqualityComparer<Document> DocumentComparer = new DocumentIdComparer();
 
@@ -48,16 +47,10 @@ internal sealed class SolutionUsageIndex
         _documentsByName = documentsByName;
     }
 
-    public static SolutionUsageIndex Get(Solution solution)
-    {
-        ArgumentNullException.ThrowIfNull(solution);
+    public static Task<SolutionUsageIndex> GetAsync(Solution solution, CancellationToken cancellationToken)
+        => Cache.GetAsync(solution, cancellationToken);
 
-        // Lazy + ExecutionAndPublication: exactly one build even if analysers race.
-        return Cache.GetValue(
-                solution,
-                static s => new Lazy<SolutionUsageIndex>(() => Build(s), LazyThreadSafetyMode.ExecutionAndPublication))
-            .Value;
-    }
+    public static bool IsBuilt(Solution solution) => Cache.IsBuilt(solution);
 
     /// <summary>
     /// True when <paramref name="name"/> appears in a usage position anywhere in the
@@ -126,7 +119,7 @@ internal sealed class SolutionUsageIndex
             : builder.ToImmutable();
     }
 
-    private static SolutionUsageIndex Build(Solution solution)
+    private static async Task<SolutionUsageIndex> BuildAsync(Solution solution, CancellationToken cancellationToken)
     {
         // Interning pool: distinct identifier texts are stored once per build;
         // per-document sets and reverse buckets then hold references, not copies.
@@ -139,14 +132,12 @@ internal sealed class SolutionUsageIndex
             .SelectMany(static p => p.Documents)
             .Where(static d => d.SupportsSyntaxTree);
 
-        Parallel.ForEach(
+        await Parallel.ForEachAsync(
             documents,
-            AnalysisParallelism.CreateOptions(CancellationToken.None),
-            document =>
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (document, documentToken) =>
             {
-                // Trees are loaded before any analyser runs; awaiting the already-
-                // completed task avoids re-entering the async state machine.
-                var root = document.GetSyntaxTreeAsync().GetAwaiter().GetResult()?.GetRoot();
+                var root = await document.GetSyntaxRootAsync(documentToken).ConfigureAwait(false);
                 if (root is null)
                 {
                     return;
@@ -181,7 +172,7 @@ internal sealed class SolutionUsageIndex
                 }
 
                 namesByDocument[document.Id] = names.ToFrozenSet(StringComparer.Ordinal);
-            });
+            }).ConfigureAwait(false);
 
         // Deterministic order: documents sorted by file path so the candidate set
         // handed to SymbolFinder — and therefore any finding order derived from it —

@@ -2,7 +2,6 @@ namespace Snipper.Analysis;
 
 using System.Collections.Frozen;
 using System.Collections.Immutable;
-using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 
 /// <summary>
@@ -18,7 +17,7 @@ using Microsoft.CodeAnalysis;
 /// </summary>
 internal sealed class InheritanceGraph
 {
-    private static readonly ConditionalWeakTable<Solution, Lazy<InheritanceGraph>> Cache = new();
+    private static readonly SolutionIndexCache<InheritanceGraph> Cache = new(BuildAsync);
 
     private readonly FrozenDictionary<INamedTypeSymbol, ImmutableArray<INamedTypeSymbol>> _derivedByBase;
 
@@ -27,16 +26,10 @@ internal sealed class InheritanceGraph
         _derivedByBase = derivedByBase;
     }
 
-    public static InheritanceGraph Get(Solution solution)
-    {
-        ArgumentNullException.ThrowIfNull(solution);
+    public static Task<InheritanceGraph> GetAsync(Solution solution, CancellationToken cancellationToken)
+        => Cache.GetAsync(solution, cancellationToken);
 
-        // Lazy + ExecutionAndPublication: exactly one build even if analysers race.
-        return Cache.GetValue(
-                solution,
-                static s => new Lazy<InheritanceGraph>(() => Build(s), LazyThreadSafetyMode.ExecutionAndPublication))
-            .Value;
-    }
+    public static bool IsBuilt(Solution solution) => Cache.IsBuilt(solution);
 
     /// <summary>
     /// True when any source-declared class directly derives from <paramref name="type"/>.
@@ -83,7 +76,7 @@ internal sealed class InheritanceGraph
         return result;
     }
 
-    private static InheritanceGraph Build(Solution solution)
+    private static async Task<InheritanceGraph> BuildAsync(Solution solution, CancellationToken cancellationToken)
     {
         var edges = new Dictionary<INamedTypeSymbol, List<INamedTypeSymbol>>(NamedTypeSymbolComparer.Instance);
 
@@ -94,7 +87,7 @@ internal sealed class InheritanceGraph
                 continue;
             }
 
-            var compilation = project.GetCompilationAsync().GetAwaiter().GetResult();
+            var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
             if (compilation is null)
             {
                 continue;

@@ -18,6 +18,8 @@ public sealed class RedundancyAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0022", "SNP0025", "SNP0026", "SNP0028", "SNP0029"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -28,7 +30,7 @@ public sealed class RedundancyAnalyser : IWorkspaceAnalyser
 
         // Candidate sets are tiny (trailing literals / explicit type lists), so
         // speculation stays cheap even on large solutions.
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"RedundancyAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

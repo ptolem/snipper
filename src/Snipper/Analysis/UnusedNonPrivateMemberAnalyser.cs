@@ -18,6 +18,8 @@ public sealed class UnusedNonPrivateMemberAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0005", "SNP0006"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex | SharedIndex.FrameworkEvidenceIndex;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -26,14 +28,14 @@ public sealed class UnusedNonPrivateMemberAnalyser : IWorkspaceAnalyser
         ArgumentNullException.ThrowIfNull(solution);
         progress?.Invoke("UnusedNonPrivateMemberAnalyser: scanning DI registrations");
         var diRegisteredTypes = await DiRegistrationScanner.ScanAsync(solution, cancellationToken).ConfigureAwait(false);
-        var usageIndex = SolutionUsageIndex.Get(solution);
-        var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
+        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var frameworkEvidence = await FrameworkEvidenceIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         // Phase A: enumerate candidates. Cheap semantic work (declared symbols,
         // evidence filters, usage-index search-document pre-computation),
         // in parallel across documents. Phase B is order-independent, so a bag will do.
         var candidates = new ConcurrentBag<Candidate>();
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"UnusedNonPrivateMemberAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

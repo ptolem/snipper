@@ -30,6 +30,8 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0024"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex | SharedIndex.InheritanceGraph | SharedIndex.FrameworkEvidenceIndex;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -37,13 +39,13 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = SolutionUsageIndex.Get(solution);
-        var graph = InheritanceGraph.Get(solution);
-        var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
+        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var graph = await InheritanceGraph.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var frameworkEvidence = await FrameworkEvidenceIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         // Syntax gates run first everywhere: modifier/attribute checks and the
         // this/base token scan happen before any semantic binding.
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"TighteningAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

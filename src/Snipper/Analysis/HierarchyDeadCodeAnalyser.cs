@@ -35,6 +35,8 @@ public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0023", "SNP0027"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope | SharedIndex.SolutionUsageIndex | SharedIndex.InheritanceGraph;
+
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
         CancellationToken cancellationToken,
@@ -42,13 +44,13 @@ public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = SolutionUsageIndex.Get(solution);
-        var graph = InheritanceGraph.Get(solution);
+        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var graph = await InheritanceGraph.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         // Phase 1: gather candidate classes (syntax pre-filtered, symbol-confirmed),
         // in parallel across documents. Each document fills its own slot, so the
         // candidate lists come out in scope order however the work was scheduled.
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"HierarchyDeadCodeAnalyser: scanning {documents.Count} documents");
         var candidateSlots = new List<CandidateClass>[documents.Count];
         var familySlots = new List<ISymbol>[documents.Count];

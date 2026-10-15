@@ -28,6 +28,8 @@ public sealed class DuplicateFragmentAnalyser(
 {
     public IReadOnlyCollection<string> RuleIds { get; } = cloneDrift is null ? ["SNP0031"] : ["SNP0031", "SNP0032"];
 
+    public SharedIndex SharedIndexes => SharedIndex.None;
+
     private const int WindowTokens = 60;
     private const int MinimumFragmentLines = 4;
 

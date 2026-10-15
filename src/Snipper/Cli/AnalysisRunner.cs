@@ -1,6 +1,7 @@
 namespace Snipper.Cli;
 
 using System.Diagnostics;
+using System.Numerics;
 using Microsoft.CodeAnalysis;
 using Snipper.Analysis;
 using Snipper.Models;
@@ -10,14 +11,15 @@ using Snipper.Models;
 ///
 /// Analysers are independent of one another: each takes the same immutable
 /// <see cref="Solution"/> and returns its own finding list, and every
-/// solution-keyed index they share (<c>SolutionUsageIndex</c>,
-/// <c>FrameworkEvidenceIndex</c>, <c>InheritanceGraph</c>,
-/// <c>ProjectPackageUsageCache</c>) is built for concurrent access —
-/// memoized through <c>Lazy</c>(ExecutionAndPublication) over a
-/// <see cref="System.Runtime.CompilerServices.ConditionalWeakTable{TKey,TValue}"/>.
-/// That is what makes fan-out safe here, and it is why those indexes were built
-/// thread-safe rather than merely single-threaded-fast. First-touch on a shared
-/// index therefore blocks on one build, never duplicates it.
+/// solution-keyed index they share is immutable once built and built at most once
+/// per solution: the <see cref="SharedIndex"/> indexes through
+/// <see cref="SolutionIndexCache{T}"/>, <c>ProjectPackageUsageCache</c> per project.
+/// That is what makes fan-out safe here.
+///
+/// The run has three stages: warm the compilations, build the shared indexes the
+/// analysers declare, then fan the analysers out. An analyser that reads an index it
+/// did not declare still gets it - awaiting one build, never duplicating it - but pays
+/// for it inside its own time.
 ///
 /// Findings are reassembled in analyser declaration order regardless of
 /// completion order, and each analyser's own findings in <see cref="FindingOrder"/>,
@@ -34,6 +36,8 @@ using Snipper.Models;
 /// </summary>
 internal static class AnalysisRunner
 {
+    private const string SharedIndexesStage = "Shared indexes";
+
     public static async Task<IReadOnlyList<SnipperFinding>> RunAsync(
         IReadOnlyList<IWorkspaceAnalyser> analysers,
         Solution solution,
@@ -51,6 +55,11 @@ internal static class AnalysisRunner
         // compilation build exactly once, and concurrent readers of an
         // already-built compilation are the supported path.
         await WarmCompilationsAsync(solution, cancellationToken).ConfigureAwait(false);
+
+        // The shared indexes are a stage of their own rather than built on first touch
+        // inside the fan-out, where their cost was charged to whichever analyser got
+        // there first and made the per-analyser times incomparable.
+        await BuildSharedIndexesAsync(analysers, solution, progress, cancellationToken).ConfigureAwait(false);
 
         // One slot per analyser, indexed by position.
         var results = new IReadOnlyList<SnipperFinding>[analysers.Count];
@@ -91,6 +100,44 @@ internal static class AnalysisRunner
         }
 
         return merged;
+    }
+
+    /// <summary>
+    /// Builds the union of the indexes the analysers declare that are not built yet,
+    /// reporting each one's own time and then the stage's. Only what this run's analysers
+    /// read is built, so a run limited to, say, the package rules builds none.
+    /// </summary>
+    private static async Task BuildSharedIndexesAsync(
+        IReadOnlyList<IWorkspaceAnalyser> analysers,
+        Solution solution,
+        IProgress<AnalysisProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var indexes = SharedIndex.None;
+        foreach (var analyser in analysers)
+        {
+            indexes |= analyser.SharedIndexes;
+        }
+
+        // A second run over the same solution - the disabled-rule pass - finds them built.
+        indexes &= ~SharedIndexes.Built(solution);
+        if (indexes == SharedIndex.None)
+        {
+            return;
+        }
+
+        progress?.Report(new AnalysisProgress(SharedIndexesStage, "building..."));
+        var stopwatch = Stopwatch.StartNew();
+        await SharedIndexes.BuildAsync(
+            indexes,
+            solution,
+            (index, elapsed) => progress?.Report(new AnalysisProgress(index.ToString(), $"built in {elapsed.TotalSeconds:0.0}s", Completed: true)),
+            cancellationToken).ConfigureAwait(false);
+
+        progress?.Report(new AnalysisProgress(
+            SharedIndexesStage,
+            $"{BitOperations.PopCount((uint)indexes)} built in {stopwatch.Elapsed.TotalSeconds:0.0}s",
+            Completed: true));
     }
 
     /// <summary>

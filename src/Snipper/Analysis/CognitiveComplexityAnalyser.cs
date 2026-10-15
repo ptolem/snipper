@@ -82,6 +82,8 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
 
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0034"];
 
+    public SharedIndex SharedIndexes => SharedIndex.AnalysisScope;
+
     /// <summary>
     /// Scores one function body with no threshold applied, so a caller can see the
     /// number for <em>every</em> method rather than only the breaching ones. The
@@ -104,7 +106,7 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
 
         var findings = new ConcurrentBag<SnipperFinding>();
 
-        var documents = AnalysisScope.Get(solution);
+        var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"CognitiveComplexityAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
             documents,

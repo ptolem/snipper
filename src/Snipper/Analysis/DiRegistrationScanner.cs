@@ -41,12 +41,12 @@ internal static class DiRegistrationScanner
 
         // ALL documents are scanned: registrations are evidence (extra evidence only
         // ever demotes certainty), and source-generated registration code is common.
-        Parallel.ForEach(
+        await Parallel.ForEachAsync(
             documents,
             AnalysisParallelism.CreateOptions(cancellationToken),
-            document =>
+            async (document, documentToken) =>
             {
-                var root = document.GetSyntaxRootAsync(cancellationToken).GetAwaiter().GetResult();
+                var root = await document.GetSyntaxRootAsync(documentToken).ConfigureAwait(false);
                 if (root is null)
                 {
                     return;
@@ -59,7 +59,7 @@ internal static class DiRegistrationScanner
                         candidateInvocations.Add((document, invocation));
                     }
                 }
-            });
+            }).ConfigureAwait(false);
 
         // Pass 2: resolve the type syntaxes — one semantic model per
         // candidate-bearing document. Sequential because this pass is a handful of
