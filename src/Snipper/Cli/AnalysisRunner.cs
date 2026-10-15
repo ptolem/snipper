@@ -2,7 +2,6 @@ namespace Snipper.Cli;
 
 using System.Diagnostics;
 using Microsoft.CodeAnalysis;
-using Spectre.Console;
 using Snipper.Analysis;
 using Snipper.Models;
 
@@ -27,18 +26,22 @@ using Snipper.Models;
 /// Scheduling is bounded by <see cref="AnalysisParallelism"/>;
 /// <c>SNIPPER_MAX_DOP=1</c> restores strict sequential execution, which is also
 /// the escape hatch if a future analyser carries hidden mutable state.
+///
+/// Progress goes to an <see cref="IProgress{T}"/> rather than to the console, so this
+/// type knows nothing about Spectre.Console. Reports arrive from concurrent workers;
+/// the sink is responsible for serialising them (see
+/// <see cref="ConsoleRenderer.CreateAnalysisProgress"/>).
 /// </summary>
 internal static class AnalysisRunner
 {
     public static async Task<IReadOnlyList<SnipperFinding>> RunAsync(
         IReadOnlyList<IWorkspaceAnalyser> analysers,
         Solution solution,
-        StatusContext ctx,
+        IProgress<AnalysisProgress>? progress,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(analysers);
         ArgumentNullException.ThrowIfNull(solution);
-        ArgumentNullException.ThrowIfNull(ctx);
 
         // Every analyser opens with the same sequence: GetCompilationAsync then
         // GetSemanticModelAsync per document. Left to the fan-out, every analyser
@@ -52,19 +55,6 @@ internal static class AnalysisRunner
         // One slot per analyser, indexed by position.
         var results = new IReadOnlyList<SnipperFinding>[analysers.Count];
 
-        // Spectre's StatusContext and AnsiConsole are not thread-safe; every write
-        // from a worker funnels through this gate. Held only around the write
-        // itself, never across analysis.
-        var consoleSync = new object();
-
-        void ReportProgress(string analyserName, string status)
-        {
-            lock (consoleSync)
-            {
-                ctx.Status($"[grey]{Markup.Escape(analyserName)}: {Markup.Escape(status)}[/]");
-            }
-        }
-
         await Parallel.ForEachAsync(
             Enumerable.Range(0, analysers.Count),
             AnalysisParallelism.CreateFanOutOptions(cancellationToken),
@@ -72,24 +62,23 @@ internal static class AnalysisRunner
             {
                 var analyser = analysers[index];
                 var analyserName = analyser.GetType().Name;
-                ReportProgress(analyserName, "starting...");
+                progress?.Report(new AnalysisProgress(analyserName, "starting..."));
 
                 var stopwatch = Stopwatch.StartNew();
                 var findings = await analyser.AnalyzeAsync(
                     solution,
                     token,
-                    progress: status => ReportProgress(analyserName, status)).ConfigureAwait(false);
+                    progress: status => progress?.Report(new AnalysisProgress(analyserName, status))).ConfigureAwait(false);
                 stopwatch.Stop();
 
                 // Each slot is put in FindingOrder here, so an analyser may emit in
                 // whatever order its traversal or its parallelism produces.
                 results[index] = FindingOrder.Sort(findings);
 
-                lock (consoleSync)
-                {
-                    AnsiConsole.MarkupLine(
-                        $"[green]✓[/] [grey]{analyserName}: {findings.Count} finding(s) in {stopwatch.Elapsed.TotalSeconds:0.0}s[/]");
-                }
+                progress?.Report(new AnalysisProgress(
+                    analyserName,
+                    $"{findings.Count} finding(s) in {stopwatch.Elapsed.TotalSeconds:0.0}s",
+                    Completed: true));
             }).ConfigureAwait(false);
 
         var merged = new List<SnipperFinding>();
@@ -136,3 +125,9 @@ internal static class AnalysisRunner
         }
     }
 }
+
+/// <summary>
+/// One progress report from <see cref="AnalysisRunner"/>: either a status update while
+/// an analyser runs, or, when <paramref name="Completed"/> is set, its final summary.
+/// </summary>
+internal sealed record AnalysisProgress(string AnalyserName, string Status, bool Completed = false);

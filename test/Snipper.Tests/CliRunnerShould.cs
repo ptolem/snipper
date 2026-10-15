@@ -103,22 +103,6 @@ public sealed class CliRunnerShould
         exitCode.Should().Be(1);
     }
 
-    [Theory]
-    [InlineData("--version")]
-    [InlineData("-v")]
-    public async Task Return_Zero_When_Version_Is_Requested_For_RunAsync(string flag)
-    {
-        var exitCode = await CliRunner.RunAsync([flag]);
-
-        exitCode.Should().Be(0);
-    }
-
-    [Fact]
-    public void Return_The_Package_Version_For_GetToolVersion()
-    {
-        CliRunner.GetToolVersion().Should().MatchRegex(@"^\d+\.\d+\.\d+$");
-    }
-
     [Fact]
     public async Task Return_One_When_Exclude_Namespaces_Value_Is_Missing_For_RunAsync()
     {

@@ -86,6 +86,18 @@ internal static class CommandLineParser
         "[[--entropy-budget <per-kloc>]] [[--entropy-ledger <path>]] " +
         "[[--entropy-min-lines <n>]] [[--max-complexity <n>]] [[--max-cognitive-complexity <n>]] [[--version]]";
 
+    /// <summary>
+    /// Whether the arguments ask for the version, anywhere on the line. The entry point
+    /// answers this before MSBuildLocator binds, so the output stays machine-clean and no
+    /// MSBuild assembly loads; that is the only place it is checked.
+    /// </summary>
+    public static bool IsVersionRequest(string[] args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        return args.Any(static a => string.Equals(a, "--version", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(a, "-v", StringComparison.OrdinalIgnoreCase));
+    }
+
     public static bool TryParse(string[] args, out CommandLineOptions options, out string? error)
     {
         ArgumentNullException.ThrowIfNull(args);

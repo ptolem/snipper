@@ -16,8 +16,8 @@ using Snipper.Models;
 /// <para>
 /// All writes go straight to <see cref="AnsiConsole"/>, which is why callers must not
 /// invoke these from an analyser — <c>StatusContext</c> is process-wide exclusive, and
-/// concurrent writes interleave. Analysis progress goes through the lock in
-/// <see cref="AnalysisRunner"/> instead.
+/// concurrent writes interleave. Analysis progress goes through the locked sink from
+/// <see cref="CreateAnalysisProgress"/> instead.
 /// </para>
 /// </summary>
 internal static class ConsoleRenderer
@@ -208,6 +208,47 @@ internal static class ConsoleRenderer
             }
 
             AnsiConsole.Write(monthly);
+        }
+    }
+
+    /// <summary>
+    /// The progress sink for an <see cref="AnalysisRunner"/> pass running under a status
+    /// spinner: status updates replace the spinner text, and each analyser's completion is
+    /// printed as a permanent line.
+    /// </summary>
+    public static IProgress<AnalysisProgress> CreateAnalysisProgress(StatusContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return new StatusProgress(context);
+    }
+
+    /// <summary>
+    /// Reports arrive from concurrent analyser workers, and neither
+    /// <see cref="StatusContext"/> nor <see cref="AnsiConsole"/> is thread-safe, so every
+    /// write goes through one lock, held only for the write itself. Not
+    /// <see cref="Progress{T}"/>: with no synchronisation context it posts each report to
+    /// the thread pool, which would reorder them and still need the lock.
+    /// </summary>
+    private sealed class StatusProgress(StatusContext context) : IProgress<AnalysisProgress>
+    {
+        private readonly Lock _gate = new();
+
+        public void Report(AnalysisProgress value)
+        {
+            var analyser = Markup.Escape(value.AnalyserName);
+            var status = Markup.Escape(value.Status);
+
+            lock (_gate)
+            {
+                if (value.Completed)
+                {
+                    AnsiConsole.MarkupLine($"[green]✓[/] [grey]{analyser}: {status}[/]");
+                }
+                else
+                {
+                    context.Status($"[grey]{analyser}: {status}[/]");
+                }
+            }
         }
     }
 }

@@ -117,6 +117,31 @@ public class CommandLineParserShould : IDisposable
         ParseError(Path.Combine(_directory, "nope.csproj")).Should().Contain("does not exist");
     }
 
+    // ---------- version ----------
+
+    [Theory]
+    [InlineData("--version")]
+    [InlineData("-v")]
+    [InlineData("--VERSION")]
+    public void Recognise_A_Version_Request_Anywhere_On_The_Line(string flag)
+    {
+        CommandLineParser.IsVersionRequest([flag]).Should().BeTrue();
+        CommandLineParser.IsVersionRequest([_projectPath, "--format", "json", flag]).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Not_Treat_A_Normal_Run_As_A_Version_Request()
+    {
+        CommandLineParser.IsVersionRequest([]).Should().BeFalse();
+        CommandLineParser.IsVersionRequest([_projectPath, "--verbose", "-vv"]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Report_The_Package_Version()
+    {
+        ToolVersion.Current.Should().MatchRegex(@"^\d+\.\d+\.\d+$");
+    }
+
     // ---------- format ----------
 
     [Theory]

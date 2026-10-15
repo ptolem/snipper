@@ -24,19 +24,20 @@ internal static class ReportWriter
     /// Writes the report, creating the parent directory if needed. Returns 0 on success
     /// and 2 on an I/O failure — 2 rather than throwing, because a pipeline needs to
     /// distinguish "could not write the report" from "the report says there are findings".
+    /// The git facts come from the caller, which resolves them once per run.
     /// </summary>
     public static int Write(
         IReadOnlyList<SnipperFinding> findings,
         string outputPath,
         ReportFormat format,
-        string? targetDirectory,
+        string? commitSha,
+        bool workingTreeDirty,
         SuppressionAudit? suppressionAudit = null,
         EntropyRateReport? entropyRate = null)
     {
         ArgumentNullException.ThrowIfNull(findings);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
 
-        var commitSha = GitMetadata.TryResolveCommitSha(targetDirectory, out var workingTreeDirty);
         if (workingTreeDirty)
         {
             AnsiConsole.MarkupLine("[yellow]Warning: the analysed working tree has uncommitted changes — finding locations may already have drifted.[/]");

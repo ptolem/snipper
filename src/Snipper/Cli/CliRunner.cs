@@ -1,6 +1,8 @@
 namespace Snipper.Cli;
 
 using System.Collections.Frozen;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
 using Spectre.Console;
@@ -19,34 +21,58 @@ using Snipper.Models;
 /// console. What remains here is only what genuinely needs all of them at once: ordering.
 /// </para>
 /// <para>
-/// The <b>order</b> of the steps below is the design, not their implementation. In
-/// particular: analysis runs before filtering; the baseline is classified against visible
-/// findings but written from the suppression-independent set; and report-time channels run
-/// after fingerprinting so they can never churn the baseline file.
+/// The <b>order</b> of the stages in <see cref="RunAsync"/> is the design, not their
+/// implementation. In particular: analysis runs before filtering; the baseline is
+/// classified against visible findings but written from the suppression-independent set;
+/// and report-time channels run after fingerprinting so they can never churn the baseline
+/// file. Each stage hands the next an immutable record, so what a stage may depend on is
+/// visible in its signature.
 /// </para>
 /// </summary>
 public static class CliRunner
 {
-    /// <summary>
-    /// Package version (e.g. "1.0.5"). Safe to call before MSBuildLocator
-    /// registration — touches no MSBuild/workspace types.
-    /// </summary>
-    public static string GetToolVersion() => ToolVersion.Current;
-
     public static async Task<int> RunAsync(string[] args)
     {
         ArgumentNullException.ThrowIfNull(args);
 
-        if (args.Any(static a => string.Equals(a, "--version", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(a, "-v", StringComparison.OrdinalIgnoreCase)))
-        {
-            AnsiConsole.WriteLine(ToolVersion.Current);
-            return 0;
-        }
-
         AnsiConsole.MarkupLine($"[bold blue]Snipper[/] [grey]{ToolVersion.Current}[/]");
 
-        if (!CommandLineParser.TryParse(args, out var options, out var parseError))
+        if (!TryParseOptions(args, out var options))
+        {
+            return 1;
+        }
+
+        using var workspace = MSBuildWorkspace.Create();
+        var solution = await OpenSolutionAsync(workspace, options.TargetPath).ConfigureAwait(false);
+        if (solution is null)
+        {
+            return 1;
+        }
+
+        var plan = PlanRun(options);
+        var passes = await RunAnalysisPassesAsync(plan, solution).ConfigureAwait(false);
+
+        // Shared by the stages below so each finding is hashed, and git is asked about the
+        // checkout, at most once per run. Git is only asked if a baseline or a report needs it.
+        var fingerprints = new FingerprintMemo(plan.BaseDirectory);
+        var gitHead = new Lazy<GitHead>(() => GitHead.Resolve(plan.BaseDirectory));
+
+        var suppressionAudit = options.AuditSuppressions
+            ? BuildSuppressionAudit(plan, passes, solution, fingerprints)
+            : null;
+
+        var baseline = options.BaselinePath is { } baselinePath
+            ? ApplyBaseline(baselinePath, plan, passes, fingerprints, gitHead.Value)
+            : new BaselineOutcome(passes.AllFindings, EntropyResult: null);
+
+        var reportableFindings = ApplyReportTimeFilters(baseline.ReportableFindings, plan);
+
+        return Report(reportableFindings, suppressionAudit, baseline.EntropyResult, plan, gitHead);
+    }
+
+    private static bool TryParseOptions(string[] args, [NotNullWhen(true)] out CommandLineOptions? options)
+    {
+        if (!CommandLineParser.TryParse(args, out var parsed, out var parseError))
         {
             AnsiConsole.MarkupLine($"[red]{parseError}[/]");
             if (parseError is not null && parseError.StartsWith("Error: Missing target path", StringComparison.Ordinal))
@@ -54,26 +80,33 @@ public static class CliRunner
                 AnsiConsole.MarkupLine($"[yellow]{CommandLineParser.Usage}[/]");
             }
 
-            return 1;
+            options = null;
+            return false;
         }
-
-        var targetPath = options.TargetPath;
 
         // Reported after parsing rather than printed from inside it, so the parser stays free
         // of Spectre.Console and remains testable without capturing console output. Nothing
         // else prints during parsing, so this preserves the original message order.
-        foreach (var malformed in options.MalformedNamespaces)
+        foreach (var malformed in parsed.MalformedNamespaces)
         {
             AnsiConsole.MarkupLine($"[yellow]Warning: ignoring malformed namespace '{Markup.Escape(malformed)}'.[/]");
         }
 
-        using var workspace = MSBuildWorkspace.Create();
+        options = parsed;
+        return true;
+    }
 
+    /// <summary>
+    /// Opens the target, or reports why it could not and returns null. Project-level load
+    /// failures are not fatal: each distinct one is printed once and analysis continues.
+    /// </summary>
+    private static async Task<Solution?> OpenSolutionAsync(MSBuildWorkspace workspace, string targetPath)
+    {
         var seenWarnings = new HashSet<string>(StringComparer.Ordinal);
         var duplicateWarningCount = 0;
         workspace.RegisterWorkspaceFailedHandler(e =>
         {
-            if (e.Diagnostic.Kind != Microsoft.CodeAnalysis.WorkspaceDiagnosticKind.Failure)
+            if (e.Diagnostic.Kind != WorkspaceDiagnosticKind.Failure)
             {
                 return;
             }
@@ -134,13 +167,24 @@ public static class CliRunner
             // "[at line 3, position 12]", and unescaped brackets are parsed as Spectre markup.
             AnsiConsole.MarkupLine(
                 $"[red]Error: Failed to open '{Markup.Escape(targetPath)}': {Markup.Escape(ex.Message)}[/]");
-            return 1;
+            return null;
         }
 
         if (duplicateWarningCount > 0)
         {
             AnsiConsole.MarkupLine($"[grey]({duplicateWarningCount} duplicate workspace warning(s) suppressed; warnings do not block analysis)[/]");
         }
+
+        return solution;
+    }
+
+    /// <summary>
+    /// Settles everything the run will do from the options and snipper.json, before any
+    /// analysis starts.
+    /// </summary>
+    private static RunPlan PlanRun(CommandLineOptions options)
+    {
+        var targetPath = options.TargetPath;
 
         var configWarnings = new List<string>();
         var config = SnipperConfigLoader.Load(targetPath, out var configPath, configWarnings);
@@ -191,320 +235,305 @@ public static class CliRunner
             AnsiConsole.MarkupLine($"[grey]Disabled rules (snipper.json): {Markup.Escape(string.Join(", ", config.DisabledRules.Order(StringComparer.Ordinal)))}[/]");
         }
 
-        var totalStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        return new RunPlan(options, config, excludedNamespaces, baseDirectory, analysers, removedByDisabledRules);
+    }
 
-        IReadOnlyList<SnipperFinding> allFindings = [];
-        await AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .StartAsync("Analyzing solution symbols and references...", async ctx =>
-            {
-                allFindings = await AnalysisRunner.RunAsync(analysers, solution, ctx, CancellationToken.None)
-                    .ConfigureAwait(false);
-            });
+    /// <summary>
+    /// The normal analysis pass, then whichever shadow passes the plan calls for.
+    /// </summary>
+    private static async Task<AnalysisPasses> RunAnalysisPassesAsync(RunPlan plan, Solution solution)
+    {
+        var totalStopwatch = Stopwatch.StartNew();
+
+        var allFindings = await RunUnderStatusAsync(
+            "Analyzing solution symbols and references...", plan.Analysers, solution).ConfigureAwait(false);
 
         AnsiConsole.MarkupLine($"[grey]Analysis completed in {totalStopwatch.Elapsed.TotalSeconds:0.0}s.[/]");
 
-        // ---------------------------------------------------------------------
-        // Wave 4 / 4A-2 + 4A: the suppression-independent finding set.
+        // Shadow time runs from here to the end of the audit build, which reports it.
+        var shadowStartTimestamp = Stopwatch.GetTimestamp();
+
+        IReadOnlyList<SnipperFinding> disabledShadow = plan.NeedsDisabledShadow
+            ? await RunUnderStatusAsync(
+                "Auditing disabled rules (shadow pass)...", plan.RemovedByDisabledRules, solution).ConfigureAwait(false)
+            : [];
+
+        IReadOnlyList<SnipperFinding> unexcludedFindings = plan.NeedsUnexcludedPass
+            ? await RunUnexcludedPassAsync(plan, allFindings, solution).ConfigureAwait(false)
+            : [];
+
+        return new AnalysisPasses(allFindings, disabledShadow, unexcludedFindings, shadowStartTimestamp);
+    }
+
+    private static async Task<IReadOnlyList<SnipperFinding>> RunUnexcludedPassAsync(
+        RunPlan plan,
+        IReadOnlyList<SnipperFinding> allFindings,
+        Solution solution)
+    {
+        var options = plan.Options;
+        var status = plan.NeedsSuppressionIndependentPass
+            ? "Re-running analysis with suppressions lifted (keeping the baseline stable under configuration changes)..."
+            : "Re-running analysis with suppressions lifted (auditing namespace exclusions)...";
+
+        // Only the exclusion-aware half needs re-running. The four package and project
+        // graph analysers take no exclusions, so their output is already identical to
+        // what a lifted pass would produce; re-running them would repeat the most
+        // expensive work in the set for no change in the result.
         //
-        // Two of the five suppression channels remove findings before they exist as
-        // objects — namespace exclusions inside the analysers, and disabled rules by
-        // removing their analyser. Both therefore rewrite a baseline computed from
-        // `allFindings`, so that those findings resurface as "new" the day someone
-        // removes the suppression (measured: -30 and -19 fingerprints on the SampleApp
-        // fixture). That is harmless today because no gate exists, and a real CI failure
-        // the moment 4B enforces a budget.
+        // The instances are rebuilt with exclusions lifted rather than reusing the ones
+        // already built: the existing instances still hold the original exclusions, so
+        // reusing them would run an unlifted pass that looks lifted and silently reports
+        // no hidden findings.
         //
-        // 4A-2 fixes it by fingerprinting the suppression-independent set instead — every
-        // finding that exists, ignoring config. This is the same computation the 4A audit
-        // already performs for its namespace shadow pass, so it is computed once and
-        // shared. It extends to namespaces and disabled rules the behaviour `exclude.paths`,
-        // severity overrides and `--certainty-tier` have always had (they apply after
-        // fingerprinting, so their findings were always baselined).
-        //
-        // Conditioned so that it can never cost anything it does not have to: no baseline
-        // means nothing to churn, and the churn-free channels are excluded by
-        // construction, so a user relying only on those never pays for the extra pass.
-        // ---------------------------------------------------------------------
-        var hasChurnProneSuppression = excludedNamespaces.Count > 0 || removedByDisabledRules.Count > 0;
-        var needsSuppressionIndependentPass = BaselineService.RequiresSuppressionIndependentFingerprints(
-            baselineRequested: options.BaselinePath is not null,
-            excludedNamespaceCount: excludedNamespaces.Count,
-            removedAnalyserCount: removedByDisabledRules.Count);
-
-        var needsDisabledShadow = options.AuditSuppressions && removedByDisabledRules.Count > 0;
-        var needsNamespaceShadow = options.AuditSuppressions && excludedNamespaces.Count > 0;
-
-        var needsUnexcludedPass = needsSuppressionIndependentPass
-            || (options.AuditSuppressions && hasChurnProneSuppression);
-
-        var shadowStopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-        IReadOnlyList<SnipperFinding> disabledShadow = [];
-        IReadOnlyList<SnipperFinding> unexcludedFindings = [];
-
-        if (needsDisabledShadow)
+        // Restricted to the audit-only case. When this pass feeds the baseline, the
+        // whole set is rebuilt, so the recorded baseline cannot depend on which
+        // analysers happen to be exclusion-agnostic today.
+        var liftedAll = AnalyserFactory.Build(options, AnalysisExclusions.None, options.TargetPath, plan.BaseDirectory);
+        if (plan.NeedsSuppressionIndependentPass)
         {
-            await AnsiConsole.Status()
-                .Spinner(Spinner.Known.Dots)
-                .StartAsync("Auditing disabled rules (shadow pass)...", async ctx =>
-                {
-                    disabledShadow = await AnalysisRunner.RunAsync(removedByDisabledRules, solution, ctx, CancellationToken.None)
-                        .ConfigureAwait(false);
-                });
+            return await RunUnderStatusAsync(status, liftedAll, solution).ConfigureAwait(false);
         }
 
-        if (needsUnexcludedPass)
+        var liftedAware = AnalyserFactory.PartitionByExclusionSensitivity(liftedAll).Aware;
+        var reusableFindings = FindingsFromExclusionAgnosticAnalysers(plan.Analysers, allFindings);
+        var liftedFindings = await RunUnderStatusAsync(status, liftedAware, solution).ConfigureAwait(false);
+
+        return [.. liftedFindings, .. reusableFindings];
+    }
+
+    /// <summary>
+    /// One <see cref="AnalysisRunner"/> pass under a status spinner. Spectre's status display
+    /// is process-wide exclusive, so passes run one after another, never nested.
+    /// </summary>
+    private static Task<IReadOnlyList<SnipperFinding>> RunUnderStatusAsync(
+        string status,
+        IReadOnlyList<IWorkspaceAnalyser> analysers,
+        Solution solution) =>
+        AnsiConsole.Status()
+            .Spinner(Spinner.Known.Dots)
+            .StartAsync(status, context => AnalysisRunner.RunAsync(
+                analysers,
+                solution,
+                ConsoleRenderer.CreateAnalysisProgress(context),
+                CancellationToken.None));
+
+    private static SuppressionAudit BuildSuppressionAudit(
+        RunPlan plan,
+        AnalysisPasses passes,
+        Solution solution,
+        FingerprintMemo fingerprints)
+    {
+        var disabledFingerprints = passes.DisabledShadow
+            .Select(fingerprints.Get)
+            .ToFrozenSet(StringComparer.Ordinal);
+
+        // Namespace channel = everything the lifted pass found, minus what the
+        // normal run already accounted for and minus the disabled-rule set.
+        // Fingerprinted once per finding: this runs over the full finding set on a
+        // large repository, and hashing the same finding twice per predicate was pure
+        // repeated work. The memo also collapses the overlap with the sets above.
+        var accountedFingerprints = passes.AllFindings
+            .Concat(passes.DisabledShadow)
+            .Select(fingerprints.Get)
+            .ToFrozenSet(StringComparer.Ordinal);
+
+        var namespaceShadow = new List<SnipperFinding>();
+        foreach (var finding in passes.UnexcludedFindings)
         {
-            var reason = needsSuppressionIndependentPass
-                ? "keeping the baseline stable under configuration changes"
-                : "auditing namespace exclusions";
-
-            // Only the exclusion-aware half needs re-running. The four package and project
-            // graph analysers take no exclusions, so their output is already identical to
-            // what a lifted pass would produce; re-running them would repeat the most
-            // expensive work in the set for no change in the result.
-            //
-            // The instances are rebuilt with exclusions lifted rather than reusing the ones
-            // already built: the existing instances still hold the original exclusions, so
-            // reusing them would run an unlifted pass that looks lifted and silently reports
-            // no hidden findings.
-            //
-            // Restricted to the audit-only case. When this pass feeds the baseline, the
-            // whole set is rebuilt, so the recorded baseline cannot depend on which
-            // analysers happen to be exclusion-agnostic today.
-            IReadOnlyList<IWorkspaceAnalyser>? liftedAnalysers = null;
-            IReadOnlyList<SnipperFinding> reusableFindings = [];
-
-            if (options.AuditSuppressions && !needsSuppressionIndependentPass)
+            var fingerprint = fingerprints.Get(finding);
+            if (!accountedFingerprints.Contains(fingerprint) && !disabledFingerprints.Contains(fingerprint))
             {
-                var liftedAll = AnalyserFactory.Build(options, AnalysisExclusions.None, targetPath, baseDirectory);
-                liftedAnalysers = [.. AnalyserFactory.PartitionByExclusionSensitivity(liftedAll).Aware];
-                reusableFindings = FindingsFromExclusionAgnosticAnalysers(analysers, allFindings);
+                namespaceShadow.Add(finding);
             }
-
-            await AnsiConsole.Status()
-                .Spinner(Spinner.Known.Dots)
-                .StartAsync($"Re-running analysis with suppressions lifted ({reason})...", async ctx =>
-                {
-                    var liftedFindings = await AnalysisRunner.RunAsync(
-                        liftedAnalysers ?? AnalyserFactory.Build(options, AnalysisExclusions.None, targetPath, baseDirectory),
-                        solution,
-                        ctx,
-                        CancellationToken.None).ConfigureAwait(false);
-
-                    unexcludedFindings = liftedAnalysers is null
-                        ? liftedFindings
-                        : liftedFindings.Concat(reusableFindings).ToArray();
-                });
         }
 
-        // Single source of truth for the baseline. `allFindings` already *is* the
+        var fileInventory = NamespaceInventory.CollectFiles(solution);
+        var namespaceProbe = NamespaceInventory.ExistenceProbe(NamespaceInventory.Collect(solution));
+
+        var suppressionAudit = SuppressionAuditBuilder.Build(
+            analysedFindings: passes.AllFindings,
+            config: plan.Config,
+            minimumCertainty: plan.Options.MinimumCertainty,
+            disabledRuleShadowFindings: passes.DisabledShadow,
+            namespaceShadowFindings: namespaceShadow,
+            shadowAnalysisRan: plan.NeedsDisabledShadow || plan.NeedsNamespaceShadow,
+            globMatchesNoFile: fileInventory.Count > 0 ? fileInventory.MatchesNoFile : null,
+            namespaceExists: namespaceProbe);
+
+        var shadowElapsed = Stopwatch.GetElapsedTime(passes.ShadowStartTimestamp);
+
+        // Headline now, breakdown after the findings table: the shadow passes can be
+        // slow on a large solution and the user should not wait for a number.
+        AnsiConsole.MarkupLine(
+            $"[grey]Suppression audit complete, {shadowElapsed.TotalSeconds:0.0}s — " +
+            $"{suppressionAudit.Totals.FindingsHiddenByShadow} finding(s) were hidden before analysis; " +
+            $"breakdown follows the report.[/]");
+
+        return suppressionAudit;
+    }
+
+    /// <summary>
+    /// Classifies findings against the baseline, rewrites it, and computes the entropy rate
+    /// when asked. Only the new findings stay reportable.
+    /// </summary>
+    private static BaselineOutcome ApplyBaseline(
+        string baselinePath,
+        RunPlan plan,
+        AnalysisPasses passes,
+        FingerprintMemo fingerprints,
+        GitHead gitHead)
+    {
+        // Single source of truth for the baseline. `AllFindings` already *is* the
         // suppression-independent set unless a churn-prone channel is configured, in
         // which case the lifted pass is authoritative.
-        var baselineSourceFindings = needsSuppressionIndependentPass ? unexcludedFindings : allFindings;
+        var baselineSourceFindings = plan.NeedsSuppressionIndependentPass ? passes.UnexcludedFindings : passes.AllFindings;
 
-        // One fingerprint per finding instance for the whole run. ComputeFingerprint is not
-        // cheap - GetRelativePath, a separator replace, an interpolated string, a UTF8 encode
-        // and a SHA256 per call - and the audit and baseline blocks below walk overlapping
-        // sets: disabledShadow is hashed at both the disabled-set build and the accounted-set
-        // build, allFindings at both the accounted-set build and baseline classification, and
-        // unexcludedFindings at both the namespace-shadow walk and the baseline write.
-        //
-        // Keyed by reference: same instance in, same fingerprint out. Record equality would
-        // also be correct - the fingerprint is a function of fields equality compares - but
-        // it hashes every string field on each lookup to get there.
-        var fingerprintMemo = new Dictionary<SnipperFinding, string>(ReferenceEqualityComparer.Instance);
+        // Read once: 4B needs the commit the baseline was stamped at, which is what binds
+        // the entropy denominator to exactly the range these findings came from.
+        var baselineExisted = File.Exists(baselinePath);
+        var knownBaseline = BaselineService.Load(baselinePath);
+        var knownFingerprints = knownBaseline.Fingerprints is { Length: > 0 } loaded
+            ? loaded.ToFrozenSet(StringComparer.Ordinal)
+            : FrozenSet<string>.Empty;
 
-        string Fingerprint(SnipperFinding finding)
+        // Classification walks the *visible* set: only findings the user can actually
+        // see can be new. Writing walks the *suppression-independent* set, so the
+        // recorded baseline does not depend on configuration (4A-2). Under no
+        // churn-prone suppression the two are the same list.
+        var newFindings = new List<SnipperFinding>();
+        var suppressedCount = 0;
+
+        foreach (var finding in passes.AllFindings)
         {
-            if (!fingerprintMemo.TryGetValue(finding, out var fingerprint))
+            if (knownFingerprints.Contains(fingerprints.Get(finding)))
             {
-                fingerprint = BaselineService.ComputeFingerprint(finding, baseDirectory);
-                fingerprintMemo[finding] = fingerprint;
+                suppressedCount++;
             }
-
-            return fingerprint;
-        }
-
-        SuppressionAudit? suppressionAudit = null;
-
-        if (options.AuditSuppressions)
-        {
-            var disabledFingerprints = disabledShadow
-                .Select(Fingerprint)
-                .ToFrozenSet(StringComparer.Ordinal);
-
-            // Namespace channel = everything the lifted pass found, minus what the
-            // normal run already accounted for and minus the disabled-rule set.
-            // Fingerprinted once per finding: this runs over the full finding set on a
-            // large repository, and hashing the same finding twice per predicate was pure
-            // repeated work. `Fingerprint` also collapses the overlap with the sets above.
-            var accountedFingerprints = allFindings
-                .Concat(disabledShadow)
-                .Select(Fingerprint)
-                .ToFrozenSet(StringComparer.Ordinal);
-
-            var namespaceShadow = new List<SnipperFinding>();
-            foreach (var finding in unexcludedFindings)
+            else
             {
-                var fingerprint = Fingerprint(finding);
-                if (!accountedFingerprints.Contains(fingerprint) && !disabledFingerprints.Contains(fingerprint))
-                {
-                    namespaceShadow.Add(finding);
-                }
-            }
-
-            var fileInventory = NamespaceInventory.CollectFiles(solution);
-            var namespaceProbe = NamespaceInventory.ExistenceProbe(NamespaceInventory.Collect(solution));
-
-            suppressionAudit = SuppressionAuditBuilder.Build(
-                analysedFindings: allFindings,
-                config: config,
-                minimumCertainty: options.MinimumCertainty,
-                disabledRuleShadowFindings: disabledShadow,
-                namespaceShadowFindings: namespaceShadow,
-                shadowAnalysisRan: needsDisabledShadow || needsNamespaceShadow,
-                globMatchesNoFile: fileInventory.Count > 0 ? fileInventory.MatchesNoFile : null,
-                namespaceExists: namespaceProbe);
-
-            shadowStopwatch.Stop();
-            var elapsedSuffix = options.AuditSuppressions ? $", {shadowStopwatch.Elapsed.TotalSeconds:0.0}s" : string.Empty;
-
-            // Headline now, breakdown after the findings table: the shadow passes can be
-            // slow on a large solution and the user should not wait for a number.
-            AnsiConsole.MarkupLine(
-                $"[grey]Suppression audit complete{elapsedSuffix} — " +
-                $"{suppressionAudit.Totals.FindingsHiddenByShadow} finding(s) were hidden before analysis; " +
-                $"breakdown follows the report.[/]");
-        }
-
-        IReadOnlyList<SnipperFinding> reportableFindings = allFindings;
-        EntropyRateResult? entropyResult = null;
-
-        if (options.BaselinePath is { } baselinePath)
-        {
-            // Read once: 4B needs the commit the baseline was stamped at, which is what binds
-            // the entropy denominator to exactly the range these findings came from.
-            var baselineExisted = File.Exists(baselinePath);
-            var knownBaseline = BaselineService.Load(baselinePath);
-            var knownFingerprints = knownBaseline.Fingerprints is { Length: > 0 } loaded
-                ? loaded.ToFrozenSet(StringComparer.Ordinal)
-                : FrozenSet<string>.Empty;
-
-            // Classification walks the *visible* set: only findings the user can actually
-            // see can be new. Writing walks the *suppression-independent* set, so the
-            // recorded baseline does not depend on configuration (4A-2). Under no
-            // churn-prone suppression the two are the same list.
-            var newFindings = new List<SnipperFinding>();
-            var suppressedCount = 0;
-
-            foreach (var finding in allFindings)
-            {
-                if (knownFingerprints.Contains(Fingerprint(finding)))
-                {
-                    suppressedCount++;
-                }
-                else
-                {
-                    newFindings.Add(finding);
-                }
-            }
-
-            var allFingerprints = new List<string>(baselineSourceFindings.Count);
-            foreach (var finding in baselineSourceFindings)
-            {
-                allFingerprints.Add(Fingerprint(finding));
-            }
-
-            var headCommitSha = GitMetadata.TryResolveCommitSha(baseDirectory, out var workingTreeDirty);
-
-            try
-            {
-                // Stamp the commit so the next run can diff against this exact reference.
-                // Optional in the schema: a baseline written before 4B still loads and is
-                // reported as having no reference, rather than being guessed at.
-                BaselineService.Write(baselinePath, allFingerprints, headCommitSha);
-
-                var stabilityNote = needsSuppressionIndependentPass
-                    ? $" Baseline covers all {baselineSourceFindings.Count} finding(s) including suppressed ones, so configuration changes cannot churn it."
-                    : string.Empty;
-
-                AnsiConsole.MarkupLine($"[grey]Baseline: {suppressedCount} known finding(s) suppressed, {newFindings.Count} new. Baseline updated at {baselinePath}.{stabilityNote}[/]");
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                AnsiConsole.MarkupLine($"[yellow]Warning: Could not update baseline file: {ex.Message}[/]");
-            }
-
-            reportableFindings = newFindings;
-
-            if (options.EntropyRateRequested)
-            {
-                var currentFingerprints = allFingerprints.ToFrozenSet(StringComparer.Ordinal);
-                var resolvedFindings = EntropyRateCalculator.CountResolved(knownFingerprints, currentFingerprints);
-
-                // Denominator: lines changed over exactly the range the recorded findings came
-                // from. `exclude.paths` is honoured here for the same reason it is honoured on
-                // findings — a regenerated lockfile is not code anyone wrote, and counting it
-                // would swamp the rate.
-                int? changedLines = null;
-                if (knownBaseline.CommitSha is { Length: > 0 } baselineCommit
-                    && headCommitSha is { Length: > 0 })
-                {
-                    var numstat = GitMetadata.TryGetNumstat(baseDirectory, baselineCommit, headCommitSha);
-                    if (numstat is not null)
-                    {
-                        var total = 0;
-                        foreach (var entry in numstat)
-                        {
-                            if (!IsExcludedFromDenominator(entry.Path, baseDirectory, config))
-                            {
-                                total += entry.Added + entry.Deleted;
-                            }
-                        }
-
-                        changedLines = total;
-                    }
-                }
-
-                entropyResult = EntropyRateCalculator.Compute(new EntropyRateInputs(
-                    BaselineFileExisted: baselineExisted,
-                    BaselineCommitSha: knownBaseline.CommitSha,
-                    HeadCommitSha: headCommitSha,
-                    IsGitRepository: headCommitSha is not null,
-                    WorkingTreeDirty: workingTreeDirty,
-                    NewFindings: newFindings.Count,
-                    ResolvedFindings: resolvedFindings,
-                    ChangedLines: changedLines,
-                    MinimumLines: options.EntropyMinimumLines));
+                newFindings.Add(finding);
             }
         }
 
+        var allFingerprints = new List<string>(baselineSourceFindings.Count);
+        foreach (var finding in baselineSourceFindings)
+        {
+            allFingerprints.Add(fingerprints.Get(finding));
+        }
+
+        try
+        {
+            // Stamp the commit so the next run can diff against this exact reference.
+            // Optional in the schema: a baseline written before 4B still loads and is
+            // reported as having no reference, rather than being guessed at.
+            BaselineService.Write(baselinePath, allFingerprints, gitHead.CommitSha);
+
+            var stabilityNote = plan.NeedsSuppressionIndependentPass
+                ? $" Baseline covers all {baselineSourceFindings.Count} finding(s) including suppressed ones, so configuration changes cannot churn it."
+                : string.Empty;
+
+            AnsiConsole.MarkupLine($"[grey]Baseline: {suppressedCount} known finding(s) suppressed, {newFindings.Count} new. Baseline updated at {baselinePath}.{stabilityNote}[/]");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Warning: Could not update baseline file: {ex.Message}[/]");
+        }
+
+        if (!plan.Options.EntropyRateRequested)
+        {
+            return new BaselineOutcome(newFindings, EntropyResult: null);
+        }
+
+        var currentFingerprints = allFingerprints.ToFrozenSet(StringComparer.Ordinal);
+
+        var entropyResult = EntropyRateCalculator.Compute(new EntropyRateInputs(
+            BaselineFileExisted: baselineExisted,
+            BaselineCommitSha: knownBaseline.CommitSha,
+            HeadCommitSha: gitHead.CommitSha,
+            IsGitRepository: gitHead.CommitSha is not null,
+            WorkingTreeDirty: gitHead.WorkingTreeDirty,
+            NewFindings: newFindings.Count,
+            ResolvedFindings: EntropyRateCalculator.CountResolved(knownFingerprints, currentFingerprints),
+            ChangedLines: CountChangedLines(knownBaseline.CommitSha, gitHead.CommitSha, plan),
+            MinimumLines: plan.Options.EntropyMinimumLines));
+
+        return new BaselineOutcome(newFindings, entropyResult);
+    }
+
+    /// <summary>
+    /// The entropy denominator: lines changed over exactly the range the recorded findings
+    /// came from, or null when that range is unknown. `exclude.paths` is honoured here for
+    /// the same reason it is honoured on findings — a regenerated lockfile is not code
+    /// anyone wrote, and counting it would swamp the rate.
+    /// </summary>
+    private static int? CountChangedLines(string? baselineCommitSha, string? headCommitSha, RunPlan plan)
+    {
+        if (baselineCommitSha is not { Length: > 0 } || headCommitSha is not { Length: > 0 })
+        {
+            return null;
+        }
+
+        var numstat = GitMetadata.TryGetNumstat(plan.BaseDirectory, baselineCommitSha, headCommitSha);
+        if (numstat is null)
+        {
+            return null;
+        }
+
+        var total = 0;
+        foreach (var entry in numstat)
+        {
+            if (!IsExcludedFromDenominator(entry.Path, plan.BaseDirectory, plan.Config))
+            {
+                total += entry.Added + entry.Deleted;
+            }
+        }
+
+        return total;
+    }
+
+    private static IReadOnlyList<SnipperFinding> ApplyReportTimeFilters(
+        IReadOnlyList<SnipperFinding> findings,
+        RunPlan plan)
+    {
         // snipper.json path globs, severity overrides and report-time rule drops apply
         // at report/output time only — after baseline fingerprinting, so toggling those
         // channels never churns the baseline file. Same contract as the tier filter below.
         //
         // Namespace exclusions and disabling a sole-rule analyser used to break that
         // contract, because they suppress before this point. As of 4A-2 they no longer do:
-        // the baseline is written from the suppression-independent set above, so every
-        // channel is churn-free and `--audit-suppressions` quantifies what they hide.
-        var findingsBeforeConfig = reportableFindings.Count;
-        reportableFindings = FindingFilter.Apply(reportableFindings, config);
-        if (reportableFindings.Count != findingsBeforeConfig)
+        // the baseline is written from the suppression-independent set, so every channel
+        // is churn-free and `--audit-suppressions` quantifies what they hide.
+        var reportableFindings = FindingFilter.Apply(findings, plan.Config);
+        if (reportableFindings.Count != findings.Count)
         {
-            AnsiConsole.MarkupLine($"[grey]Config: {findingsBeforeConfig - reportableFindings.Count} finding(s) suppressed by snipper.json.[/]");
+            AnsiConsole.MarkupLine($"[grey]Config: {findings.Count - reportableFindings.Count} finding(s) suppressed by snipper.json.[/]");
         }
 
         // Certainty-tier filter applies at report/output time only. The baseline
-        // above always tracks the full finding set so that switching tiers between
-        // runs never churns the baseline file.
-        if (options.MinimumCertainty is { } tier)
+        // always tracks the full finding set so that switching tiers between runs
+        // never churns the baseline file.
+        if (plan.Options.MinimumCertainty is { } tier)
         {
             var unfilteredCount = reportableFindings.Count;
             reportableFindings = reportableFindings.Where(f => f.Certainty <= tier).ToArray();
             AnsiConsole.MarkupLine($"[grey]Certainty filter: showing tier {tier} and above — {reportableFindings.Count} of {unfilteredCount} finding(s).[/]");
         }
+
+        return reportableFindings;
+    }
+
+    /// <summary>
+    /// Renders the console report, records the entropy rate, writes the report file, and
+    /// returns the process exit code.
+    /// </summary>
+    private static int Report(
+        IReadOnlyList<SnipperFinding> reportableFindings,
+        SuppressionAudit? suppressionAudit,
+        EntropyRateResult? entropyResult,
+        RunPlan plan,
+        Lazy<GitHead> gitHead)
+    {
+        var options = plan.Options;
 
         ConsoleRenderer.RenderReport(reportableFindings);
 
@@ -534,7 +563,14 @@ public static class CliRunner
 
         var writeExitCode = options.OutputPath is null
             ? 0
-            : ReportWriter.Write(reportableFindings, options.OutputPath, options.Format, baseDirectory, suppressionAudit, entropyReport);
+            : ReportWriter.Write(
+                reportableFindings,
+                options.OutputPath,
+                options.Format,
+                gitHead.Value.CommitSha,
+                gitHead.Value.WorkingTreeDirty,
+                suppressionAudit,
+                entropyReport);
 
         // A real failure outranks a policy failure: CI should see "snipper could not write the
         // report" rather than a budget breach it cannot act on. Exit code 3 is deliberately
@@ -620,5 +656,117 @@ public static class CliRunner
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// What this run will do, settled from the options and snipper.json before any analysis
+    /// starts. The pass decisions are derived here so every later stage reads one answer.
+    /// </summary>
+    private sealed record RunPlan(
+        CommandLineOptions Options,
+        SnipperConfig Config,
+        IReadOnlyList<string> ExcludedNamespaces,
+        string BaseDirectory,
+        IReadOnlyList<IWorkspaceAnalyser> Analysers,
+        IReadOnlyList<IWorkspaceAnalyser> RemovedByDisabledRules)
+    {
+        /// <summary>
+        /// Wave 4 / 4A-2 + 4A: whether the baseline must come from the
+        /// suppression-independent finding set.
+        /// <para>
+        /// Two of the five suppression channels remove findings before they exist as
+        /// objects — namespace exclusions inside the analysers, and disabled rules by
+        /// removing their analyser. Both therefore rewrite a baseline computed from the
+        /// normal pass, so that those findings resurface as "new" the day someone removes
+        /// the suppression (measured: -30 and -19 fingerprints on the SampleApp fixture).
+        /// That is harmless today because no gate exists, and a real CI failure the moment
+        /// 4B enforces a budget.
+        /// </para>
+        /// <para>
+        /// 4A-2 fixes it by fingerprinting the suppression-independent set instead — every
+        /// finding that exists, ignoring config. This is the same computation the 4A audit
+        /// already performs for its namespace shadow pass, so it is computed once and
+        /// shared. It extends to namespaces and disabled rules the behaviour
+        /// `exclude.paths`, severity overrides and `--certainty-tier` have always had (they
+        /// apply after fingerprinting, so their findings were always baselined).
+        /// </para>
+        /// <para>
+        /// Conditioned so that it can never cost anything it does not have to: no baseline
+        /// means nothing to churn, and the churn-free channels are excluded by
+        /// construction, so a user relying only on those never pays for the extra pass.
+        /// </para>
+        /// </summary>
+        public bool NeedsSuppressionIndependentPass => BaselineService.RequiresSuppressionIndependentFingerprints(
+            baselineRequested: Options.BaselinePath is not null,
+            excludedNamespaceCount: ExcludedNamespaces.Count,
+            removedAnalyserCount: RemovedByDisabledRules.Count);
+
+        public bool NeedsDisabledShadow => Options.AuditSuppressions && RemovedByDisabledRules.Count > 0;
+
+        public bool NeedsNamespaceShadow => Options.AuditSuppressions && ExcludedNamespaces.Count > 0;
+
+        public bool NeedsUnexcludedPass => NeedsSuppressionIndependentPass
+            || (Options.AuditSuppressions && (ExcludedNamespaces.Count > 0 || RemovedByDisabledRules.Count > 0));
+    }
+
+    /// <summary>
+    /// The findings of every analysis pass the plan ran. The shadow lists are empty when
+    /// their pass was not needed.
+    /// </summary>
+    private sealed record AnalysisPasses(
+        IReadOnlyList<SnipperFinding> AllFindings,
+        IReadOnlyList<SnipperFinding> DisabledShadow,
+        IReadOnlyList<SnipperFinding> UnexcludedFindings,
+        long ShadowStartTimestamp);
+
+    /// <summary>
+    /// What survives baseline classification, and the entropy rate when it was requested.
+    /// </summary>
+    private sealed record BaselineOutcome(
+        IReadOnlyList<SnipperFinding> ReportableFindings,
+        EntropyRateResult? EntropyResult);
+
+    /// <summary>
+    /// The analysed checkout's HEAD and dirty state, asked of git at most once per run. The
+    /// baseline stamp and the report header used to ask separately, two git processes each,
+    /// and the second ask ran after the baseline write, so a baseline committed inside the
+    /// repository made every report warn that the tree was dirty.
+    /// </summary>
+    private sealed record GitHead(string? CommitSha, bool WorkingTreeDirty)
+    {
+        public static GitHead Resolve(string directory)
+        {
+            var commitSha = GitMetadata.TryResolveCommitSha(directory, out var workingTreeDirty);
+            return new GitHead(commitSha, workingTreeDirty);
+        }
+    }
+
+    /// <summary>
+    /// One fingerprint per finding instance for the whole run. ComputeFingerprint is not
+    /// cheap - GetRelativePath, a separator replace, an interpolated string, a UTF8 encode
+    /// and a SHA256 per call - and the audit and baseline stages walk overlapping sets:
+    /// DisabledShadow is hashed at both the disabled-set build and the accounted-set build,
+    /// AllFindings at both the accounted-set build and baseline classification, and
+    /// UnexcludedFindings at both the namespace-shadow walk and the baseline write.
+    /// <para>
+    /// Keyed by reference: same instance in, same fingerprint out. Record equality would
+    /// also be correct - the fingerprint is a function of fields equality compares - but
+    /// it hashes every string field on each lookup to get there.
+    /// </para>
+    /// </summary>
+    private sealed class FingerprintMemo(string baseDirectory)
+    {
+        private readonly Dictionary<SnipperFinding, string> _fingerprints = new(ReferenceEqualityComparer.Instance);
+
+        public string Get(SnipperFinding finding)
+        {
+            if (!_fingerprints.TryGetValue(finding, out var fingerprint))
+            {
+                fingerprint = BaselineService.ComputeFingerprint(finding, baseDirectory);
+                _fingerprints[finding] = fingerprint;
+            }
+
+            return fingerprint;
+        }
     }
 }

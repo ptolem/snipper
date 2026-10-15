@@ -18,10 +18,9 @@ internal static class Program
         {
             // Version queries short-circuit before MSBuildLocator: the output stays
             // machine-clean (no SDK binding noise) and no MSBuild assemblies load.
-            if (args.Any(static a => string.Equals(a, "--version", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(a, "-v", StringComparison.OrdinalIgnoreCase)))
+            if (CommandLineParser.IsVersionRequest(args))
             {
-                AnsiConsole.WriteLine(CliRunner.GetToolVersion());
+                AnsiConsole.WriteLine(ToolVersion.Current);
                 return 0;
             }
 

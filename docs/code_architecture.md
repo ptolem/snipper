@@ -148,7 +148,7 @@ flowchart TB
 | --- | --- | --- |
 | **Roslyn** (`Microsoft.CodeAnalysis`) | Compile-time reference | `Solution`, `Compilation`, `SemanticModel`, `SyntaxNode`. The whole analyser model is built on these. |
 | **MSBuild** (`Microsoft.Build.Locator`) | **Runtime assembly resolution only** — never a compile-time reference | `MSBuildLocator.RegisterDefaults()` must run before any MSBuild/Roslyn workspace type is touched. See [How code gets into memory](#how-code-gets-into-memory). |
-| **Spectre.Console** | Compile-time reference | `Status` (spinner), `Table`, `AnsiConsole`. `StatusContext` is **process-wide exclusive and not thread-safe** — every write from an analyser must funnel through one lock. |
+| **Spectre.Console** | Compile-time reference | `Status` (spinner), `Table`, `AnsiConsole`. `StatusContext` is **process-wide exclusive and not thread-safe** — analysis progress reaches it only through `ConsoleRenderer.CreateAnalysisProgress`, whose sink takes one lock. |
 | **git** | Child process | Everything git-related shells out. Read-only; degrades to silence outside a checkout. |
 
 ---
@@ -262,7 +262,6 @@ classDiagram
 
     class CliRunner {
         +RunAsync(args) Task~int~
-        +GetToolVersion() string
         -FindingsFromExclusionAgnosticAnalysers(analysers, findings) IReadOnlyList
         -AppendEntropyLedgerEntry(path, result)
         -IsExcludedFromDenominator(path, base, config) bool
@@ -305,7 +304,7 @@ classDiagram
     }
 
     class ReportWriter {
-        +Write(findings, path, format, dir, audit, entropy) int
+        +Write(findings, path, format, commitSha, dirty, audit, entropy) int
         +BuildJson(findings, sha, audit, entropy) string
         +BuildSarifJson(findings) string
     }
@@ -327,7 +326,7 @@ classDiagram
     }
 
     class AnalysisRunner {
-        +RunAsync(analysers, solution, ctx, ct) Task
+        +RunAsync(analysers, solution, progress, ct) Task
         -WarmCompilationsAsync(solution, ct) Task
     }
 
@@ -684,8 +683,9 @@ That is the entire surface. Three properties make it safe to fan out:
    cannot be disabled.
 2. **`Solution` is immutable.** Roslyn solutions are persistent data structures; handing the same
    instance to 17 concurrent analysers is safe by construction.
-3. **`progress` is called under a lock by the runner.** `StatusContext` is not thread-safe, so the
-   runner serialises writes; your callback must not assume it is on a particular thread.
+3. **`progress` reaches the console through one lock.** `StatusContext` is not thread-safe, so the
+   runner forwards progress as `IProgress<AnalysisProgress>` and the console sink serialises it; your
+   callback must not assume it is on a particular thread.
 
 A note on multi-rule analysers: `RedundancyAnalyser` emits five rules (SNP0022, 0025, 0026, 0028,
 0029) from one traversal, because the traversal is the expensive part. **If you disable four of the
@@ -1128,7 +1128,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | 5 | `MSBuildLocator.RegisterDefaults()` runs before any MSBuild-touching code. | Runtime MSBuild resolution; a compile-time reference breaks on SDK upgrades. |
 | 6 | Every analyser walks `AnalysisScope`, or calls `ExclusionEngine.ShouldSkipDocument` before binding when it needs its own document set. | Generated code is a correctness problem, not just noise. |
 | 7 | Cheap syntactic filtering before `GetDeclaredSymbol` and before evidence gathering. | This ordering is the performance budget. |
-| 8 | All `AnsiConsole`/`StatusContext` writes go through the runner's lock. | Spectre's status is process-wide exclusive and not thread-safe. |
+| 8 | All `AnsiConsole`/`StatusContext` writes during analysis go through the progress sink's lock (`ConsoleRenderer.CreateAnalysisProgress`). | Spectre's status is process-wide exclusive and not thread-safe. |
 | 9 | Namespace exclusion suppresses **findings**, never usage evidence. | Otherwise excluding a generated tree makes real references disappear. |
 | 9a | Namespace matching lives in exactly one place — `AnalysisExclusions.Covers` — and resolves a file-scope node as type → namespace declaration → `<global>`. | The walk was duplicated in `ExclusionEngine` and `DuplicateFragmentAnalyser`, and a file-scoped `namespace N;` is a *sibling* of its file-level `using` directives, so an ancestor-only walk classifies them as global and `<global>` then suppresses usings in every namespaced file. |
 | 10 | Baseline classification reads visible findings; baseline writing reads the suppression-independent set. | Otherwise a config toggle churns the baseline. |
@@ -1221,13 +1221,13 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | Path | Holds |
 | --- | --- |
 | `Program.cs` | Entry point. MSBuildLocator. `--version` short-circuit. |
-| `Cli/CliRunner.cs` | **Orchestration only**: workspace → passes → baseline → filter → output. The run order lives here and nowhere else. |
+| `Cli/CliRunner.cs` | **Orchestration only**: `RunAsync` reads as its stages — options → workspace → plan → passes → audit → baseline → filter → report — each handing the next an immutable record. The run order lives here and nowhere else. |
 | `Cli/CommandLineParser.cs` | Pure `string[]` → `CommandLineOptions`. No workspace, no console, no git. |
 | `Cli/AnalyserFactory.cs` | Which analysers run, and the exclusion-sensitivity partition the shadow pass depends on. |
 | `Cli/ReportWriter.cs` | JSON and SARIF 2.1.0 serialisation, plus the report DTOs. |
-| `Cli/ConsoleRenderer.cs` | Findings table, suppression audit table, entropy table. |
+| `Cli/ConsoleRenderer.cs` | Findings table, suppression audit table, entropy table, and the thread-safe analysis progress sink. |
 | `Cli/ToolVersion.cs`, `ReportFormat.cs` | Small shared types, split out so the above do not depend on `CliRunner`. |
-| `Cli/AnalysisRunner.cs` | Compilation warm-up, parallel fan-out, console lock, deterministic merge. |
+| `Cli/AnalysisRunner.cs` | Compilation warm-up, parallel fan-out, progress reporting, deterministic merge. No console dependency. |
 | `Cli/SnipperConfig.cs`, `SnipperConfigLoader.cs` | `snipper.json` schema and tolerant discovery. |
 | `Cli/FindingFilter.cs` | The three report-time channels and their precedence. Shared with the audit. |
 | `Cli/BaselineService.cs` | Fingerprints, load/write, and the "does this need a lifted pass" predicate. |
