@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -105,28 +106,29 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
 
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
 
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"CognitiveComplexityAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"CognitiveComplexityAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                var (document, root) = scopedDocument;
 
                 // Complexity thresholds are a review trigger, and nobody reviews a test
                 // fixture. Shared with SNP0033 - see ExclusionEngine.IsTestCode.
-                if (ExclusionEngine.IsTestCode(document.FilePath, project.Name))
+                if (ExclusionEngine.IsTestCode(document.FilePath, document.Project.Name))
                 {
-                    continue;
+                    return;
                 }
 
                 // Lambdas are excluded here because their bodies are scored inside the
                 // method that declares them, at a raised nesting level.
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     var body = ComplexityFunctionBody.TryGetBody(node, includeLambdas: false);
                     if (body is null)
@@ -144,9 +146,9 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
                     // the check needs a semantic model this analyser otherwise never asks for.
                     if (_exclusions.Namespaces.Count > 0)
                     {
-                        var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                        var model = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                         if (model is null
-                            || ExclusionEngine.IsNamespaceExcluded(node, model, _exclusions, cancellationToken))
+                            || ExclusionEngine.IsNamespaceExcluded(node, model, _exclusions, documentToken))
                         {
                             continue;
                         }
@@ -166,10 +168,9 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
                         CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     /// <summary>

@@ -62,9 +62,8 @@ internal static class DiRegistrationScanner
             });
 
         // Pass 2: resolve the type syntaxes — one semantic model per
-        // candidate-bearing document, sequential binding per the workspace's
-        // ConcurrentBuild=false contract (parallelising per-document binding is
-        // AnalysisParallelism-gated elsewhere; this pass is a handful of files).
+        // candidate-bearing document. Sequential because this pass is a handful of
+        // files; per-document binding is safe to parallelise (see AnalysisParallelism).
         var registeredTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         foreach (var group in candidateInvocations.GroupBy(static candidate => candidate.Document))
         {

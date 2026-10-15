@@ -18,7 +18,7 @@
 2. **Red-green fixture-first.** Every story starts with failing fixture tests (SampleApp; never touch `DeadCode.cs` — SNP0002 anchor at line 21).
 3. **Tier honesty.** Guaranteed = compiler-level certainty only; heuristics start Advisory/Moderate and earn promotion through dogfooding evidence.
 4. **Evidence ≠ findings.** Generated/external/excluded code feeds usage evidence but never produces finding locations (unchanged).
-5. **Performance discipline.** Syntax pre-filters before any semantic call; sequential semantic binding (`ConcurrentBuild=false`); parallelism only for syntax-only work; per-wave perf budget report.
+5. **Performance discipline.** Syntax pre-filters before any semantic call; per-document semantic binding in parallel behind `SNIPPER_MAX_DOP` (spike-proven drift-free, `=1` reverts); per-wave perf budget report.
 6. **Non-goals stay non-goals:** IDE squiggles, general lint/bug-risk rules, package vulnerability reporting.
 
 ---

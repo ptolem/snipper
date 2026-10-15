@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -42,46 +43,45 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
         var usageIndex = SolutionUsageIndex.Get(solution);
         var graph = InheritanceGraph.Get(solution);
 
-        // Phase 1: gather candidate classes (syntax pre-filtered, symbol-confirmed).
-        var candidates = new List<CandidateClass>();
-        var familyCandidates = new List<ISymbol>();
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"HierarchyDeadCodeAnalyser: scanning {project.Name}");
-
-            var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
-            if (compilation is null)
+        // Phase 1: gather candidate classes (syntax pre-filtered, symbol-confirmed),
+        // in parallel across documents. Each document fills its own slot, so the
+        // candidate lists come out in scope order however the work was scheduled.
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"HierarchyDeadCodeAnalyser: scanning {documents.Count} documents");
+        var candidateSlots = new List<CandidateClass>[documents.Count];
+        var familySlots = new List<ISymbol>[documents.Count];
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, documents.Count),
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (index, documentToken) =>
             {
-                continue;
-            }
+                var scopedDocument = documents[index];
+                var (document, root) = scopedDocument;
+                var documentCandidates = candidateSlots[index] = [];
+                var documentFamilyCandidates = familySlots[index] = [];
 
-            var hasFriendAssemblies = compilation.Assembly.GetAttributes()
-                .Any(static a => a.AttributeClass?.Name is "InternalsVisibleTo" or "InternalsVisibleToAttribute");
-
-            foreach (var (document, root) in documents)
-            {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 foreach (var classDeclaration in root.DescendantNodes().OfType<ClassDeclarationSyntax>())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     // SNP0027 gate: any member declared virtual or override —
                     // a different gate than SNP0023's (which needs the class-level
                     // modifiers below). Symbol resolved once for both.
                     var declaresFamilyMember = DeclaresVirtualOrOverrideMember(classDeclaration);
                     if (declaresFamilyMember
-                        && semanticModel.GetDeclaredSymbol(classDeclaration, cancellationToken) is { } familyClassSymbol)
+                        && semanticModel.GetDeclaredSymbol(classDeclaration, documentToken) is { } familyClassSymbol)
                     {
-                        CollectFamilyCandidates(familyClassSymbol, familyCandidates);
+                        CollectFamilyCandidates(familyClassSymbol, documentFamilyCandidates);
                     }
 
                     // Syntax gate: no static/abstract/sealed modifiers, at least one
@@ -94,7 +94,7 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
                         continue;
                     }
 
-                    if (semanticModel.GetDeclaredSymbol(classDeclaration, cancellationToken) is not { } classSymbol
+                    if (semanticModel.GetDeclaredSymbol(classDeclaration, documentToken) is not { } classSymbol
                         || classSymbol.TypeKind is not TypeKind.Class
                         || classSymbol.IsAbstract
                         || classSymbol.IsSealed
@@ -132,15 +132,16 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
 
                     if (virtualMembers.Count > 0)
                     {
-                        candidates.Add(new CandidateClass(classSymbol, virtualMembers, project, hasFriendAssemblies));
+                        documentCandidates.Add(new CandidateClass(classSymbol, virtualMembers, document.Project, scopedDocument.HasFriendAssemblies));
                     }
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
+        var candidates = candidateSlots.SelectMany(static slot => slot).ToList();
+        var familyCandidates = familySlots.SelectMany(static slot => slot).ToList();
         if (candidates.Count == 0)
         {
-            return findings;
+            return [.. findings];
         }
 
         // Phase 2: one batched evidence sweep for every candidate type name —
@@ -167,68 +168,70 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
             nameEvidence.UnionWith(AssemblyNameEvidenceScanner.FindSpelledNamesInJsonFiles(rootDirectory, candidateNames));
         }
 
-        // Phase 3: evaluate. Sequential binding per the ConcurrentBuild=false contract.
-        foreach (var candidate in candidates)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var classSymbol = candidate.Symbol;
-            if (nameEvidence.Contains(classSymbol.Name))
+        // Phase 3: evaluate. Candidates are independent, so their reference searches
+        // run in parallel, as UnusedNonPrivateMember's do.
+        await Parallel.ForEachAsync(
+            candidates,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (candidate, candidateToken) =>
             {
-                continue;
-            }
-
-            if (!graph.HasAnyDerivedClass(classSymbol))
-            {
-                // Check 2: class-level finding requires the class itself to be used —
-                // an unreferenced class is plain dead code (SNP0005/0006), and its
-                // members fail the usage gate with it, so no member checks run here.
-                var hasReference = await HasAnyReferenceAsync(classSymbol, candidate, solution, usageIndex, cancellationToken).ConfigureAwait(false);
-                if (hasReference)
+                var classSymbol = candidate.Symbol;
+                if (nameEvidence.Contains(classSymbol.Name))
                 {
-                    var lineSpan = classSymbol.Locations[0].GetLineSpan();
+                    return;
+                }
+
+                if (!graph.HasAnyDerivedClass(classSymbol))
+                {
+                    // Check 2: class-level finding requires the class itself to be used —
+                    // an unreferenced class is plain dead code (SNP0005/0006), and its
+                    // members fail the usage gate with it, so no member checks run here.
+                    var hasReference = await HasAnyReferenceAsync(classSymbol, candidate, solution, usageIndex, candidateToken).ConfigureAwait(false);
+                    if (hasReference)
+                    {
+                        var lineSpan = classSymbol.Locations[0].GetLineSpan();
+                        findings.Add(new SnipperFinding(
+                            RuleId: "SNP0023",
+                            Title: "Never-Inherited Virtual Class",
+                            Message: $"Class '{classSymbol.Name}' declares virtual members but is never inherited.",
+                            Certainty: TierFor(classSymbol, candidate.HasFriendAssemblies),
+                            Category: FindingCategory.HierarchyDeadCode,
+                            FilePath: lineSpan.Path ?? string.Empty,
+                            LineNumber: lineSpan.StartLinePosition.Line + 1,
+                            CharacterOffset: lineSpan.StartLinePosition.Character + 1));
+                    }
+
+                    return;
+                }
+
+                // Check 1: member-level — the class IS inherited, so individual virtual
+                // chain roots nothing overrides are the speculative extension points.
+                IReadOnlyList<INamedTypeSymbol>? derivedClosure = null;
+                foreach (var member in candidate.VirtualMembers)
+                {
+                    if (!await HasAnyReferenceAsync(member, candidate, solution, usageIndex, candidateToken).ConfigureAwait(false))
+                    {
+                        continue;
+                    }
+
+                    derivedClosure ??= graph.GetTransitivelyDerivedClasses(classSymbol);
+                    if (IsOverriddenInClosure(member, derivedClosure))
+                    {
+                        continue;
+                    }
+
+                    var memberLineSpan = member.Locations[0].GetLineSpan();
                     findings.Add(new SnipperFinding(
                         RuleId: "SNP0023",
-                        Title: "Never-Inherited Virtual Class",
-                        Message: $"Class '{classSymbol.Name}' declares virtual members but is never inherited.",
-                        Certainty: TierFor(classSymbol, candidate.HasFriendAssemblies),
+                        Title: "Never-Overridden Virtual Member",
+                        Message: $"Virtual member '{member.Name}' is never overridden.",
+                        Certainty: TierFor(member, candidate.HasFriendAssemblies),
                         Category: FindingCategory.HierarchyDeadCode,
-                        FilePath: lineSpan.Path ?? string.Empty,
-                        LineNumber: lineSpan.StartLinePosition.Line + 1,
-                        CharacterOffset: lineSpan.StartLinePosition.Character + 1));
+                        FilePath: memberLineSpan.Path ?? string.Empty,
+                        LineNumber: memberLineSpan.StartLinePosition.Line + 1,
+                        CharacterOffset: memberLineSpan.StartLinePosition.Character + 1));
                 }
-
-                continue;
-            }
-
-            // Check 1: member-level — the class IS inherited, so individual virtual
-            // chain roots nothing overrides are the speculative extension points.
-            IReadOnlyList<INamedTypeSymbol>? derivedClosure = null;
-            foreach (var member in candidate.VirtualMembers)
-            {
-                if (!await HasAnyReferenceAsync(member, candidate, solution, usageIndex, cancellationToken).ConfigureAwait(false))
-                {
-                    continue;
-                }
-
-                derivedClosure ??= graph.GetTransitivelyDerivedClasses(classSymbol);
-                if (IsOverriddenInClosure(member, derivedClosure))
-                {
-                    continue;
-                }
-
-                var memberLineSpan = member.Locations[0].GetLineSpan();
-                findings.Add(new SnipperFinding(
-                    RuleId: "SNP0023",
-                    Title: "Never-Overridden Virtual Member",
-                    Message: $"Virtual member '{member.Name}' is never overridden.",
-                    Certainty: TierFor(member, candidate.HasFriendAssemblies),
-                    Category: FindingCategory.HierarchyDeadCode,
-                    FilePath: memberLineSpan.Path ?? string.Empty,
-                    LineNumber: memberLineSpan.StartLinePosition.Line + 1,
-                    CharacterOffset: memberLineSpan.StartLinePosition.Character + 1));
-            }
-        }
+            }).ConfigureAwait(false);
 
         // Phase 4 (SNP0027): override families with no external caller.
         var processedRoots = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
@@ -348,7 +351,7 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
                 CharacterOffset: rootLineSpan.StartLinePosition.Character + 1));
         }
 
-        return findings;
+        return [.. findings];
     }
 
     private void CollectFamilyCandidates(INamedTypeSymbol classSymbol, List<ISymbol> familyCandidates)

@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -36,17 +37,19 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
 
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"CommentedCodeAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"CommentedCodeAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
+                var (document, root) = scopedDocument;
                 foreach (var block in CollectCommentBlocks(root))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     if (block.Lines.Count < MinimumCommentLines || IsLicenseHeader(block) || StartsWithMarker(block))
                     {
@@ -81,9 +84,9 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
                     // exclusion, and only once a block has qualified and exclusions are configured.
                     if (_exclusions.Namespaces.Count > 0)
                     {
-                        var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                        var model = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                         if (model is null
-                            || ExclusionEngine.IsNamespaceExcluded(block.Anchor, model, _exclusions, cancellationToken))
+                            || ExclusionEngine.IsNamespaceExcluded(block.Anchor, model, _exclusions, documentToken))
                         {
                             continue;
                         }
@@ -100,10 +103,9 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
                         CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     /// <summary>

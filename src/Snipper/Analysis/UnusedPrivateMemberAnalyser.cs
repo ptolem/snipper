@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -18,29 +19,28 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
         var usageIndex = SolutionUsageIndex.Get(solution);
 
-        // Binding is deliberately sequential: workspace compilations are built with
-        // ConcurrentBuild=false, so concurrent semantic binding is unsupported and
-        // silently loses symbol information. Parallelism lives in the syntax-only
-        // SolutionUsageIndex; reference searches stay sequential but are restricted
-        // to the handful of documents that textually contain the member name.
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"UnusedPrivateMemberAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        // Documents bind in parallel, and each reference search is restricted to the
+        // handful of documents that textually contain the member name.
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"UnusedPrivateMemberAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     // Syntax-level gate: only declaration nodes that can be private reach
                     // the semantic model. This avoids a GetDeclaredSymbol call per node.
@@ -49,7 +49,7 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
                         continue;
                     }
 
-                    var declaredSymbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+                    var declaredSymbol = semanticModel.GetDeclaredSymbol(node, documentToken);
                     if (declaredSymbol is null || declaredSymbol.DeclaredAccessibility != Accessibility.Private)
                     {
                         continue;
@@ -73,7 +73,7 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
                     // "helpers at the bottom of the method" pattern) are hoisted
                     // declarations, not dead members.
                     if (declaredSymbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction } localFunction
-                        && IsDeclaredAtUnreachablePoint(localFunction, semanticModel, cancellationToken))
+                        && IsDeclaredAtUnreachablePoint(localFunction, semanticModel, documentToken))
                     {
                         continue;
                     }
@@ -101,11 +101,11 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
                     // with no semantic search at all. Indexers have no usable source
                     // name (consumed via this[...]) — search the whole project (rare).
                     var candidateDocuments = declaredSymbol is IPropertySymbol { IsIndexer: true }
-                        ? project.Documents.ToImmutableHashSet()
-                        : usageIndex.GetDocumentsUsingName(project, declaredSymbol.Name);
+                        ? document.Project.Documents.ToImmutableHashSet()
+                        : usageIndex.GetDocumentsUsingName(document.Project, declaredSymbol.Name);
 
                     var hasReference = candidateDocuments.Count > 0
-                        && await SymbolReferenceQuery.HasAnyReferenceAsync(declaredSymbol, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+                        && await SymbolReferenceQuery.HasAnyReferenceAsync(declaredSymbol, solution, candidateDocuments, documentToken).ConfigureAwait(false);
 
                     if (!hasReference)
                     {
@@ -121,10 +121,9 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
                             CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                     }
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     private static bool IsDeclaredAtUnreachablePoint(

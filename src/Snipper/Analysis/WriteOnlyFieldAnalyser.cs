@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
@@ -40,26 +41,27 @@ public sealed class WriteOnlyFieldAnalyser(AnalysisExclusions? exclusions = null
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
         var usageIndex = SolutionUsageIndex.Get(solution);
 
-        // Sequential binding per the workspace's ConcurrentBuild=false contract —
-        // same cost profile as UnusedPrivateMemberAnalyser.
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"WriteOnlyFieldAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        // Same cost profile as UnusedPrivateMemberAnalyser.
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"WriteOnlyFieldAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     // Syntax gate: private field declarators only. Event fields are a
                     // different node kind; const fields can never be written.
@@ -76,7 +78,7 @@ public sealed class WriteOnlyFieldAnalyser(AnalysisExclusions? exclusions = null
                         continue;
                     }
 
-                    if (semanticModel.GetDeclaredSymbol(node, cancellationToken) is not IFieldSymbol field
+                    if (semanticModel.GetDeclaredSymbol(node, documentToken) is not IFieldSymbol field
                         || field.DeclaredAccessibility != Accessibility.Private
                         || field.IsConst
                         || field.IsFixedSizeBuffer
@@ -94,15 +96,15 @@ public sealed class WriteOnlyFieldAnalyser(AnalysisExclusions? exclusions = null
 
                     // A private field is reachable only from its containing type
                     // (including nested types), which lives in a single project — the
-                    // project-scoped textual pre-filter is sound, and an empty set
+                    // project-scopedDocument textual pre-filter is sound, and an empty set
                     // proves zero references (SNP0001's territory, not ours).
-                    var candidateDocuments = usageIndex.GetDocumentsUsingName(project, field.Name);
+                    var candidateDocuments = usageIndex.GetDocumentsUsingName(document.Project, field.Name);
                     if (candidateDocuments.Count == 0)
                     {
                         continue;
                     }
 
-                    var usage = await ClassifyFieldUsageAsync(field, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+                    var usage = await ClassifyFieldUsageAsync(field, solution, candidateDocuments, documentToken).ConfigureAwait(false);
                     if (usage is not FieldUsage.WriteOnly)
                     {
                         continue;
@@ -120,10 +122,9 @@ public sealed class WriteOnlyFieldAnalyser(AnalysisExclusions? exclusions = null
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
                         CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     private static async Task<FieldUsage> ClassifyFieldUsageAsync(

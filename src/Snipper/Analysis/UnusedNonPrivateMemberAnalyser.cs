@@ -33,32 +33,25 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
 
         // Phase A: enumerate candidates. Cheap semantic work (declared symbols,
         // evidence filters, usage-index search-document pre-computation),
-        // sequential per the workspace's ConcurrentBuild=false contract.
-        var candidates = new List<Candidate>();
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"UnusedNonPrivateMemberAnalyser: scanning {project.Name}");
-
-            var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
-            if (compilation is null)
+        // in parallel across documents. Phase B is order-independent, so a bag will do.
+        var candidates = new ConcurrentBag<Candidate>();
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"UnusedNonPrivateMemberAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                continue;
-            }
-
-            var hasFriendAssemblies = compilation.Assembly.GetAttributes()
-                .Any(static a => a.AttributeClass?.Name is "InternalsVisibleTo" or "InternalsVisibleToAttribute");
-
-            foreach (var (document, root) in documents)
-            {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     // Syntax-level gate: only declaration nodes with a public/internal
                     // modifier reach the semantic model.
@@ -67,7 +60,7 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                         continue;
                     }
 
-                    var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+                    var symbol = semanticModel.GetDeclaredSymbol(node, documentToken);
                     if (symbol is null || !IsCandidate(symbol))
                     {
                         continue;
@@ -95,12 +88,11 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                     // within their own project; public members can be referenced anywhere.
                     // The usage index restricts the search to documents that textually
                     // contain the symbol name; an empty set proves the symbol is unused.
-                    var candidateDocuments = GetCandidateDocuments(usageIndex, project, symbol, hasFriendAssemblies);
+                    var candidateDocuments = GetCandidateDocuments(usageIndex, document.Project, symbol, scopedDocument.HasFriendAssemblies);
 
-                    candidates.Add(new Candidate(symbol, candidateDocuments, hasFriendAssemblies));
+                    candidates.Add(new Candidate(symbol, candidateDocuments, scopedDocument.HasFriendAssemblies));
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
         // Phase B: reference searches — the expensive FindReferencesAsync scans,
         // parallelised behind the revertible switch (SNIPPER_MAX_DOP=1 reverts to

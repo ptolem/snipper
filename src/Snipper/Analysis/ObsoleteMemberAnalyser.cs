@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -31,27 +32,28 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
         var usageIndex = SolutionUsageIndex.Get(solution);
         var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
         var enumOrdinals = EnumOrdinalContractIndex.Get(solution);
 
-        // Sequential binding — workspace compilations are built with ConcurrentBuild=false.
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"ObsoleteMemberAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"ObsoleteMemberAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     // Syntax gate: only attributes spelled *Obsolete* reach the semantic model.
                     if (node is not AttributeSyntax attribute || !IsObsoleteAttributeName(attribute.Name))
@@ -71,24 +73,23 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
                     {
                         foreach (var variable in fieldDeclaration.Declaration.Variables)
                         {
-                            if (semanticModel.GetDeclaredSymbol(variable, cancellationToken) is { } fieldSymbol)
+                            if (semanticModel.GetDeclaredSymbol(variable, documentToken) is { } fieldSymbol)
                             {
-                                await EvaluateCandidateAsync(fieldSymbol, attribute, project, solution, usageIndex, frameworkEvidence, enumOrdinals, findings, cancellationToken).ConfigureAwait(false);
+                                await EvaluateCandidateAsync(fieldSymbol, attribute, document.Project, solution, usageIndex, frameworkEvidence, enumOrdinals, findings, documentToken).ConfigureAwait(false);
                             }
                         }
 
                         continue;
                     }
 
-                    if (semanticModel.GetDeclaredSymbol(declaration, cancellationToken) is { } declaredSymbol)
+                    if (semanticModel.GetDeclaredSymbol(declaration, documentToken) is { } declaredSymbol)
                     {
-                        await EvaluateCandidateAsync(declaredSymbol, attribute, project, solution, usageIndex, frameworkEvidence, enumOrdinals, findings, cancellationToken).ConfigureAwait(false);
+                        await EvaluateCandidateAsync(declaredSymbol, attribute, document.Project, solution, usageIndex, frameworkEvidence, enumOrdinals, findings, documentToken).ConfigureAwait(false);
                     }
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     private async Task EvaluateCandidateAsync(
@@ -99,7 +100,7 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
         SolutionUsageIndex usageIndex,
         FrameworkEvidenceIndex frameworkEvidence,
         EnumOrdinalContractIndex enumOrdinals,
-        List<SnipperFinding> findings,
+        ConcurrentBag<SnipperFinding> findings,
         CancellationToken cancellationToken)
     {
         if (!IsEligibleKind(symbol))

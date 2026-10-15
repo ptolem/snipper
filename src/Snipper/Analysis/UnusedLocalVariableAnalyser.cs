@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -24,19 +25,24 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
         var usageIndex = SolutionUsageIndex.Get(solution);
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"UnusedLocalVariableAnalyser: scanning {documents.Count} documents");
 
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"UnusedLocalVariableAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        // Documents are independent: a local and every read of it live in one
+        // document. The bag order depends on scheduling; AnalysisRunner puts it in
+        // FindingOrder.
+        var findings = new ConcurrentBag<SnipperFinding>();
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 // One walk per document buckets every identifier by text; each
@@ -45,7 +51,7 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
 
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     // Syntax gate: local declarations (excluding using-declarations and
                     // ref locals, both of which carry side effects) plus single-variable
@@ -79,7 +85,7 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
                         continue;
                     }
 
-                    if (ExclusionEngine.IsNamespaceExcluded(node, semanticModel, _exclusions, cancellationToken))
+                    if (ExclusionEngine.IsNamespaceExcluded(node, semanticModel, _exclusions, documentToken))
                     {
                         continue;
                     }
@@ -94,9 +100,9 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
 
                     // Slow path: the name appears in the document (possibly on another
                     // symbol sharing it) — confirm semantically. A local's references
-                    // can only live in this document, so the document-scoped index
+                    // can only live in this document, so the document-scopedDocument index
                     // answers it without a solution-wide candidate-set search.
-                    var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+                    var symbol = semanticModel.GetDeclaredSymbol(node, documentToken);
                     if (symbol is not ILocalSymbol local)
                     {
                         continue;
@@ -107,10 +113,9 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
                         findings.Add(CreateFinding(name, node.GetLocation().GetLineSpan()));
                     }
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     private static SnipperFinding CreateFinding(string name, FileLinePositionSpan lineSpan)

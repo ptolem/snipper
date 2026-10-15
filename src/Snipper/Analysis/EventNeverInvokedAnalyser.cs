@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -29,24 +30,26 @@ public sealed class EventNeverInvokedAnalyser(AnalysisExclusions? exclusions = n
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
         var usageIndex = SolutionUsageIndex.Get(solution);
 
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"EventNeverInvokedAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"EventNeverInvokedAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 foreach (var declarator in root.DescendantNodes().OfType<VariableDeclaratorSyntax>())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     // Syntax gate: field-like event declarations only (custom
                     // add/remove accessors are EventDeclarationSyntax — v1 skips).
@@ -56,7 +59,7 @@ public sealed class EventNeverInvokedAnalyser(AnalysisExclusions? exclusions = n
                         continue;
                     }
 
-                    if (semanticModel.GetDeclaredSymbol(declarator, cancellationToken) is not IEventSymbol eventSymbol
+                    if (semanticModel.GetDeclaredSymbol(declarator, documentToken) is not IEventSymbol eventSymbol
                         || eventSymbol.IsImplicitlyDeclared
                         || eventSymbol.IsOverride
                         || eventSymbol.IsVirtual
@@ -82,12 +85,12 @@ public sealed class EventNeverInvokedAnalyser(AnalysisExclusions? exclusions = n
                     var candidateDocuments = usageIndex.GetDocumentsUsingName(eventSymbol.Name);
                     if (candidateDocuments.Count > 0)
                     {
-                        var references = await SymbolFinder.FindReferencesAsync(eventSymbol, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+                        var references = await SymbolFinder.FindReferencesAsync(eventSymbol, solution, candidateDocuments, documentToken).ConfigureAwait(false);
                         foreach (var referencedSymbol in references)
                         {
                             foreach (var location in referencedSymbol.Locations)
                             {
-                                if (location.IsCandidateLocation || !IsSubscription(location.Location, cancellationToken))
+                                if (location.IsCandidateLocation || !IsSubscription(location.Location, documentToken))
                                 {
                                     sawRaiseShapedOrUnknown = true;
                                     break;
@@ -121,10 +124,9 @@ public sealed class EventNeverInvokedAnalyser(AnalysisExclusions? exclusions = n
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
                         CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     /// <summary>

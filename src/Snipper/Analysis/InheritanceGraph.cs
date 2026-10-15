@@ -12,9 +12,8 @@ using Microsoft.CodeAnalysis;
 /// generics are first-class: keys are OriginalDefinition-normalized so a
 /// <c>Derived : Base&lt;int&gt;</c> edge lands on the <c>Base&lt;T&gt;</c>
 /// declaration. Edges from generated documents count as evidence — a
-/// source-generated subclass keeps its base alive. Semantic binding is
-/// sequential per the workspace's ConcurrentBuild=false contract; the graph is
-/// one compilation walk per project, memoized via the same solution-keyed
+/// source-generated subclass keeps its base alive. The graph is one
+/// compilation walk per project, memoized via the same solution-keyed
 /// cache pattern as <see cref="SolutionUsageIndex"/>.
 /// </summary>
 internal sealed class InheritanceGraph

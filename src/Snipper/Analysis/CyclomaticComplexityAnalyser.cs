@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -71,21 +72,22 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
 
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
 
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"CyclomaticComplexityAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"CyclomaticComplexityAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                var (document, root) = scopedDocument;
 
                 // Complexity thresholds are a review trigger, and nobody reviews a test
                 // fixture. Shared with SNP0034 - see ExclusionEngine.IsTestCode.
-                if (ExclusionEngine.IsTestCode(document.FilePath, project.Name))
+                if (ExclusionEngine.IsTestCode(document.FilePath, document.Project.Name))
                 {
-                    continue;
+                    return;
                 }
 
                 // One walk per document, scoring each callable body it finds. The
@@ -93,7 +95,7 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
                 // counted once as itself and never again as part of its parent.
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     var body = GetFunctionBody(node);
                     if (body is null)
@@ -112,9 +114,9 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
                     // change the outcome, so it is skipped rather than paid for.
                     if (_exclusions.Namespaces.Count > 0)
                     {
-                        var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                        var model = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                         if (model is null
-                            || ExclusionEngine.IsNamespaceExcluded(node, model, _exclusions, cancellationToken))
+                            || ExclusionEngine.IsNamespaceExcluded(node, model, _exclusions, documentToken))
                         {
                             continue;
                         }
@@ -131,10 +133,9 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
                         CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     /// <summary>

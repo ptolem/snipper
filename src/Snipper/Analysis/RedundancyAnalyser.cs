@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Snipper.Models;
@@ -25,21 +26,22 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
 
-        // Sequential binding per the workspace's ConcurrentBuild=false contract.
         // Candidate sets are tiny (trailing literals / explicit type lists), so
         // speculation stays cheap even on large solutions.
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"RedundancyAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"RedundancyAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 // ONE walk, five buckets, instead of five full DescendantNodes() traversals.
@@ -57,7 +59,7 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
 
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     switch (node)
                     {
@@ -81,19 +83,19 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
 
                 foreach (var invocation in invocations ?? [])
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
-                    if (ExclusionEngine.IsNamespaceExcluded(invocation, semanticModel, _exclusions, cancellationToken))
+                    if (ExclusionEngine.IsNamespaceExcluded(invocation, semanticModel, _exclusions, documentToken))
                     {
                         continue;
                     }
 
-                    if (RedundantDefaultArgumentEvaluator.TryEvaluate(invocation, semanticModel, cancellationToken) is { } argumentFinding)
+                    if (RedundantDefaultArgumentEvaluator.TryEvaluate(invocation, semanticModel, documentToken) is { } argumentFinding)
                     {
                         findings.Add(argumentFinding);
                     }
 
-                    if (RedundantTypeArgumentEvaluator.TryEvaluate(invocation, semanticModel, cancellationToken) is { } typeArgumentFinding)
+                    if (RedundantTypeArgumentEvaluator.TryEvaluate(invocation, semanticModel, documentToken) is { } typeArgumentFinding)
                     {
                         findings.Add(typeArgumentFinding);
                     }
@@ -101,18 +103,18 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
 
                 foreach (var cast in casts ?? [])
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
-                    if (ExclusionEngine.IsNamespaceExcluded(cast, semanticModel, _exclusions, cancellationToken))
+                    if (ExclusionEngine.IsNamespaceExcluded(cast, semanticModel, _exclusions, documentToken))
                     {
                         continue;
                     }
 
-                    if (RedundantCastEvaluator.TryEvaluate(cast, semanticModel, cancellationToken) is { } castFinding)
+                    if (RedundantCastEvaluator.TryEvaluate(cast, semanticModel, documentToken) is { } castFinding)
                     {
                         findings.Add(castFinding);
                     }
-                    else if (RedundantUpcastEvaluator.TryEvaluate(cast, semanticModel, cancellationToken) is { } upcastFinding)
+                    else if (RedundantUpcastEvaluator.TryEvaluate(cast, semanticModel, documentToken) is { } upcastFinding)
                     {
                         findings.Add(upcastFinding);
                     }
@@ -120,17 +122,17 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
 
                 foreach (var access in accesses ?? [])
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     // Syntax pre-filter: only 'this.'-qualified accesses are
                     // candidates — speculation never runs for anything else.
                     if (access.Expression is not ThisExpressionSyntax
-                        || ExclusionEngine.IsNamespaceExcluded(access, semanticModel, _exclusions, cancellationToken))
+                        || ExclusionEngine.IsNamespaceExcluded(access, semanticModel, _exclusions, documentToken))
                     {
                         continue;
                     }
 
-                    if (RedundantQualifierEvaluator.TryEvaluateThisQualifier(access, semanticModel, cancellationToken) is { } qualifierFinding)
+                    if (RedundantQualifierEvaluator.TryEvaluateThisQualifier(access, semanticModel, documentToken) is { } qualifierFinding)
                     {
                         findings.Add(qualifierFinding);
                     }
@@ -138,14 +140,14 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
 
                 foreach (var qualifiedName in qualifiedNames ?? [])
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
-                    if (ExclusionEngine.IsNamespaceExcluded(qualifiedName, semanticModel, _exclusions, cancellationToken))
+                    if (ExclusionEngine.IsNamespaceExcluded(qualifiedName, semanticModel, _exclusions, documentToken))
                     {
                         continue;
                     }
 
-                    if (RedundantQualifierEvaluator.TryEvaluateQualifiedName(qualifiedName, semanticModel, cancellationToken) is { } qualifiedNameFinding)
+                    if (RedundantQualifierEvaluator.TryEvaluateQualifiedName(qualifiedName, semanticModel, documentToken) is { } qualifiedNameFinding)
                     {
                         findings.Add(qualifiedNameFinding);
                     }
@@ -153,23 +155,23 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
 
                 foreach (var typeDeclaration in typeDeclarations ?? [])
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     foreach (var member in typeDeclaration.Members)
                     {
                         switch (member)
                         {
                             case ConstructorDeclarationSyntax constructor
-                                when !ExclusionEngine.IsNamespaceExcluded(constructor, semanticModel, _exclusions, cancellationToken):
-                                if (EmptyTypeMemberEvaluator.TryEvaluateConstructor(constructor, semanticModel, cancellationToken) is { } constructorFinding)
+                                when !ExclusionEngine.IsNamespaceExcluded(constructor, semanticModel, _exclusions, documentToken):
+                                if (EmptyTypeMemberEvaluator.TryEvaluateConstructor(constructor, semanticModel, documentToken) is { } constructorFinding)
                                 {
                                     findings.Add(constructorFinding);
                                 }
 
                                 break;
                             case DestructorDeclarationSyntax destructor
-                                when !ExclusionEngine.IsNamespaceExcluded(destructor, semanticModel, _exclusions, cancellationToken):
-                                if (EmptyTypeMemberEvaluator.TryEvaluateDestructor(destructor, semanticModel, cancellationToken) is { } destructorFinding)
+                                when !ExclusionEngine.IsNamespaceExcluded(destructor, semanticModel, _exclusions, documentToken):
+                                if (EmptyTypeMemberEvaluator.TryEvaluateDestructor(destructor, semanticModel, documentToken) is { } destructorFinding)
                                 {
                                     findings.Add(destructorFinding);
                                 }
@@ -178,9 +180,8 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
                         }
                     }
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 }

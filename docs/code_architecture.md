@@ -632,8 +632,10 @@ Namespace exclusion is a separate, per-node check (`IsNamespaceExcluded`), becau
 than one namespace.
 
 Most analysers never call the gate themselves: `AnalysisScope.Get(solution)` applies it once per
-solution and hands back each compilable project with its surviving documents and their roots, so the
-skip decision is made before any semantic model is fetched. Three analysers keep their own loop because
+solution and hands back one flat list of the surviving documents of every compilable project, each with
+its syntax root and its project's `InternalsVisibleTo` flag, so the skip decision is made before any
+semantic model is fetched. The list is flat so an analyser can bind documents in parallel across the
+whole solution rather than one project at a time. Three analysers keep their own loop because
 they need a different document set — `ConfigurationBindingAnalyser` gathers evidence from every
 document, generated ones included; `DuplicateFragmentAnalyser` collects by path so a linked file counts
 once; `UnusedUsingDirectiveAnalyser` starts from compiler diagnostics — and the last two call
@@ -693,7 +695,7 @@ analyser whose `RuleIds` is conditional on its constructor arguments.
 
 ## Anatomy of a semantic analyser
 
-`UnusedPrivateMemberAnalyser` is 180 lines and is the cleanest example. Every semantic analyser
+`UnusedPrivateMemberAnalyser` is 179 lines and is the cleanest example. Every semantic analyser
 follows this shape:
 
 ```csharp
@@ -707,16 +709,19 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
     {
         var usageIndex = SolutionUsageIndex.Get(solution);   // shared, built once
 
-        // Compilable projects and their in-scope documents: generated and
-        // external code is already gone, decided once per solution.
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            foreach (var (document, root) in documents)
+        // In-scope documents of every compilable project: generated and external
+        // code is already gone, decided once per solution.
+        var findings = new ConcurrentBag<SnipperFinding>();
+        await Parallel.ForEachAsync(
+            AnalysisScope.Get(solution),
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 foreach (var node in root.DescendantNodes())
@@ -725,10 +730,11 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
                     // 2. declared symbol
                     // 3. namespace exclusion
                     // 4. usage proof, via the index
-                    // 5. emit
+                    // 5. emit into the bag
                 }
-            }
-        }
+            });
+
+        return [.. findings];   // AnalysisRunner puts it in FindingOrder
     }
 }
 ```
@@ -738,6 +744,7 @@ The ordering is the performance design, and you should preserve it when you add 
 | Step | Cost | Purpose |
 | --- | --- | --- |
 | `AnalysisScope` | once per solution | Generated and external code is gone before any semantic model is fetched. |
+| `Parallel.ForEachAsync` over documents | none | Documents bind concurrently, bounded by `SNIPPER_MAX_DOP`. Anything other than findings that leaves the loop goes into a per-document slot, so later phases see scope order. |
 | Syntactic pre-filter | cheap | Reject most nodes without a symbol. Avoids a `GetDeclaredSymbol` per node. |
 | `GetDeclaredSymbol` | moderate | Only for surviving candidates. |
 | `IsNamespaceExcluded` | cheap | Before any expensive evidence work. |
@@ -776,7 +783,7 @@ Four things this buys, all of which matter:
   `ImmutableHashSet`) once built, so concurrent reads need no locking.
 
 If you add a shared index, follow the same pattern. If you add a mutable field to an analyser, you
-break the fan-out - `SNIPPER_MAX_DOP=1` is the escape hatch, and it is also your signal that you have
+break both the fan-out and the per-document loops inside it - `SNIPPER_MAX_DOP=1` is the escape hatch, and it is also your signal that you have
 done something wrong.
 
 ### Per-symbol and per-node memos
@@ -1223,7 +1230,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | `Cli/GitMetadata.cs`, `Analysis/GitProcess.cs` | git subprocess plumbing. |
 | `Cli/JsonReportSerializerContext.cs`, `SarifModels.cs` | Source-generated JSON and SARIF DTOs. |
 | `Analysis/IWorkspaceAnalyser.cs` | The contract. Read this first. |
-| `Analysis/AnalysisScope.cs` | The in-scope projects and documents most analysers walk. |
+| `Analysis/AnalysisScope.cs` | The in-scope documents most analysers walk, flat across projects. |
 | `Analysis/SolutionUsageIndex.cs` etc. | Shared solution-keyed indexes. |
 | `Analysis/ExclusionEngine.cs` | Generated/external/namespace gates, plus `IsTestCode` — complexity-only, never used by `ShouldSkipDocument`. |
 | `Analysis/DuplicateFragmentAnalyser.cs`, `CloneDriftDetector.cs`, `GitHistory.cs` | 4C. |

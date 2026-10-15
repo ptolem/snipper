@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -37,38 +38,30 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
         var usageIndex = SolutionUsageIndex.Get(solution);
         var graph = InheritanceGraph.Get(solution);
         var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
 
-        // Sequential binding per the workspace's ConcurrentBuild=false contract.
         // Syntax gates run first everywhere: modifier/attribute checks and the
         // this/base token scan happen before any semantic binding.
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"TighteningAnalyser: scanning {project.Name}");
-
-            var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
-            if (compilation is null)
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"TighteningAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                continue;
-            }
-
-            var hasFriendAssemblies = compilation.Assembly.GetAttributes()
-                .Any(static a => a.AttributeClass?.Name is "InternalsVisibleTo" or "InternalsVisibleToAttribute");
-
-            foreach (var (document, root) in documents)
-            {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     switch (node)
                     {
@@ -76,22 +69,22 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
                             if (await TryEvaluateCanBeStaticAsync(
                                     methodDeclaration,
                                     semanticModel,
-                                    project,
+                                    document.Project,
                                     solution,
                                     usageIndex,
-                                    cancellationToken).ConfigureAwait(false) is { } staticFinding)
+                                    documentToken).ConfigureAwait(false) is { } staticFinding)
                             {
                                 findings.Add(staticFinding);
                             }
 
                             if (HasPublicOrInternalModifier(methodDeclaration.Modifiers)
-                                && semanticModel.GetDeclaredSymbol(methodDeclaration, cancellationToken) is { } methodSymbol
+                                && semanticModel.GetDeclaredSymbol(methodDeclaration, documentToken) is { } methodSymbol
                                 && await TryEvaluateCanBePrivateAsync(
                                     methodSymbol,
                                     solution,
                                     usageIndex,
                                     frameworkEvidence,
-                                    cancellationToken).ConfigureAwait(false) is { } methodPrivateFinding)
+                                    documentToken).ConfigureAwait(false) is { } methodPrivateFinding)
                             {
                                 findings.Add(methodPrivateFinding);
                             }
@@ -100,13 +93,13 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
 
                         case PropertyDeclarationSyntax propertyDeclaration:
                             if (HasPublicOrInternalModifier(propertyDeclaration.Modifiers)
-                                && semanticModel.GetDeclaredSymbol(propertyDeclaration, cancellationToken) is { } propertySymbol
+                                && semanticModel.GetDeclaredSymbol(propertyDeclaration, documentToken) is { } propertySymbol
                                 && await TryEvaluateCanBePrivateAsync(
                                     propertySymbol,
                                     solution,
                                     usageIndex,
                                     frameworkEvidence,
-                                    cancellationToken).ConfigureAwait(false) is { } propertyPrivateFinding)
+                                    documentToken).ConfigureAwait(false) is { } propertyPrivateFinding)
                             {
                                 findings.Add(propertyPrivateFinding);
                             }
@@ -117,12 +110,12 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
                             if (await TryEvaluateCanBeSealedAsync(
                                     classDeclaration,
                                     semanticModel,
-                                    project,
+                                    document.Project,
                                     solution,
                                     usageIndex,
                                     graph,
-                                    hasFriendAssemblies,
-                                    cancellationToken).ConfigureAwait(false) is { } sealedFinding)
+                                    scopedDocument.HasFriendAssemblies,
+                                    documentToken).ConfigureAwait(false) is { } sealedFinding)
                             {
                                 findings.Add(sealedFinding);
                             }
@@ -137,22 +130,22 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
                                     node,
                                     fieldDeclaration,
                                     semanticModel,
-                                    project,
+                                    document.Project,
                                     solution,
                                     usageIndex,
-                                    cancellationToken).ConfigureAwait(false) is { } readonlyFinding)
+                                    documentToken).ConfigureAwait(false) is { } readonlyFinding)
                             {
                                 findings.Add(readonlyFinding);
                             }
 
                             if (HasPublicOrInternalModifier(fieldDeclaration.Modifiers)
-                                && semanticModel.GetDeclaredSymbol(node, cancellationToken) is IFieldSymbol fieldSymbol
+                                && semanticModel.GetDeclaredSymbol(node, documentToken) is IFieldSymbol fieldSymbol
                                 && await TryEvaluateCanBePrivateAsync(
                                     fieldSymbol,
                                     solution,
                                     usageIndex,
                                     frameworkEvidence,
-                                    cancellationToken).ConfigureAwait(false) is { } fieldPrivateFinding)
+                                    documentToken).ConfigureAwait(false) is { } fieldPrivateFinding)
                             {
                                 findings.Add(fieldPrivateFinding);
                             }
@@ -160,10 +153,9 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
                             break;
                     }
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     private async Task<SnipperFinding?> TryEvaluateCanBeStaticAsync(

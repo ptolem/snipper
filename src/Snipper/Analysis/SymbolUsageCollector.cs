@@ -24,8 +24,6 @@ internal static class SymbolUsageCollector
 
         var usedAssemblies = new HashSet<IAssemblySymbol>(SymbolEqualityComparer.Default);
 
-        // Sequential binding: workspace compilations are built with
-        // ConcurrentBuild=false; concurrent GetSymbolInfo is unsupported.
         foreach (var document in project.Documents)
         {
             if (!document.SupportsSyntaxTree)

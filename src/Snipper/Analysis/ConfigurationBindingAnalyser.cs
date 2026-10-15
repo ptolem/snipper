@@ -205,8 +205,6 @@ public sealed class ConfigurationBindingAnalyser(AnalysisExclusions? exclusions 
     {
         var optionsTypes = new Dictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
 
-        // Sequential binding: workspace compilations are built with
-        // ConcurrentBuild=false; concurrent GetTypeInfo is unsupported.
         // ALL documents are scanned: discovery is evidence — more discovered options
         // types only ever suppresses false SNP0007 reports.
         foreach (var project in solution.Projects)

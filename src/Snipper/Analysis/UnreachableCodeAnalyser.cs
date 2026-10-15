@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
@@ -22,33 +23,32 @@ public sealed class UnreachableCodeAnalyser(AnalysisExclusions? exclusions = nul
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
 
-        // Sequential binding: workspace compilations are built with
-        // ConcurrentBuild=false; concurrent flow analysis/binding is unsupported.
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"UnreachableCodeAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"UnreachableCodeAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
-                AnalyzeDocument(semanticModel, root, findings, _exclusions, cancellationToken);
-            }
-        }
+                AnalyzeDocument(semanticModel, root, findings, _exclusions, documentToken);
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     private static void AnalyzeDocument(
         SemanticModel semanticModel,
         SyntaxNode root,
-        List<SnipperFinding> findings,
+        ConcurrentBag<SnipperFinding> findings,
         AnalysisExclusions exclusions,
         CancellationToken cancellationToken)
     {

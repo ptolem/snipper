@@ -1,5 +1,6 @@
 namespace Snipper.Analysis;
 
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -27,19 +28,21 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
-        var findings = new List<SnipperFinding>();
+        var findings = new ConcurrentBag<SnipperFinding>();
         var usageIndex = SolutionUsageIndex.Get(solution);
 
-        foreach (var (project, documents) in AnalysisScope.Get(solution))
-        {
-            progress?.Invoke($"UnusedParameterAnalyser: scanning {project.Name}");
-
-            foreach (var (document, root) in documents)
+        var documents = AnalysisScope.Get(solution);
+        progress?.Invoke($"UnusedParameterAnalyser: scanning {documents.Count} documents");
+        await Parallel.ForEachAsync(
+            documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (scopedDocument, documentToken) =>
             {
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                var (document, root) = scopedDocument;
+                var semanticModel = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
                 if (semanticModel is null)
                 {
-                    continue;
+                    return;
                 }
 
                 // One walk per document buckets every identifier by text; each
@@ -48,7 +51,7 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
 
                 foreach (var node in root.DescendantNodes())
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    documentToken.ThrowIfCancellationRequested();
 
                     // Syntax gate: only methods/local functions with a parameter list
                     // and no non-private modifier reach the semantic model.
@@ -64,7 +67,7 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
                         continue;
                     }
 
-                    var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+                    var symbol = semanticModel.GetDeclaredSymbol(node, documentToken);
                     if (symbol is not IMethodSymbol method || !IsEligibleMethod(method))
                     {
                         continue;
@@ -84,9 +87,9 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
                     // method is SNP0001's finding, not this rule's), and every reference
                     // must be a direct invocation — a method-group reference fixes the
                     // signature through the delegate contract.
-                    var methodDocuments = usageIndex.GetDocumentsUsingName(project, method.Name);
+                    var methodDocuments = usageIndex.GetDocumentsUsingName(document.Project, method.Name);
                     if (methodDocuments.Count == 0
-                        || !await IsExclusivelyDirectInvokedAsync(method, solution, methodDocuments, cancellationToken).ConfigureAwait(false))
+                        || !await IsExclusivelyDirectInvokedAsync(method, solution, methodDocuments, documentToken).ConfigureAwait(false))
                     {
                         continue;
                     }
@@ -99,7 +102,7 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
                             continue;
                         }
 
-                        var parameter = semanticModel.GetDeclaredSymbol(parameterSyntax, cancellationToken);
+                        var parameter = semanticModel.GetDeclaredSymbol(parameterSyntax, documentToken);
                         if (parameter is null)
                         {
                             continue;
@@ -115,7 +118,7 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
 
                         // Slow path: the name appears (possibly on another symbol) —
                         // confirm semantically. A parameter's references can only live
-                        // in this document, so the document-scoped index answers it
+                        // in this document, so the document-scopedDocument index answers it
                         // without a solution-wide candidate-set search.
                         if (!identifierIndex.HasReference(semanticModel, parameter, parameterName))
                         {
@@ -123,10 +126,9 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
                         }
                     }
                 }
-            }
-        }
+            }).ConfigureAwait(false);
 
-        return findings;
+        return [.. findings];
     }
 
     private static bool IsEligibleMethod(IMethodSymbol method)
