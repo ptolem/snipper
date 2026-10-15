@@ -66,7 +66,6 @@ internal static class RedundantCastEvaluator
             Category: FindingCategory.RedundantCast,
             FilePath: lineSpan.Path ?? string.Empty,
             LineNumber: lineSpan.StartLinePosition.Line + 1,
-            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-            Symbol: targetType);
+            CharacterOffset: lineSpan.StartLinePosition.Character + 1);
     }
 }

@@ -158,7 +158,6 @@ public sealed class ReportSchemaShould : IDisposable
             Category: FindingCategory.UnusedPrivateMember,
             FilePath: path ?? _sourceFile,
             LineNumber: 5,
-            CharacterOffset: 5,
-            Symbol: null);
+            CharacterOffset: 5);
     }
 }

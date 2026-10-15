@@ -109,8 +109,7 @@ public sealed class OrphanProjectAnalyser : IWorkspaceAnalyser
                 Category: FindingCategory.OrphanProject,
                 FilePath: filePath,
                 LineNumber: 1,
-                CharacterOffset: 1,
-                Symbol: null));
+                CharacterOffset: 1));
         }
 
         foreach (var (assemblyName, detachedFile) in detachedCandidates)
@@ -128,8 +127,7 @@ public sealed class OrphanProjectAnalyser : IWorkspaceAnalyser
                 Category: FindingCategory.OrphanProject,
                 FilePath: detachedFile,
                 LineNumber: 1,
-                CharacterOffset: 1,
-                Symbol: null));
+                CharacterOffset: 1));
         }
 
         return Task.FromResult<IReadOnlyList<SnipperFinding>>(findings);

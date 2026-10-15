@@ -110,8 +110,7 @@ public sealed class UnusedUsingDirectiveAnalyser(AnalysisExclusions? exclusions 
                     Category: FindingCategory.UnusedUsingDirective,
                     FilePath: lineSpan.Path ?? string.Empty,
                     LineNumber: lineSpan.StartLinePosition.Line + 1,
-                    CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-                    Symbol: null));
+                    CharacterOffset: lineSpan.StartLinePosition.Character + 1));
             }
 
             foreach (var entry in reported.Values)

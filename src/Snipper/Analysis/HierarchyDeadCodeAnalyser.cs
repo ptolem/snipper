@@ -207,8 +207,7 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
                         Category: FindingCategory.HierarchyDeadCode,
                         FilePath: lineSpan.Path ?? string.Empty,
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
-                        CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-                        Symbol: classSymbol));
+                        CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
 
                 continue;
@@ -239,8 +238,7 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
                     Category: FindingCategory.HierarchyDeadCode,
                     FilePath: memberLineSpan.Path ?? string.Empty,
                     LineNumber: memberLineSpan.StartLinePosition.Line + 1,
-                    CharacterOffset: memberLineSpan.StartLinePosition.Character + 1,
-                    Symbol: member));
+                    CharacterOffset: memberLineSpan.StartLinePosition.Character + 1));
             }
         }
 
@@ -359,8 +357,7 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
                 Category: FindingCategory.HierarchyDeadCode,
                 FilePath: rootLineSpan.Path ?? string.Empty,
                 LineNumber: rootLineSpan.StartLinePosition.Line + 1,
-                CharacterOffset: rootLineSpan.StartLinePosition.Character + 1,
-                Symbol: familyRoot));
+                CharacterOffset: rootLineSpan.StartLinePosition.Character + 1));
         }
 
         return findings;

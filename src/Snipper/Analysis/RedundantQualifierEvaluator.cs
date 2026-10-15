@@ -49,7 +49,6 @@ internal static class RedundantQualifierEvaluator
 
         return CreateFinding(
             access,
-            original,
             "Qualifier 'this.' is redundant — the member binds identically without it.");
     }
 
@@ -88,7 +87,6 @@ internal static class RedundantQualifierEvaluator
 
         return CreateFinding(
             qualifiedName,
-            original,
             $"Qualification in '{qualifiedName}' is redundant — '{bare}' binds identically without it.");
     }
 
@@ -97,7 +95,7 @@ internal static class RedundantQualifierEvaluator
         return node.Ancestors().Any(static ancestor => ancestor is ConditionalAccessExpressionSyntax or MemberBindingExpressionSyntax);
     }
 
-    private static SnipperFinding CreateFinding(SyntaxNode node, ISymbol symbol, string message)
+    private static SnipperFinding CreateFinding(SyntaxNode node, string message)
     {
         var lineSpan = node.GetLocation().GetLineSpan();
         return new SnipperFinding(
@@ -108,7 +106,6 @@ internal static class RedundantQualifierEvaluator
             Category: FindingCategory.RedundantQualifier,
             FilePath: lineSpan.Path ?? string.Empty,
             LineNumber: lineSpan.StartLinePosition.Line + 1,
-            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-            Symbol: symbol);
+            CharacterOffset: lineSpan.StartLinePosition.Character + 1);
     }
 }

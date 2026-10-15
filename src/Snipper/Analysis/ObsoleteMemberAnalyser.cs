@@ -164,8 +164,7 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
             Category: FindingCategory.ObsoleteUnreferencedMember,
             FilePath: lineSpan.Path ?? string.Empty,
             LineNumber: lineSpan.StartLinePosition.Line + 1,
-            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-            Symbol: symbol));
+            CharacterOffset: lineSpan.StartLinePosition.Character + 1));
     }
 
     private static AttributeData? FindObsoleteAttribute(ISymbol symbol)

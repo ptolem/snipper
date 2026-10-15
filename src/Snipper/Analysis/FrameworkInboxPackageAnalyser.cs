@@ -116,8 +116,7 @@ public sealed class FrameworkInboxPackageAnalyser : IWorkspaceAnalyser
                     Category: FindingCategory.FrameworkProvidedPackage,
                     FilePath: project.FilePath,
                     LineNumber: package.LineNumber,
-                    CharacterOffset: 1,
-                    Symbol: null));
+                    CharacterOffset: 1));
             }
         }
 

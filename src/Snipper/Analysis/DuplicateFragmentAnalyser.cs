@@ -798,7 +798,6 @@ public sealed class DuplicateFragmentAnalyser(
                 FilePath: anchor.Path,
                 LineNumber: anchor.StartLine,
                 CharacterOffset: anchor.StartCharacter,
-                Symbol: null,
                 RelatedLocations:
                 [
                     .. located

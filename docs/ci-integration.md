@@ -556,7 +556,7 @@ The things most likely to cost you time. Each is a real, verified behaviour, not
       message, which now carries the clone *set* size rather than a per-copy description, so every
       pre-1.9.0 SNP0031 entry reads as new on the next run. It is a one-time cost, but it will look like
       a mass of new findings if you are not expecting it.
-16. **`--clone-drift` changes the SNP0031/SNP0032 message after 1.14.0, so an old baseline reports every
+16. **`--clone-drift` changes the SNP0031/SNP0032 message in 1.15.0, so an old baseline reports every
     duplication finding as new.** Two separate message changes land in the same window. SNP0031 now
     names the other copies as **workspace-relative** `path:line` instead of absolute, and SNP0032's
     message gains a caveat on clone sets that are only a shape collision. Because fingerprints hash the

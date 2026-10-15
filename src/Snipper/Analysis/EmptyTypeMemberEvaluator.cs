@@ -64,8 +64,7 @@ internal static class EmptyTypeMemberEvaluator
             Category: FindingCategory.EmptyTypeMember,
             FilePath: lineSpan.Path ?? string.Empty,
             LineNumber: lineSpan.StartLinePosition.Line + 1,
-            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-            Symbol: constructorSymbol);
+            CharacterOffset: lineSpan.StartLinePosition.Character + 1);
     }
 
     public static SnipperFinding? TryEvaluateDestructor(
@@ -97,7 +96,6 @@ internal static class EmptyTypeMemberEvaluator
             Category: FindingCategory.EmptyTypeMember,
             FilePath: lineSpan.Path ?? string.Empty,
             LineNumber: lineSpan.StartLinePosition.Line + 1,
-            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-            Symbol: destructorSymbol);
+            CharacterOffset: lineSpan.StartLinePosition.Character + 1);
     }
 }

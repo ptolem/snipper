@@ -1006,8 +1006,7 @@ public sealed class CloneDriftDetector
                     Category: FindingCategory.CloneDrift,
                     FilePath: member.Path,
                     LineNumber: anchorLine,
-                    CharacterOffset: member.StartCharacter,
-                    Symbol: null));
+                    CharacterOffset: member.StartCharacter));
             }
         }
     }

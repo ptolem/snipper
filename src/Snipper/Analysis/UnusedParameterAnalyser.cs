@@ -222,7 +222,6 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
             Category: FindingCategory.UnusedParameter,
             FilePath: lineSpan.Path ?? string.Empty,
             LineNumber: lineSpan.StartLinePosition.Line + 1,
-            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-            Symbol: null);
+            CharacterOffset: lineSpan.StartLinePosition.Character + 1);
     }
 }

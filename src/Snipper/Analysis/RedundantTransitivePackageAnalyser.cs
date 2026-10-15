@@ -116,8 +116,7 @@ public sealed class RedundantTransitivePackageAnalyser : IWorkspaceAnalyser
                     Category: FindingCategory.RedundantTransitivePackage,
                     FilePath: project.FilePath,
                     LineNumber: package.LineNumber,
-                    CharacterOffset: 1,
-                    Symbol: null));
+                    CharacterOffset: 1));
             }
         }
 

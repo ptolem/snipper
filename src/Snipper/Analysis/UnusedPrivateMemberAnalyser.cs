@@ -130,8 +130,7 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
                             Category: FindingCategory.UnusedPrivateMember,
                             FilePath: lineSpan.Path ?? string.Empty,
                             LineNumber: lineSpan.StartLinePosition.Line + 1,
-                            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-                            Symbol: declaredSymbol));
+                            CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                     }
                 }
             }

@@ -131,8 +131,7 @@ public sealed class EventNeverInvokedAnalyser(AnalysisExclusions? exclusions = n
                         Category: FindingCategory.UnusedEvent,
                         FilePath: lineSpan.Path ?? string.Empty,
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
-                        CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-                        Symbol: eventSymbol));
+                        CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
             }
         }

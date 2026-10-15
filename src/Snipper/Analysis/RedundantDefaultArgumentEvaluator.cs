@@ -99,8 +99,7 @@ internal static class RedundantDefaultArgumentEvaluator
             Category: FindingCategory.RedundantArgument,
             FilePath: lineSpan.Path ?? string.Empty,
             LineNumber: lineSpan.StartLinePosition.Line + 1,
-            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-            Symbol: original);
+            CharacterOffset: lineSpan.StartLinePosition.Character + 1);
     }
 
     private static bool IsLiteralish(ExpressionSyntax expression)

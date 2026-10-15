@@ -311,10 +311,9 @@ public static class CliRunner
         // build, allFindings at both the accounted-set build and baseline classification, and
         // unexcludedFindings at both the namespace-shadow walk and the baseline write.
         //
-        // Keyed by REFERENCE on purpose. SnipperFinding is a record, so default equality
-        // would run a structural comparison on every lookup - and two genuinely distinct
-        // findings can compare equal, which would hand back the wrong fingerprint. Same
-        // instance in, same fingerprint out, because the inputs are deterministic.
+        // Keyed by reference: same instance in, same fingerprint out. Record equality would
+        // also be correct - the fingerprint is a function of fields equality compares - but
+        // it hashes every string field on each lookup to get there.
         var fingerprintMemo = new Dictionary<SnipperFinding, string>(ReferenceEqualityComparer.Instance);
 
         string Fingerprint(SnipperFinding finding)

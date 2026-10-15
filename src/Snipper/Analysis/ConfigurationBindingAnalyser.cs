@@ -133,8 +133,7 @@ public sealed class ConfigurationBindingAnalyser(AnalysisExclusions? exclusions 
                     Category: FindingCategory.UnusedConfigurationSetting,
                     FilePath: leaf.FilePath,
                     LineNumber: line,
-                    CharacterOffset: column,
-                    Symbol: null));
+                    CharacterOffset: column));
             }
         }
 
@@ -165,8 +164,7 @@ public sealed class ConfigurationBindingAnalyser(AnalysisExclusions? exclusions 
                     Category: FindingCategory.UnusedConfigurationSetting,
                     FilePath: lineSpan.Path ?? string.Empty,
                     LineNumber: lineSpan.StartLinePosition.Line + 1,
-                    CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-                    Symbol: leafProperty.Symbol));
+                    CharacterOffset: lineSpan.StartLinePosition.Character + 1));
             }
         }
 

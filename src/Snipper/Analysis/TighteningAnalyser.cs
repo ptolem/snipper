@@ -589,7 +589,6 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
             Category: FindingCategory.Tightening,
             FilePath: lineSpan.Path ?? string.Empty,
             LineNumber: lineSpan.StartLinePosition.Line + 1,
-            CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-            Symbol: symbol);
+            CharacterOffset: lineSpan.StartLinePosition.Character + 1);
     }
 }

@@ -162,8 +162,7 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
                     Category: FindingCategory.UnreferencedPackage,
                     FilePath: project.FilePath,
                     LineNumber: package.LineNumber,
-                    CharacterOffset: 1,
-                    Symbol: null));
+                    CharacterOffset: 1));
             }
 
             foreach (var projectReference in projectFile.ProjectReferences)
@@ -251,8 +250,7 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
                     Category: FindingCategory.UnreferencedProject,
                     FilePath: project.FilePath,
                     LineNumber: projectReference.LineNumber,
-                    CharacterOffset: 1,
-                    Symbol: null));
+                    CharacterOffset: 1));
             }
         }
 

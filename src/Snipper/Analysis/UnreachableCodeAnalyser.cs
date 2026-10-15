@@ -120,8 +120,7 @@ public sealed class UnreachableCodeAnalyser(AnalysisExclusions? exclusions = nul
                         Category: FindingCategory.UnreachableCode,
                         FilePath: lineSpan.Path ?? string.Empty,
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
-                        CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-                        Symbol: null));
+                        CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
 
                 // Everything after the first unreachable statement in this block is

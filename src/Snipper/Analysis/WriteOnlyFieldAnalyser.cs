@@ -130,8 +130,7 @@ public sealed class WriteOnlyFieldAnalyser(AnalysisExclusions? exclusions = null
                         Category: FindingCategory.WriteOnlyField,
                         FilePath: lineSpan.Path ?? string.Empty,
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
-                        CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-                        Symbol: field));
+                        CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
             }
         }

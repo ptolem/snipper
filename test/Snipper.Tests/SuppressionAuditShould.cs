@@ -374,7 +374,6 @@ public sealed class SuppressionAuditShould
             Category: FindingCategory.UnusedPrivateMember,
             FilePath: path,
             LineNumber: 1,
-            CharacterOffset: 0,
-            Symbol: null);
+            CharacterOffset: 0);
     }
 }

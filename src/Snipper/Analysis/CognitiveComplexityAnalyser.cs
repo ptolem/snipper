@@ -181,8 +181,7 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
                         Category: FindingCategory.Complexity,
                         FilePath: lineSpan.Path ?? string.Empty,
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
-                        CharacterOffset: lineSpan.StartLinePosition.Character + 1,
-                        Symbol: null));
+                        CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
             }
         }

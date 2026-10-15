@@ -38,8 +38,7 @@ public sealed partial class ReportOrderingShould
             Category: FindingCategory.UnusedUsingDirective,
             FilePath: path,
             LineNumber: line,
-            CharacterOffset: character,
-            Symbol: null);
+            CharacterOffset: character);
 
     /// <summary>
     /// The deliberate worst case: several findings sharing one path and one certainty,
