@@ -43,20 +43,14 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new List<SnipperFinding>();
-        var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
         var usageIndex = SolutionUsageIndex.Get(solution);
         var graph = InheritanceGraph.Get(solution);
 
         // Phase 1: gather candidate classes (syntax pre-filtered, symbol-confirmed).
         var candidates = new List<CandidateClass>();
         var familyCandidates = new List<ISymbol>();
-        foreach (var project in solution.Projects)
+        foreach (var (project, documents) in AnalysisScope.Get(solution))
         {
-            if (!project.SupportsCompilation)
-            {
-                continue;
-            }
-
             progress?.Invoke($"HierarchyDeadCodeAnalyser: scanning {project.Name}");
 
             var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
@@ -68,16 +62,10 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
             var hasFriendAssemblies = compilation.Assembly.GetAttributes()
                 .Any(static a => a.AttributeClass?.Name is "InternalsVisibleTo" or "InternalsVisibleToAttribute");
 
-            foreach (var document in project.Documents)
+            foreach (var (document, root) in documents)
             {
-                if (!document.SupportsSyntaxTree)
-                {
-                    continue;
-                }
-
                 var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                if (semanticModel is null || root is null || ExclusionEngine.ShouldSkipDocument(document.FilePath, root, analysisRoots))
+                if (semanticModel is null)
                 {
                     continue;
                 }

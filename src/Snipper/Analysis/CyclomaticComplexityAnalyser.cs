@@ -72,31 +72,14 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
         ArgumentNullException.ThrowIfNull(solution);
 
         var findings = new List<SnipperFinding>();
-        var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
 
-        foreach (var project in solution.Projects)
+        foreach (var (project, documents) in AnalysisScope.Get(solution))
         {
-            if (!project.SupportsCompilation)
-            {
-                continue;
-            }
-
             progress?.Invoke($"CyclomaticComplexityAnalyser: scanning {project.Name}");
 
-            foreach (var document in project.Documents)
+            foreach (var (document, root) in documents)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-
-                if (!document.SupportsSyntaxTree)
-                {
-                    continue;
-                }
-
-                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                if (root is null || ExclusionEngine.ShouldSkipDocument(document.FilePath, root, analysisRoots))
-                {
-                    continue;
-                }
 
                 // Complexity thresholds are a review trigger, and nobody reviews a test
                 // fixture. Shared with SNP0034 - see ExclusionEngine.IsTestCode.

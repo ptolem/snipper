@@ -37,31 +37,13 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new List<SnipperFinding>();
-        var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
 
-        foreach (var project in solution.Projects)
+        foreach (var (project, documents) in AnalysisScope.Get(solution))
         {
-            if (!project.SupportsCompilation)
-            {
-                continue;
-            }
-
             progress?.Invoke($"CommentedCodeAnalyser: scanning {project.Name}");
 
-            foreach (var document in project.Documents)
+            foreach (var (document, root) in documents)
             {
-                if (!document.SupportsSyntaxTree)
-                {
-                    continue;
-                }
-
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                if (semanticModel is null || root is null || ExclusionEngine.ShouldSkipDocument(document.FilePath, root, analysisRoots))
-                {
-                    continue;
-                }
-
                 foreach (var block in CollectCommentBlocks(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -95,9 +77,16 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
                         continue;
                     }
 
-                    if (ExclusionEngine.IsNamespaceExcluded(block.Anchor, semanticModel, _exclusions, cancellationToken))
+                    // The rule is syntax-only; a semantic model is fetched just for namespace
+                    // exclusion, and only once a block has qualified and exclusions are configured.
+                    if (_exclusions.Namespaces.Count > 0)
                     {
-                        continue;
+                        var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                        if (model is null
+                            || ExclusionEngine.IsNamespaceExcluded(block.Anchor, model, _exclusions, cancellationToken))
+                        {
+                            continue;
+                        }
                     }
 
                     var lineSpan = block.Location.GetLineSpan();

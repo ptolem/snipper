@@ -19,7 +19,6 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new List<SnipperFinding>();
-        var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
         var usageIndex = SolutionUsageIndex.Get(solution);
 
         // Binding is deliberately sequential: workspace compilations are built with
@@ -27,25 +26,14 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
         // silently loses symbol information. Parallelism lives in the syntax-only
         // SolutionUsageIndex; reference searches stay sequential but are restricted
         // to the handful of documents that textually contain the member name.
-        foreach (var project in solution.Projects)
+        foreach (var (project, documents) in AnalysisScope.Get(solution))
         {
-            if (!project.SupportsCompilation)
-            {
-                continue;
-            }
-
             progress?.Invoke($"UnusedPrivateMemberAnalyser: scanning {project.Name}");
 
-            foreach (var document in project.Documents)
+            foreach (var (document, root) in documents)
             {
-                if (!document.SupportsSyntaxTree)
-                {
-                    continue;
-                }
-
                 var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                if (semanticModel is null || root is null || ExclusionEngine.ShouldSkipDocument(document.FilePath, root, analysisRoots))
+                if (semanticModel is null)
                 {
                     continue;
                 }

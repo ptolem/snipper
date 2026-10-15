@@ -28,7 +28,6 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         ArgumentNullException.ThrowIfNull(solution);
         progress?.Invoke("UnusedNonPrivateMemberAnalyser: scanning DI registrations");
         var diRegisteredTypes = await DiRegistrationScanner.ScanAsync(solution, cancellationToken).ConfigureAwait(false);
-        var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
         var usageIndex = SolutionUsageIndex.Get(solution);
         var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
 
@@ -36,13 +35,8 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         // evidence filters, usage-index search-document pre-computation),
         // sequential per the workspace's ConcurrentBuild=false contract.
         var candidates = new List<Candidate>();
-        foreach (var project in solution.Projects)
+        foreach (var (project, documents) in AnalysisScope.Get(solution))
         {
-            if (!project.SupportsCompilation)
-            {
-                continue;
-            }
-
             progress?.Invoke($"UnusedNonPrivateMemberAnalyser: scanning {project.Name}");
 
             var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
@@ -54,16 +48,10 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
             var hasFriendAssemblies = compilation.Assembly.GetAttributes()
                 .Any(static a => a.AttributeClass?.Name is "InternalsVisibleTo" or "InternalsVisibleToAttribute");
 
-            foreach (var document in project.Documents)
+            foreach (var (document, root) in documents)
             {
-                if (!document.SupportsSyntaxTree)
-                {
-                    continue;
-                }
-
                 var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                if (semanticModel is null || root is null || ExclusionEngine.ShouldSkipDocument(document.FilePath, root, analysisRoots))
+                if (semanticModel is null)
                 {
                     continue;
                 }

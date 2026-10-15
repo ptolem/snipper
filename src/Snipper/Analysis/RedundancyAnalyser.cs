@@ -26,30 +26,18 @@ public sealed class RedundancyAnalyser(AnalysisExclusions? exclusions = null) : 
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new List<SnipperFinding>();
-        var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
 
         // Sequential binding per the workspace's ConcurrentBuild=false contract.
         // Candidate sets are tiny (trailing literals / explicit type lists), so
         // speculation stays cheap even on large solutions.
-        foreach (var project in solution.Projects)
+        foreach (var (project, documents) in AnalysisScope.Get(solution))
         {
-            if (!project.SupportsCompilation)
-            {
-                continue;
-            }
-
             progress?.Invoke($"RedundancyAnalyser: scanning {project.Name}");
 
-            foreach (var document in project.Documents)
+            foreach (var (document, root) in documents)
             {
-                if (!document.SupportsSyntaxTree)
-                {
-                    continue;
-                }
-
                 var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                if (semanticModel is null || root is null || ExclusionEngine.ShouldSkipDocument(document.FilePath, root, analysisRoots))
+                if (semanticModel is null)
                 {
                     continue;
                 }

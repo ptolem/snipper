@@ -38,7 +38,6 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new List<SnipperFinding>();
-        var analysisRoots = ExclusionEngine.GetAnalysisRootDirectories(solution);
         var usageIndex = SolutionUsageIndex.Get(solution);
         var graph = InheritanceGraph.Get(solution);
         var frameworkEvidence = FrameworkEvidenceIndex.Get(solution);
@@ -46,13 +45,8 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
         // Sequential binding per the workspace's ConcurrentBuild=false contract.
         // Syntax gates run first everywhere: modifier/attribute checks and the
         // this/base token scan happen before any semantic binding.
-        foreach (var project in solution.Projects)
+        foreach (var (project, documents) in AnalysisScope.Get(solution))
         {
-            if (!project.SupportsCompilation)
-            {
-                continue;
-            }
-
             progress?.Invoke($"TighteningAnalyser: scanning {project.Name}");
 
             var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
@@ -64,16 +58,10 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
             var hasFriendAssemblies = compilation.Assembly.GetAttributes()
                 .Any(static a => a.AttributeClass?.Name is "InternalsVisibleTo" or "InternalsVisibleToAttribute");
 
-            foreach (var document in project.Documents)
+            foreach (var (document, root) in documents)
             {
-                if (!document.SupportsSyntaxTree)
-                {
-                    continue;
-                }
-
                 var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                if (semanticModel is null || root is null || ExclusionEngine.ShouldSkipDocument(document.FilePath, root, analysisRoots))
+                if (semanticModel is null)
                 {
                     continue;
                 }
