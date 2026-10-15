@@ -13,11 +13,9 @@ using Snipper.Models;
 /// reflection, or from another file — zero references is a complete proof.
 /// Tier 1 (Guaranteed).
 /// </summary>
-public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class UnusedLocalVariableAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0009"];
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -81,11 +79,6 @@ public sealed class UnusedLocalVariableAnalyser(AnalysisExclusions? exclusions =
                     if (enclosingStatement is not null
                         && UnreachableCodeGate.MayStartUnreachable(enclosingStatement)
                         && semanticModel.AnalyzeControlFlow(enclosingStatement) is { StartPointIsReachable: false })
-                    {
-                        continue;
-                    }
-
-                    if (ExclusionEngine.IsNamespaceExcluded(node, semanticModel, _exclusions, documentToken))
                     {
                         continue;
                     }

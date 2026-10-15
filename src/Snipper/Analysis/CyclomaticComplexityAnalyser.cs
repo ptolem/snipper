@@ -54,12 +54,10 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
     /// <summary>ReSharper's own default for its complexity inspection.</summary>
     public const int DefaultMaxComplexity = 15;
 
-    private readonly AnalysisExclusions _exclusions;
     private readonly int _maxComplexity;
 
-    public CyclomaticComplexityAnalyser(AnalysisExclusions? exclusions = null, int maxComplexity = DefaultMaxComplexity)
+    public CyclomaticComplexityAnalyser(int maxComplexity = DefaultMaxComplexity)
     {
-        _exclusions = exclusions ?? AnalysisExclusions.None;
         _maxComplexity = maxComplexity > 0 ? maxComplexity : DefaultMaxComplexity;
     }
 
@@ -79,7 +77,7 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
         await Parallel.ForEachAsync(
             documents,
             AnalysisParallelism.CreateOptions(cancellationToken),
-            async (scopedDocument, documentToken) =>
+            (scopedDocument, documentToken) =>
             {
                 var (document, root) = scopedDocument;
 
@@ -87,7 +85,7 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
                 // fixture. Shared with SNP0034 - see ExclusionEngine.IsTestCode.
                 if (ExclusionEngine.IsTestCode(document.FilePath, document.Project.Name))
                 {
-                    return;
+                    return ValueTask.CompletedTask;
                 }
 
                 // One walk per document, scoring each callable body it finds. The
@@ -109,19 +107,6 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
                         continue;
                     }
 
-                    // Namespace exclusion is opt-in and needs a semantic model, which this analyser
-                    // otherwise never asks for. With no exclusions configured the check cannot
-                    // change the outcome, so it is skipped rather than paid for.
-                    if (_exclusions.Namespaces.Count > 0)
-                    {
-                        var model = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
-                        if (model is null
-                            || ExclusionEngine.IsNamespaceExcluded(node, model, _exclusions, documentToken))
-                        {
-                            continue;
-                        }
-                    }
-
                     var lineSpan = node.GetLocation().GetLineSpan();
                     findings.Add(new SnipperFinding(
                         RuleId: "SNP0033",
@@ -133,6 +118,8 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
                         CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
+
+                return ValueTask.CompletedTask;
             }).ConfigureAwait(false);
 
         return [.. findings];

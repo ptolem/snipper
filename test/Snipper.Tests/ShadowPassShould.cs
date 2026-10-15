@@ -10,18 +10,19 @@ using Xunit;
 // end-to-end CLI suites.
 [Collection("CliRuns")]
 /// <summary>
-/// Wave 4 / 4A: the 4A shadow pass, end to end.
+/// Wave 4 / 4A: counting what suppression hides, end to end.
 /// <para>
 /// The unit tests in <c>SuppressionAuditShould</c> pin the attribution arithmetic, and the
 /// end-to-end tests in <c>CliRunnerShould</c> pin the <i>unconfigured</i> case — where
 /// <c>shadowAnalysisRan</c> is correctly false. Neither exercised a real namespace
-/// exclusion driving the shadow pass, which left a hole: an audit whose lifted pass was not
-/// actually lifted reported zero hidden findings and no test noticed.
+/// exclusion reaching the audit, which left a hole: when this was a lifted second pass, one
+/// that was not actually lifted reported zero hidden findings and no test noticed.
 /// </para>
 /// <para>
-/// That is the failure this file exists to catch. If the lifted pass stops running with
-/// exclusions lifted, hidden findings silently become zero — the audit keeps working, the
-/// JSON stays valid, and the only symptom is a wrong number.
+/// That is the failure this file exists to catch, whatever the mechanism. Namespace
+/// exclusion is now a filter over the findings of the one analysis pass; if what it hides
+/// stops reaching the audit, hidden findings silently become zero — the audit keeps working,
+/// the JSON stays valid, and the only symptom is a wrong number.
 /// </para>
 /// </summary>
 public sealed class ShadowPassShould : IDisposable
@@ -94,10 +95,10 @@ public sealed class ShadowPassShould : IDisposable
     {
         var suppression = await AuditAsync(ExcludeShadowing);
 
-        // Both halves matter. shadowAnalysisRan proves a lifted pass was scheduled; the
-        // positive hidden count proves it was lifted *and* that its findings were attributed
-        // to the namespace channel rather than dropped. A pass that ran without lifting would
-        // report zero here and still look healthy.
+        // Both halves matter. shadowAnalysisRan says the namespace channel was measured; the
+        // positive hidden count proves what the exclusion hid reached the audit and was
+        // attributed to the namespace channel rather than dropped. Losing it would report
+        // zero here and still look healthy.
         suppression.GetProperty("shadowAnalysisRan").GetBoolean().Should().BeTrue();
         suppression.GetProperty("totals").GetProperty("findingsHiddenByShadow").GetInt32()
             .Should().BeGreaterThan(0);
@@ -112,21 +113,22 @@ public sealed class ShadowPassShould : IDisposable
     {
         var suppression = await AuditAsync(ExcludeTwoNamespaces);
 
-        // A namespace exclusion suppresses before findings exist, so its cost belongs in
-        // hidden-by-shadow. Charging it to findingsDropped instead would double-count: the
-        // dropped total is computed from the post-analysis filter.
+        // A namespace exclusion hides findings before the report-time filter sees them, so
+        // its cost belongs in hidden-by-shadow. Charging it to findingsDropped instead would
+        // double-count: the dropped total is computed from the report-time filter.
         suppression.GetProperty("totals").GetProperty("findingsDropped").GetInt32().Should().Be(0);
         suppression.GetProperty("totals").GetProperty("findingsHiddenByShadow").GetInt32()
             .Should().BeGreaterThan(0);
 
-        // Namespace exclusions are reported as one aggregate row rather than per namespace —
-        // a deliberate limit, since the shadow pass measures them together. Assert the
-        // aggregate shape so a future change to per-namespace reporting is a deliberate edit.
-        var channel = suppression.GetProperty("namespaceExclusions").EnumerateArray()
-            .Should().ContainSingle().Subject;
-        channel.GetProperty("suppressedCount").GetInt32().Should().BeGreaterThan(0);
-        channel.GetProperty("selector").GetString().Should().Contain("CoreLib.Shadowing")
-            .And.Contain("CoreLib.Controls");
+        // One row per namespace, each with its own count, and the rows account for every
+        // hidden finding (no rule is disabled here, so nothing else is hidden).
+        // CoreLib.Controls declares nothing in the fixture, so its row is a measured zero.
+        var rows = suppression.GetProperty("namespaceExclusions").EnumerateArray()
+            .ToDictionary(r => r.GetProperty("selector").GetString()!, r => r.GetProperty("suppressedCount").GetInt32());
+        rows.Keys.Should().BeEquivalentTo(["CoreLib.Controls", "CoreLib.Shadowing"]);
+        rows["CoreLib.Shadowing"].Should().BeGreaterThan(0);
+        rows["CoreLib.Controls"].Should().Be(0);
+        rows.Values.Sum().Should().Be(suppression.GetProperty("totals").GetProperty("findingsHiddenByShadow").GetInt32());
     }
 
     [Fact]
@@ -143,9 +145,9 @@ public sealed class ShadowPassShould : IDisposable
     [Fact]
     public async Task Not_Run_The_Shadow_Pass_For_A_Path_Glob_Alone()
     {
-        // exclude.paths applies after analysis, so nothing is hidden before analysis and a
-        // shadow pass would be pure waste. If this ever starts running one, the conditioning
-        // has regressed.
+        // exclude.paths applies at report time, so nothing is hidden before it and there is no
+        // pre-report channel to measure. If this ever reports one, the conditioning has
+        // regressed.
         var suppression = await AuditAsync(
             """
             { "version": 1, "exclude": { "paths": ["**/*.cs"] } }

@@ -18,11 +18,9 @@ using Snipper.Models;
 /// attributed events are out of scope (v1). Zero-reference events flag too —
 /// no other rule covers events.
 /// </summary>
-public sealed class EventNeverInvokedAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class EventNeverInvokedAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0030"];
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -70,7 +68,6 @@ public sealed class EventNeverInvokedAnalyser(AnalysisExclusions? exclusions = n
                     }
 
                     if (ExclusionEngine.ShouldExclude(eventSymbol)
-                        || ExclusionEngine.IsNamespaceExcluded(eventSymbol, _exclusions)
                         || InterfaceImplementationQuery.IsInterfaceImplementation(eventSymbol))
                     {
                         continue;

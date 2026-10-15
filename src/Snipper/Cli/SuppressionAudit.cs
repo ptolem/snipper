@@ -108,9 +108,10 @@ internal sealed record SuppressionTotals(
 /// Wave 4 / 4A output: what Snipper's suppressions are actually hiding.
 /// </summary>
 /// <param name="ShadowAnalysisRan">
-/// False when the audit ran without a shadow pass, meaning the pre-analysis channels
-/// (disabled rules, namespace exclusions) could only be counted to the extent their
-/// findings survived into the normal set. Consumers must not read a zero here as
+/// False when neither disabled rules nor namespace exclusions were configured, so there
+/// was nothing to measure for them. When disabled rules are configured their findings are
+/// counted from a separate pass over the removed analysers; namespace exclusions are always
+/// counted exactly, from the findings they hid. Consumers must not read a zero here as
 /// "nothing suppressed".
 /// </param>
 internal sealed record SuppressionAudit(
@@ -124,13 +125,13 @@ internal sealed record SuppressionAudit(
     bool ShadowAnalysisRan);
 
 /// <summary>
-/// Builds a <see cref="SuppressionAudit"/> from findings already in hand plus, for the
-/// two pre-analysis channels, the results of an opt-in shadow pass.
+/// Builds a <see cref="SuppressionAudit"/> from findings already in hand: the visible set,
+/// what namespace exclusion hid from it, and what the disabled-rule pass found.
 ///
 /// Pure and Roslyn-free so the attribution rules are unit-testable without a workspace.
 /// Attribution is exact rather than approximate: a finding suppressed by both a disabled
-/// rule and a namespace is credited to the disabled rule only, because the namespace
-/// shadow set is computed as a difference against the disabled-rule shadow set.
+/// rule and a namespace is credited to the disabled rule only, because the disabled
+/// analysers never ran in the normal pass, so namespace exclusion never saw their findings.
 /// </summary>
 internal static class SuppressionAuditBuilder
 {
@@ -138,20 +139,19 @@ internal static class SuppressionAuditBuilder
     /// Builds the audit.
     /// </summary>
     /// <param name="analysedFindings">
-    /// Findings from the normal run: namespace exclusions applied, disabled analysers
+    /// Findings from the normal run with namespace exclusions applied and disabled analysers
     /// removed. This is the pre-report-filter set.
     /// </param>
     /// <param name="config">Resolved configuration.</param>
     /// <param name="minimumCertainty">The <c>--certainty-tier</c> floor, if given.</param>
     /// <param name="disabledRuleShadowFindings">
-    /// Findings from the disabled analysers alone, namespace exclusions still applied.
-    /// Empty when no shadow pass ran.
+    /// Findings from the disabled analysers alone. Empty when no disabled-rule pass ran.
     /// </param>
-    /// <param name="namespaceShadowFindings">
-    /// Findings revealed by lifting namespace exclusions, excluding anything already
-    /// attributed to a disabled rule. Empty when no shadow pass ran.
+    /// <param name="namespaceExcludedFindings">
+    /// Findings of the normal run that namespace exclusion hid, each with the exclusion that
+    /// covered it, so the audit reports one row per namespace.
     /// </param>
-    /// <param name="shadowAnalysisRan">Whether the shadow inputs above are real.</param>
+    /// <param name="shadowAnalysisRan">Whether the disabled-rule input above is real.</param>
     /// <param name="globMatchesNoFile">
     /// For a path glob, true when it matches no file on disk — the only *certain*
     /// signal that a glob is stale. Null when file inventory was unavailable.
@@ -165,7 +165,7 @@ internal static class SuppressionAuditBuilder
         SnipperConfig config,
         CertaintyTier? minimumCertainty,
         IReadOnlyList<SnipperFinding>? disabledRuleShadowFindings,
-        IReadOnlyList<SnipperFinding>? namespaceShadowFindings,
+        IReadOnlyList<NamespaceExcludedFinding>? namespaceExcludedFindings,
         bool shadowAnalysisRan,
         Func<string, bool>? globMatchesNoFile,
         Func<string, bool>? namespaceExists)
@@ -236,8 +236,8 @@ internal static class SuppressionAuditBuilder
             }
         }
 
-        // Pre-analysis channels. Counts come from the shadow sets, not from Classify:
-        // these findings were never in analysedFindings to begin with.
+        // Disabled rules and namespace exclusions. Counts come from the sets handed in, not
+        // from Classify: these findings were never in analysedFindings to begin with.
         var shadowHidden = 0;
 
         if (shadowAnalysisRan && disabledRuleShadowFindings is { Count: > 0 })
@@ -249,18 +249,17 @@ internal static class SuppressionAuditBuilder
             }
         }
 
-        if (shadowAnalysisRan && namespaceShadowFindings is { Count: > 0 })
+        var droppedByNamespace = new Dictionary<string, (int Count, SortedSet<string> Rules)>(StringComparer.Ordinal);
+        foreach (var excluded in namespaceExcludedFindings ?? [])
         {
-            // Reported as a single aggregate entry: attributing per namespace would need
-            // one shadow pass per namespace, and a finding's containing namespace is not
-            // recoverable from the finding itself.
-            shadowHidden += namespaceShadowFindings.Count;
+            Tally(droppedByNamespace, excluded.Exclusion, excluded.Finding.RuleId);
+            shadowHidden++;
         }
 
         var pathGlobEntries = BuildEntries(SuppressionChannel.PathGlob, config.ExcludedPathGlobs, droppedByPathGlob, Detail: null);
         var severityEntries = BuildSeverityEntries(config, downgradedByRule, hiddenByOverride, analysedFindings);
         var disabledRuleEntries = BuildEntries(SuppressionChannel.DisabledRule, config.DisabledRules, droppedByRule, Detail: null);
-        var namespaceEntries = BuildNamespaceEntries(config, namespaceShadowFindings, shadowAnalysisRan);
+        var namespaceEntries = BuildNamespaceEntries(config, droppedByNamespace);
 
         var certaintyEntry = minimumCertainty is { } tierFloor && tierCounts.Count > 0
             ? BuildEntries(SuppressionChannel.CertaintyTier, [tierFloor.ToString()], tierCounts, Detail: null).FirstOrDefault()
@@ -381,32 +380,22 @@ internal static class SuppressionAuditBuilder
         return [.. merged];
     }
 
+    /// <summary>
+    /// One row per exclusion, crediting each hidden finding to the nearest exclusion that
+    /// covered it. Every configured exclusion gets a row even when it hid nothing, which is
+    /// what makes a stale one visible; a command-line exclusion gets one when it hid
+    /// something.
+    /// </summary>
     private static SuppressionEntry[] BuildNamespaceEntries(
         SnipperConfig config,
-        IReadOnlyList<SnipperFinding>? namespaceShadowFindings,
-        bool shadowAnalysisRan)
+        Dictionary<string, (int Count, SortedSet<string> Rules)> droppedByNamespace)
     {
-        if (config.ExcludedNamespaces.Count == 0)
-        {
-            return [];
-        }
+        var selectors = config.ExcludedNamespaces
+            .Concat(droppedByNamespace.Keys)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal);
 
-        var selectors = config.ExcludedNamespaces.Order(StringComparer.Ordinal).ToArray();
-        var count = shadowAnalysisRan ? namespaceShadowFindings?.Count ?? 0 : 0;
-
-        // Per-namespace counts need one shadow pass per namespace; the aggregate is
-        // reported instead and the limit is stated rather than implied.
-        var detail = shadowAnalysisRan
-            ? $"aggregate over {selectors.Length} namespace(s); per-namespace split not available"
-            : "not measured - rerun with --audit-suppressions and namespace exclusions configured";
-
-        return [new SuppressionEntry(
-            Channel: SuppressionChannel.NamespaceExclusion,
-            Selector: string.Join(", ", selectors),
-            SuppressedCount: count,
-            DowngradedCount: 0,
-            RuleIds: [],
-            Detail: detail)];
+        return BuildEntries(SuppressionChannel.NamespaceExclusion, selectors, droppedByNamespace, Detail: null);
     }
 
     private static ObsoleteSuppression[] BuildObsolete(

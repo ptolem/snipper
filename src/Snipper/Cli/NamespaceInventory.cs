@@ -111,7 +111,7 @@ internal static class NamespaceInventory
 
     /// <summary>
     /// Namespace exclusions match by prefix: excluding <c>A.B</c> also excludes
-    /// <c>A.B.C</c>. This mirrors <see cref="AnalysisExclusions.Covers"/>, which walks
+    /// <c>A.B.C</c>. This mirrors <see cref="AnalysisExclusions.FindCoveringExclusion"/>, which walks
     /// *up* from a symbol's namespace looking for an excluded ancestor.
     ///
     /// The probe therefore has to answer the inverse question — "is the configured

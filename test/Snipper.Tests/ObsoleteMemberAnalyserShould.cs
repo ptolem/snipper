@@ -2,6 +2,7 @@ namespace Snipper.Tests;
 
 using FluentAssertions;
 using Snipper.Analysis;
+using Snipper.Cli;
 using Snipper.Models;
 using Xunit;
 
@@ -73,8 +74,8 @@ public sealed class ObsoleteMemberAnalyserShould(SampleSolutionFixture fixture)
         withoutExclusions.Should().Contain(f => f.RuleId == "SNP0018" && f.Message.Contains("ExcludedOldMethod", StringComparison.Ordinal));
 
         var exclusions = AnalysisExclusions.Create(["Excluded.Fake"]);
-        var withExclusions = await new ObsoleteMemberAnalyser(exclusions).AnalyzeAsync(fixture.Solution, CancellationToken.None);
-        withExclusions.Should().NotContain(f => f.RuleId == "SNP0018" && f.Message.Contains("ExcludedOldMethod", StringComparison.Ordinal));
+        var withExclusions = await NamespaceExclusionFilter.ApplyAsync(withoutExclusions, fixture.Solution, exclusions, CancellationToken.None);
+        withExclusions.Visible.Should().NotContain(f => f.RuleId == "SNP0018" && f.Message.Contains("ExcludedOldMethod", StringComparison.Ordinal));
     }
 
     // -----------------------------------------------------------------------

@@ -14,10 +14,8 @@ using Snipper.Models;
 /// see it — but per-document GetDiagnostics repeats the same full-unit analysis
 /// one semantic model at a time.
 /// </summary>
-public sealed class UnusedUsingDirectiveAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class UnusedUsingDirectiveAnalyser : IWorkspaceAnalyser
 {
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
-
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0019"];
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
@@ -82,12 +80,6 @@ public sealed class UnusedUsingDirectiveAnalyser(AnalysisExclusions? exclusions 
                 }
 
                 var node = root.FindNode(diagnostic.Location.SourceSpan, getInnermostNodeForTie: true);
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-                if (semanticModel is null || ExclusionEngine.IsNamespaceExcluded(node, semanticModel, _exclusions, cancellationToken))
-                {
-                    continue;
-                }
-
                 var directive = node as UsingDirectiveSyntax ?? node.FirstAncestorOrSelf<UsingDirectiveSyntax>();
                 if (directive is null)
                 {

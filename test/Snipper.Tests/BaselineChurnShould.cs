@@ -64,46 +64,27 @@ public sealed class BaselineChurnShould : IDisposable
     }
 
     [Fact]
-    public void Skip_The_Suppression_Independent_Pass_Without_A_Baseline()
+    public void Skip_The_Disabled_Rule_Pass_Without_A_Baseline()
     {
         // No baseline means nothing to churn, so a user who has not adopted baselines must
         // never pay for the extra analysis pass no matter how much they suppress.
-        BaselineService.RequiresSuppressionIndependentFingerprints(
-                baselineRequested: false,
-                excludedNamespaceCount: 5,
-                removedAnalyserCount: 3)
+        BaselineService.RequiresDisabledAnalyserPass(baselineRequested: false, removedAnalyserCount: 3)
             .Should().BeFalse();
     }
 
     [Fact]
-    public void Skip_The_Suppression_Independent_Pass_For_Churn_Free_Channels()
+    public void Skip_The_Disabled_Rule_Pass_When_No_Analyser_Was_Removed()
     {
-        // exclude.paths, severity overrides and --certainty-tier all apply after
-        // fingerprinting, so they cannot churn the baseline and must not trigger a pass.
-        BaselineService.RequiresSuppressionIndependentFingerprints(
-                baselineRequested: true,
-                excludedNamespaceCount: 0,
-                removedAnalyserCount: 0)
+        // Every other channel - namespace exclusions included - hides findings the normal
+        // pass already produced, so none of them may trigger a second pass.
+        BaselineService.RequiresDisabledAnalyserPass(baselineRequested: true, removedAnalyserCount: 0)
             .Should().BeFalse();
     }
 
     [Fact]
-    public void Require_The_Suppression_Independent_Pass_For_Namespace_Exclusions()
+    public void Require_The_Disabled_Rule_Pass_For_A_Removed_Analyser()
     {
-        BaselineService.RequiresSuppressionIndependentFingerprints(
-                baselineRequested: true,
-                excludedNamespaceCount: 1,
-                removedAnalyserCount: 0)
-            .Should().BeTrue();
-    }
-
-    [Fact]
-    public void Require_The_Suppression_Independent_Pass_For_A_Removed_Analyser()
-    {
-        BaselineService.RequiresSuppressionIndependentFingerprints(
-                baselineRequested: true,
-                excludedNamespaceCount: 0,
-                removedAnalyserCount: 1)
+        BaselineService.RequiresDisabledAnalyserPass(baselineRequested: true, removedAnalyserCount: 1)
             .Should().BeTrue();
     }
 

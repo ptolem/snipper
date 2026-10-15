@@ -49,7 +49,7 @@ snipper <path-to-solution-or-project> [output-file] [--format json|sarif] [--bas
 | `--duplicate-detection` | Opt in to duplicate-fragment detection (SNP0031). **Off by default**: token-normalized clone detection flags structurally uniform code, which is duplication by design in most codebases (every workspace analyser shares one project/document loop). Cheap relative to semantic analysis — **+0.7s** on this repository (11.4s → 12.1s, 5-run average). On an 81-project / ~3,000-file monorepo the whole run takes 125-255s depending on machine load, with the marginal cost sitting inside run-to-run noise, so it is never paid unless asked for. |
 | `--clone-drift` | Report the **temporal one-sided fix** in a clone set: a commit that changed one copy of a duplicated region without touching its siblings. Emits `SNP0032` — `High` when the change reads as a defensive fix (`null`/guard/`try`/`catch`/bounds), `Advisory` otherwise. **Implies `--duplicate-detection`** and reuses its shingling pass, so there is no second analysis. Costs no extra analysis either: history is read in two batched git calls regardless of how many clone sets exist. **Off by default**, and silent outside a git repository. See [Clone drift](#clone-drift). |
 | `--exclude-namespaces <list>` | Suppress findings in the given namespaces (exact match plus sub-namespaces). Repeatable; each occurrence may be a comma-separated list. Code in excluded namespaces still counts as usage evidence — references from it keep other members alive. Applies to SNP0001/0002/0005/0006/0008/0009/0010/0019/0020/0021/0022/0023/0024/0025/0026/0027/0028/0029/0030/0031; assembly-level rules (SNP0003/0004) and JSON keys (SNP0007) have no namespace concept. **`<global>`** excludes file-scope code — files declaring no namespace, such as a top-level-statements `Program.cs` or a file of global usings — which no namespace name can match. Excluded findings are still recorded in the baseline, so removing an exclusion later does not resurface them as new. |
-| `--audit-suppressions` | Report what your suppressions are actually hiding, per channel, and flag any that have gone stale. Adds a `suppression` section to the JSON report (omitted entirely when the flag is absent). **Off by default**, and free when you have no suppressions: measured at 0.0s on `Snipper.slnx` with no `snipper.json`, and 0.8s (~10% marginal) with an exclusion configured — the shadow passes reuse the memoized compilations and symbol indexes, so they cost far less than a second full analysis. See [Suppression audit](#suppression-audit). |
+| `--audit-suppressions` | Report what your suppressions are actually hiding, per channel, and flag any that have gone stale. Adds a `suppression` section to the JSON report (omitted entirely when the flag is absent). **Off by default**, and free unless a rule is disabled: namespace exclusions are counted from the findings they hid (measured at 0.0s on a 3,600-finding monorepo with five exclusions), and only a disabled rule needs its analyser run on its own, which reuses the memoized compilations and symbol indexes. See [Suppression audit](#suppression-audit). |
 | `--entropy-rate` | Report findings added per kLOC changed, normalized by churn, plus a month-over-month history. Requires `--baseline`. Adds an `entropyRate` section to the JSON report (omitted entirely when the flag is absent). **Off by default**, and costs no measurable analysis time (7.0s vs 6.8s on `Snipper.slnx`): the numerator is already computed for the baseline and the denominator is two git calls. See [Entropy rate](#entropy-rate). |
 | `--entropy-budget <per-kloc>` | Turn `--entropy-rate` into a gate: exit `3` when a **scored** rate exceeds the budget. **Opt-in, with no default** — no budget is ever applied unless you pass one, so upgrading cannot break an existing build. Fails *open*: a rate that could not be measured never fails the run. |
 | `--entropy-ledger <path>` | Append each scored run to a committed JSON ledger, and include per-month aggregates in the report. Implies `--entropy-rate`. Recommended to write from your default branch only; two branches writing the same ledger will conflict. |
@@ -180,12 +180,14 @@ Malformed files and unknown entries degrade to warnings, never failures.
 
 **No suppression channel can churn your baseline.** Every configuration produces an identical
 baseline, so adding or removing a suppression never turns untouched code into a wall of "new"
-findings. Two mechanisms get there:
+findings. Three mechanisms get there:
 
 | Channel | How it is kept churn-free |
 | --- | --- |
 | `exclude.paths`, `rules` severity overrides, `--certainty-tier` | Applied at report time, **after** fingerprinting. |
-| `exclude.namespaces`, `rules: "off"` | These suppress findings *before* they exist — namespace exclusions run inside the analysers, and a sole-rule analyser is never run at all. So when either is configured **and** you use `--baseline`, Snipper fingerprints the suppression-independent set: every finding that exists, ignoring config. Costs one extra analysis pass (~10% marginal, measured). |
+| `exclude.namespaces` | Applied to the findings right after analysis — the analysers never see it — so what it hides is already in hand and is fingerprinted with everything else. Costs nothing extra. |
+| `rules: "off"` | A sole-rule analyser is never run at all, so when one is disabled **and** you use `--baseline`, Snipper runs just that analyser on its own and fingerprints what it finds. |
+
 
 Two consequences worth stating plainly:
 
@@ -202,7 +204,7 @@ Run `--audit-suppressions` to see what those suppressions are hiding.
 snipper ./MyMonorepo.slnx report.json --audit-suppressions
 ```
 
-Suppressions work through five channels, and they do not all work the same way. Two of them remove findings before those findings exist, so an honest count needs the tool to re-run analysis with suppressions lifted — that shadow run is why the flag is opt-in, and why it is skipped entirely when there is nothing to audit.
+Suppressions work through five channels, and they do not all work the same way. Disabling a rule whose analyser emits nothing else stops those findings existing at all, so an honest count needs that analyser run on its own — that extra run is why the flag is opt-in, and it is skipped entirely when no rule is disabled. Namespace exclusions are counted exactly, from the findings they hid.
 
 The JSON report gains a `suppression` section (omitted completely when the flag is absent, so existing consumers see byte-identical output):
 
@@ -219,7 +221,10 @@ The JSON report gains a `suppression` section (omitted completely when the flag 
       "hiddenDebtPercent": 14
     },
     "disabledRules": [{ "channel": "DisabledRule", "selector": "SNP0024", "suppressedCount": 30, "ruleIds": ["SNP0024"] }],
-    "namespaceExclusions": [{ "channel": "NamespaceExclusion", "selector": "CoreLib.Shadowing, Does.Not.Exist", "suppressedCount": 5, "detail": "aggregate over 2 namespace(s); per-namespace split not available" }],
+    "namespaceExclusions": [
+      { "channel": "NamespaceExclusion", "selector": "CoreLib.Shadowing", "suppressedCount": 5, "ruleIds": ["SNP0005", "SNP0028"] },
+      { "channel": "NamespaceExclusion", "selector": "Does.Not.Exist", "suppressedCount": 0 }
+    ],
     "pathGlobs": [{ "channel": "PathGlob", "selector": "**/NoSuchDir/**", "suppressedCount": 0 }],
     "severityOverrides": [{ "selector": "SNP0018", "downgradedCount": 5, "detail": "-> Advisory (was Highx3, Moderatex2)" }],
     "obsolete": [
@@ -230,14 +235,14 @@ The JSON report gains a `suppression` section (omitted completely when the flag 
 }
 ```
 
-`hiddenDebtPercent` is the headline: `(dropped + hidden-before-analysis) / total debt`. On Snipper's own repository, disabling a single rule that emits one `Advisory` finding reports **33%** — one suppressed finding is a third of everything the tool finds there.
+`hiddenDebtPercent` is the headline: `(dropped + hidden by namespace exclusions and disabled rules) / total debt`. On Snipper's own repository, disabling a single rule that emits one `Advisory` finding reports **33%** — one suppressed finding is a third of everything the tool finds there.
 
 **Stale suppressions** are flagged with a confidence level, because the evidence genuinely differs:
 
 - `Certain` — the target provably does not exist: a glob matching no file in the tree, or an exclusion for an undeclared namespace. Safe to delete.
 - `Suspected` — the suppression matched nothing this run, but that can be legitimate. A rule that produced no findings may simply be clean; a glob over clean generated code is doing its job. Review, don't auto-delete.
 
-Two details worth knowing. A severity override can *cause* a suppression rather than soften one: `CertaintyTier` runs `Guaranteed=1 … Advisory=4` and the floor keeps `Certainty <= floor`, so a `High → Advisory` override pushes a finding *past* a `Moderate` floor. The audit credits the drop to the override rather than the floor. And namespace exclusions are reported as a single aggregate — per-namespace counts would need one shadow pass per namespace — with the `detail` field saying so rather than implying a split exists.
+Two details worth knowing. A severity override can *cause* a suppression rather than soften one: `CertaintyTier` runs `Guaranteed=1 … Advisory=4` and the floor keeps `Certainty <= floor`, so a `High → Advisory` override pushes a finding *past* a `Moderate` floor. The audit credits the drop to the override rather than the floor. And each namespace exclusion gets its own row, crediting a hidden finding to the nearest exclusion that covers it (`A.B` before `A`); an exclusion passed with `--exclude-namespaces` rather than configured gets a row when it hid something.
 
 ## Entropy rate
 

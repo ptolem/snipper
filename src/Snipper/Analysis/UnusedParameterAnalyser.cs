@@ -16,11 +16,9 @@ using Snipper.Models;
 /// extern, and explicit-interface-implementation signatures are contractual too.
 /// Tier 3 (Moderate).
 /// </summary>
-public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class UnusedParameterAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0010"];
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -74,11 +72,6 @@ public sealed class UnusedParameterAnalyser(AnalysisExclusions? exclusions = nul
                     }
 
                     if (ExclusionEngine.ShouldExclude(method))
-                    {
-                        continue;
-                    }
-
-                    if (ExclusionEngine.IsNamespaceExcluded(method, _exclusions))
                     {
                         continue;
                     }

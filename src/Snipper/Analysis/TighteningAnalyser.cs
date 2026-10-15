@@ -26,11 +26,9 @@ using Snipper.Models;
 /// implementations, and framework-evidence members are excluded, and the
 /// ≥1-reference usage gate keeps unused members with SNP0001/0005/0006.
 /// </summary>
-public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class TighteningAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0024"];
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -194,7 +192,6 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
         }
 
         if (ExclusionEngine.ShouldExclude(method)
-            || ExclusionEngine.IsNamespaceExcluded(method, _exclusions)
             || InterfaceImplementationQuery.IsInterfaceImplementation(method))
         {
             return null;
@@ -277,7 +274,7 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
             return null;
         }
 
-        if (ExclusionEngine.ShouldExclude(field) || ExclusionEngine.IsNamespaceExcluded(field, _exclusions))
+        if (ExclusionEngine.ShouldExclude(field))
         {
             return null;
         }
@@ -369,7 +366,6 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
         }
 
         if (ExclusionEngine.ShouldExclude(classSymbol)
-            || ExclusionEngine.IsNamespaceExcluded(classSymbol, _exclusions)
             || graph.HasAnyDerivedClass(classSymbol))
         {
             return null;
@@ -473,7 +469,6 @@ public sealed class TighteningAnalyser(AnalysisExclusions? exclusions = null) : 
         }
 
         if (ExclusionEngine.ShouldExclude(member)
-            || ExclusionEngine.IsNamespaceExcluded(member, _exclusions)
             || InterfaceImplementationQuery.IsInterfaceImplementation(member)
             || frameworkEvidence.IsUsed(member))
         {

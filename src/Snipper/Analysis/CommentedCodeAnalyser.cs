@@ -14,7 +14,7 @@ using Snipper.Models;
 /// the threshold; license headers, doc comments (a different trivia kind), URLs, and
 /// TODO/FIXME-style markers are excluded. Syntax-only scan.
 /// </summary>
-public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class CommentedCodeAnalyser : IWorkspaceAnalyser
 {
     private const int MinimumCommentLines = 2;
     private const double CodeLikeThreshold = 0.6;
@@ -26,8 +26,6 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
     private static readonly Regex MarkerStart = new(
         @"^\s*(TODO|FIXME|HACK|NOTE)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0020"];
 
@@ -44,10 +42,9 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
         await Parallel.ForEachAsync(
             documents,
             AnalysisParallelism.CreateOptions(cancellationToken),
-            async (scopedDocument, documentToken) =>
+            (scopedDocument, documentToken) =>
             {
-                var (document, root) = scopedDocument;
-                foreach (var block in CollectCommentBlocks(root))
+                foreach (var block in CollectCommentBlocks(scopedDocument.Root))
                 {
                     documentToken.ThrowIfCancellationRequested();
 
@@ -80,18 +77,6 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
                         continue;
                     }
 
-                    // The rule is syntax-only; a semantic model is fetched just for namespace
-                    // exclusion, and only once a block has qualified and exclusions are configured.
-                    if (_exclusions.Namespaces.Count > 0)
-                    {
-                        var model = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
-                        if (model is null
-                            || ExclusionEngine.IsNamespaceExcluded(block.Anchor, model, _exclusions, documentToken))
-                        {
-                            continue;
-                        }
-                    }
-
                     var lineSpan = block.Location.GetLineSpan();
                     findings.Add(new SnipperFinding(
                         RuleId: "SNP0020",
@@ -103,6 +88,8 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
                         CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
+
+                return ValueTask.CompletedTask;
             }).ConfigureAwait(false);
 
         return [.. findings];
@@ -140,9 +127,9 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
                 lastLine = -1;
 
                 var lines = StripBlockComment(trivia.ToString());
-                if (lines.Count >= MinimumCommentLines && trivia.Token.Parent is { } anchor)
+                if (lines.Count >= MinimumCommentLines)
                 {
-                    blocks.Add(new CommentBlock(lines, anchor, trivia.GetLocation().GetLineSpan().StartLinePosition.Line, trivia.GetLocation()));
+                    blocks.Add(new CommentBlock(lines, trivia.GetLocation().GetLineSpan().StartLinePosition.Line, trivia.GetLocation()));
                 }
             }
 
@@ -156,7 +143,7 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
 
     private static void FlushRun(List<CommentBlock> blocks, List<SyntaxTrivia>? run)
     {
-        if (run is null || run.Count < MinimumCommentLines || run[0].Token.Parent is not { } anchor)
+        if (run is null || run.Count < MinimumCommentLines)
         {
             return;
         }
@@ -167,7 +154,7 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
             lines.Add(StripLineComment(trivia.ToString()));
         }
 
-        blocks.Add(new CommentBlock(lines, anchor, run[0].GetLocation().GetLineSpan().StartLinePosition.Line, run[0].GetLocation()));
+        blocks.Add(new CommentBlock(lines, run[0].GetLocation().GetLineSpan().StartLinePosition.Line, run[0].GetLocation()));
     }
 
     private static string StripLineComment(string text)
@@ -232,5 +219,5 @@ public sealed class CommentedCodeAnalyser(AnalysisExclusions? exclusions = null)
         return false;
     }
 
-    private sealed record CommentBlock(List<string> Lines, SyntaxNode Anchor, int StartLine, Location Location);
+    private sealed record CommentBlock(List<string> Lines, int StartLine, Location Location);
 }

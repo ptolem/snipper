@@ -14,11 +14,9 @@ using Snipper.Models;
 /// Tier 4 (Advisory): configuration can flow through conventions, environment
 /// variables, and IConfiguration string indexing that static analysis cannot see.
 /// </summary>
-public sealed class ConfigurationBindingAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class ConfigurationBindingAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0007", "SNP0008"];
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     private static readonly FrozenSet<string> OptionsGenericTypeNames = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -146,11 +144,6 @@ public sealed class ConfigurationBindingAnalyser(AnalysisExclusions? exclusions 
             {
                 var location = leafProperty.Symbol.Locations.FirstOrDefault(static l => l.IsInSource);
                 if (location is null)
-                {
-                    continue;
-                }
-
-                if (ExclusionEngine.IsNamespaceExcluded(leafProperty.Symbol, _exclusions))
                 {
                     continue;
                 }

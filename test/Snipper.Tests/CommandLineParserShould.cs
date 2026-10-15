@@ -428,7 +428,7 @@ public class AnalyserFactoryShould
     [Fact]
     public void Build_The_Default_Nineteen_Analysers()
     {
-        var built = AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".", _directory);
+        var built = AnalyserFactory.Build(Options(), ".", _directory);
 
         built.Should().HaveCount(19);
     }
@@ -436,7 +436,7 @@ public class AnalyserFactoryShould
     [Fact]
     public void Build_Both_Complexity_Rules_By_Default()
     {
-        var built = AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".", _directory);
+        var built = AnalyserFactory.Build(Options(), ".", _directory);
 
         // Both complexity rules are default-on, and they are separate analysers rather
         // than one with a mode flag: the metrics disagree by construction, so a consumer
@@ -448,73 +448,26 @@ public class AnalyserFactoryShould
     [Fact]
     public void Add_The_Opt_In_Analysers_Only_When_Asked()
     {
-        AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".", _directory).Should().HaveCount(19);
-        AnalyserFactory.Build(Options(configAnalysis: true), AnalysisExclusions.None, ".", _directory)
+        AnalyserFactory.Build(Options(), ".", _directory).Should().HaveCount(19);
+        AnalyserFactory.Build(Options(configAnalysis: true), ".", _directory)
             .Should().HaveCount(20);
-        AnalyserFactory.Build(Options(duplicateDetection: true), AnalysisExclusions.None, ".", _directory)
+        AnalyserFactory.Build(Options(duplicateDetection: true), ".", _directory)
             .Should().HaveCount(20);
-        AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), AnalysisExclusions.None, ".", _directory)
+        AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), ".", _directory)
             .Should().HaveCount(21);
     }
 
     [Fact]
     public void Advertise_SNP0032_Only_When_Clone_Drift_Is_Enabled()
     {
-        var withoutDrift = AnalyserFactory.Build(Options(duplicateDetection: true), AnalysisExclusions.None, ".", _directory);
+        var withoutDrift = AnalyserFactory.Build(Options(duplicateDetection: true), ".", _directory);
         var withDrift = AnalyserFactory.Build(
-            Options(duplicateDetection: true, cloneDrift: true), AnalysisExclusions.None, ".", _directory);
+            Options(duplicateDetection: true, cloneDrift: true), ".", _directory);
 
         var duplication = withoutDrift.Single(a => a.RuleIds.Contains("SNP0031"));
         var drift = withDrift.Single(a => a.RuleIds.Contains("SNP0031"));
 
         duplication.RuleIds.Should().BeEquivalentTo(["SNP0031"]);
         drift.RuleIds.Should().BeEquivalentTo(["SNP0031", "SNP0032"]);
-    }
-
-    [Fact]
-    public void Partition_The_Exclusion_Agnostic_Analysers()
-    {
-        // The four package/project graph rules take no exclusions, so their output cannot
-        // change when exclusions are lifted. Everything else can.
-        var built = AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), AnalysisExclusions.None, ".", _directory);
-        var partition = AnalyserFactory.PartitionByExclusionSensitivity(built);
-
-        partition.Aware.Should().HaveCount(17);
-        partition.Agnostic.Select(a => a.GetType().Name).Should().BeEquivalentTo(
-        [
-            "UnreferencedPackageAnalyser",
-            "OrphanProjectAnalyser",
-            "RedundantTransitivePackageAnalyser",
-            "FrameworkInboxPackageAnalyser",
-        ]);
-    }
-
-    [Fact]
-    public void Partition_Every_Analyser_Into_Exactly_One_Half()
-    {
-        var built = AnalyserFactory.Build(Options(configAnalysis: true, duplicateDetection: true), AnalysisExclusions.None, ".", _directory);
-        var partition = AnalyserFactory.PartitionByExclusionSensitivity(built);
-
-        (partition.Aware.Count + partition.Agnostic.Count).Should().Be(built.Count);
-        partition.Aware.Should().NotIntersectWith(partition.Agnostic);
-    }
-
-    [Fact]
-    public void Partition_Survives_Being_Applied_Twice()
-    {
-        var built = AnalyserFactory.Build(Options(), AnalysisExclusions.None, ".", _directory);
-        var first = AnalyserFactory.PartitionByExclusionSensitivity(built);
-        var second = AnalyserFactory.PartitionByExclusionSensitivity(built);
-
-        second.Agnostic.Should().BeEquivalentTo(first.Agnostic);
-        second.Aware.Should().BeEquivalentTo(first.Aware);
-    }
-
-    [Fact]
-    public void Reject_A_Null_Analyser_List()
-    {
-        var act = () => AnalyserFactory.PartitionByExclusionSensitivity(null!);
-
-        act.Should().Throw<ArgumentNullException>();
     }
 }

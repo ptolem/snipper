@@ -55,7 +55,7 @@ public sealed class CyclomaticComplexityAnalyserShould
                 DocumentId.CreateNewId(projectId), "Code.cs", SourceText.From(source),
                 filePath: @"C:\repo\Probe\Code.cs");
 
-        var findings = await new CyclomaticComplexityAnalyser(null, maxComplexity)
+        var findings = await new CyclomaticComplexityAnalyser(maxComplexity)
             .AnalyzeAsync(solution, CancellationToken.None);
 
         return [.. findings];

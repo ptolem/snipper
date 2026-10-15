@@ -17,7 +17,7 @@ using Snipper.Models;
 /// fields demote to Moderate — serializers read and write reflectively.
 /// Tier 2 (High).
 /// </summary>
-public sealed class WriteOnlyFieldAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class WriteOnlyFieldAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0021"];
 
@@ -32,8 +32,6 @@ public sealed class WriteOnlyFieldAnalyser(AnalysisExclusions? exclusions = null
         "XmlElement", "XmlElementAttribute",
         "JsonProperty", "JsonPropertyAttribute",
     }.ToFrozenSet(StringComparer.Ordinal);
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -88,8 +86,7 @@ public sealed class WriteOnlyFieldAnalyser(AnalysisExclusions? exclusions = null
                         continue;
                     }
 
-                    if (ExclusionEngine.ShouldExclude(field)
-                        || ExclusionEngine.IsNamespaceExcluded(field, _exclusions))
+                    if (ExclusionEngine.ShouldExclude(field))
                     {
                         continue;
                     }

@@ -11,11 +11,9 @@ using Snipper.Models;
 /// statement unconditionally exits (return/throw/break/continue/goto).
 /// Tier 1 (Guaranteed): control-flow proven via Roslyn flow analysis.
 /// </summary>
-public sealed class UnreachableCodeAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class UnreachableCodeAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0002"];
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -39,7 +37,7 @@ public sealed class UnreachableCodeAnalyser(AnalysisExclusions? exclusions = nul
                     return;
                 }
 
-                AnalyzeDocument(semanticModel, root, findings, _exclusions, documentToken);
+                AnalyzeDocument(semanticModel, root, findings, documentToken);
             }).ConfigureAwait(false);
 
         return [.. findings];
@@ -49,7 +47,6 @@ public sealed class UnreachableCodeAnalyser(AnalysisExclusions? exclusions = nul
         SemanticModel semanticModel,
         SyntaxNode root,
         ConcurrentBag<SnipperFinding> findings,
-        AnalysisExclusions exclusions,
         CancellationToken cancellationToken)
     {
         var reportedSpans = new List<TextSpan>();
@@ -97,19 +94,16 @@ public sealed class UnreachableCodeAnalyser(AnalysisExclusions? exclusions = nul
                     continue;
                 }
 
-                if (!ExclusionEngine.IsNamespaceExcluded(statement, semanticModel, exclusions, cancellationToken))
-                {
-                    var lineSpan = statement.GetLocation().GetLineSpan();
-                    findings.Add(new SnipperFinding(
-                        RuleId: "SNP0002",
-                        Title: "Unreachable Code",
-                        Message: "Statement can never execute; a preceding statement unconditionally exits the block.",
-                        Certainty: CertaintyTier.Guaranteed,
-                        Category: FindingCategory.UnreachableCode,
-                        FilePath: lineSpan.Path ?? string.Empty,
-                        LineNumber: lineSpan.StartLinePosition.Line + 1,
-                        CharacterOffset: lineSpan.StartLinePosition.Character + 1));
-                }
+                var lineSpan = statement.GetLocation().GetLineSpan();
+                findings.Add(new SnipperFinding(
+                    RuleId: "SNP0002",
+                    Title: "Unreachable Code",
+                    Message: "Statement can never execute; a preceding statement unconditionally exits the block.",
+                    Certainty: CertaintyTier.Guaranteed,
+                    Category: FindingCategory.UnreachableCode,
+                    FilePath: lineSpan.Path ?? string.Empty,
+                    LineNumber: lineSpan.StartLinePosition.Line + 1,
+                    CharacterOffset: lineSpan.StartLinePosition.Character + 1));
 
                 // Everything after the first unreachable statement in this block is
                 // dead too; report once and skip descendants to avoid noise.

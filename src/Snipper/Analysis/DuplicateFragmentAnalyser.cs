@@ -23,7 +23,6 @@ using Snipper.Models;
 /// its using lists stripped.
 /// </summary>
 public sealed class DuplicateFragmentAnalyser(
-    AnalysisExclusions? exclusions = null,
     CloneDriftDetector? cloneDrift = null,
     string? baseDirectory = null) : IWorkspaceAnalyser
 {
@@ -44,8 +43,6 @@ public sealed class DuplicateFragmentAnalyser(
     /// <see cref="Trace.TraceWarning(string, object?[])"/>, never silently.
     /// </summary>
     private const int MaxLocationsPerBucket = 512;
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     /// <summary>
     /// The directory named paths are made relative to, or null to derive one from the
@@ -85,7 +82,6 @@ public sealed class DuplicateFragmentAnalyser(
 
     private sealed record SourceFile(
         string Path,
-        CompilationUnitSyntax Unit,
         IReadOnlyList<string> Tokens,
         IReadOnlyList<(int Line, int Character)> Lines,
         RegionEvidence? Evidence = null);
@@ -196,7 +192,7 @@ public sealed class DuplicateFragmentAnalyser(
                 // opt-in rule, so the walk is not paid unless --clone-drift is passed.
                 var evidence = EvidenceFor(unit);
 
-                byPath[path] = new SourceFile(path, unit, tokenized.Tokens, tokenized.Lines, evidence);
+                byPath[path] = new SourceFile(path, tokenized.Tokens, tokenized.Lines, evidence);
             }
         }
 
@@ -711,12 +707,7 @@ public sealed class DuplicateFragmentAnalyser(
 
             foreach (var member in members)
             {
-                if (!byPath.TryGetValue(member.Path, out var file))
-                {
-                    continue;
-                }
-
-                if (IsExcluded(file.Unit, member, _exclusions))
+                if (!byPath.ContainsKey(member.Path))
                 {
                     continue;
                 }
@@ -736,9 +727,10 @@ public sealed class DuplicateFragmentAnalyser(
             // lands in the same place on every run.
             //
             // The >= 2 floor matches the one CloneSet already applies: one surviving copy
-            // has no sibling to be duplicated from, so it is not a set. Previously a set
-            // reduced to one member by exclusions still emitted that member as a
-            // finding, which is the inconsistency this closes.
+            // has no sibling to be duplicated from, so it is not a set. Namespace
+            // exclusion no longer thins a set here: it is applied to the finding after
+            // analysis and, like a path glob, judges the set by its anchor, so the
+            // baseline records the same set whatever is excluded.
             if (reported.Count < 2)
             {
                 continue;
@@ -969,36 +961,6 @@ public sealed class DuplicateFragmentAnalyser(
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// A duplicate fragment carries no symbol, so namespace exclusion resolves
-    /// syntactically through the enclosing namespace declaration, falling back
-    /// to the global-namespace marker for file-scope code. Binding a semantic
-    /// model here would defeat this rule's syntax-only design, so the resolution
-    /// is deliberately syntactic rather than via
-    /// <see cref="ExclusionEngine.IsNamespaceExcluded(SyntaxNode, SemanticModel, AnalysisExclusions, CancellationToken)"/>.
-    /// </summary>
-    private static bool IsExcluded(CompilationUnitSyntax unit, Fragment fragment, AnalysisExclusions exclusions)
-    {
-        if (exclusions.Namespaces.Count == 0)
-        {
-            return false;
-        }
-
-        var tokens = unit.DescendantTokens().ToList();
-        if (tokens.Count == 0)
-        {
-            return false;
-        }
-
-        var ordinal = Math.Min(fragment.TokenIndex, tokens.Count - 1);
-        var name = tokens[ordinal].Parent?
-            .FirstAncestorOrSelf<BaseNamespaceDeclarationSyntax>()?.Name.ToString();
-
-        // File-scope fragments report no name, which Covers resolves against the shared
-        // <global> sentinel — the same marker every other namespace-aware rule uses.
-        return exclusions.Covers(name);
     }
 
     private static int Find(int[] parent, int index)

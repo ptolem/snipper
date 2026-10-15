@@ -153,18 +153,19 @@ public sealed class SuppressionAuditShould
     [Fact]
     public void Credit_A_Finding_Suppressed_By_Both_A_Disabled_Rule_And_A_Namespace_To_Exactly_One_Channel()
     {
-        // CliRunner pre-subtracts the disabled-rule shadow set from the namespace set, so
-        // a finding hidden by both is counted once. This pins that the builder does not
-        // re-introduce the overlap it was handed.
+        // A disabled analyser never runs in the normal pass, so namespace exclusion never
+        // sees its findings: the disabled-rule pass hands them in unfiltered, and a finding
+        // hidden by both is counted once, against the rule. This pins that the builder does
+        // not re-introduce the overlap.
         var disabledShadow = new[] { Finding("SNP0024", "C:/repo/src/A.cs") };
-        var namespaceShadow = new[] { Finding("SNP0030", "C:/repo/src/B.cs") };
+        var namespaceExcluded = new[] { new NamespaceExcludedFinding(Finding("SNP0030", "C:/repo/src/B.cs"), "Acme.Generated") };
 
         var audit = SuppressionAuditBuilder.Build(
             [],
             Config(disabled: ["SNP0024"], namespaces: ["Acme.Generated"]),
             null,
             disabledShadow,
-            namespaceShadow,
+            namespaceExcluded,
             true,
             null,
             null);
@@ -177,30 +178,36 @@ public sealed class SuppressionAuditShould
     }
 
     [Fact]
-    public void Aggregate_Namespace_Exclusions_Into_One_Entry_And_Say_Why()
+    public void Report_One_Row_Per_Namespace_Exclusion_With_Its_Own_Count()
     {
-        var namespaceShadow = new[] { Finding("SNP0001", "C:/repo/src/A.cs"), Finding("SNP0006", "C:/repo/src/B.cs") };
+        NamespaceExcludedFinding[] namespaceExcluded =
+        [
+            new(Finding("SNP0001", "C:/repo/src/A.cs"), "Acme.Vendor"),
+            new(Finding("SNP0006", "C:/repo/src/B.cs"), "Acme.Vendor"),
+            new(Finding("SNP0006", "C:/repo/src/C.cs"), "Acme.Legacy"),
+        ];
 
         var audit = SuppressionAuditBuilder.Build(
-            [], Config(namespaces: ["Acme.Legacy", "Acme.Vendor"]), null, [], namespaceShadow, true, null, null);
+            [], Config(namespaces: ["Acme.Vendor", "Acme.Legacy", "Acme.Clean"]), null, [], namespaceExcluded, true, null, null);
 
-        var entry = audit.NamespaceExclusions.Should().ContainSingle().Subject;
-        entry.SuppressedCount.Should().Be(2);
-        entry.Selector.Should().Be("Acme.Legacy, Acme.Vendor");
-        entry.Detail.Should().Contain("aggregate");
+        audit.NamespaceExclusions.Select(e => (e.Selector, e.SuppressedCount))
+            .Should().Equal(("Acme.Clean", 0), ("Acme.Legacy", 1), ("Acme.Vendor", 2));
+        audit.NamespaceExclusions.Single(e => e.Selector == "Acme.Vendor").RuleIds
+            .Should().Equal("SNP0001", "SNP0006");
+        audit.Totals.FindingsHiddenByShadow.Should().Be(3);
     }
 
     [Fact]
-    public void Declare_Namespace_Counts_Unmeasured_When_No_Shadow_Pass_Ran()
+    public void Add_A_Row_For_A_Command_Line_Exclusion_That_Hid_Something()
     {
-        // The pre-analysis channels cannot be counted from the normal finding set. The
-        // audit must say so rather than reporting a confident zero.
-        var audit = SuppressionAuditBuilder.Build(
-            [], Config(namespaces: ["Acme.Legacy"]), null, null, null, false, null, null);
+        // --exclude-namespaces is not in snipper.json, but what it hides is still hidden
+        // debt, so it gets a row of its own rather than vanishing into the totals.
+        NamespaceExcludedFinding[] namespaceExcluded = [new(Finding("SNP0001", "C:/repo/src/A.cs"), "Acme.FromCli")];
 
-        audit.ShadowAnalysisRan.Should().BeFalse();
-        audit.NamespaceExclusions.Should().ContainSingle().Subject.SuppressedCount.Should().Be(0);
-        audit.NamespaceExclusions[0].Detail.Should().Contain("not measured");
+        var audit = SuppressionAuditBuilder.Build(
+            [], Config(namespaces: ["Acme.Configured"]), null, [], namespaceExcluded, true, null, null);
+
+        audit.NamespaceExclusions.Select(e => e.Selector).Should().Equal("Acme.Configured", "Acme.FromCli");
     }
 
     [Fact]
@@ -308,7 +315,7 @@ public sealed class SuppressionAuditShould
     [Fact]
     public void Treat_A_Namespace_As_Existing_When_Only_A_Child_Of_It_Is_Declared()
     {
-        // Prefix semantics must mirror AnalysisExclusions.Covers, otherwise the
+        // Prefix semantics must mirror AnalysisExclusions.FindCoveringExclusion, otherwise the
         // audit would call a live exclusion stale.
         var probe = NamespaceInventory.ExistenceProbe(
             Inventory(["Acme.Domain.Models"], hasFileScopeCode: false));

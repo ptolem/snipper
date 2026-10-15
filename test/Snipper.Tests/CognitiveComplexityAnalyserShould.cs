@@ -69,7 +69,7 @@ public sealed class CognitiveComplexityAnalyserShould
                 DocumentId.CreateNewId(projectId), "Code.cs", SourceText.From(source),
                 filePath: @"C:\repo\Probe\Code.cs");
 
-        var findings = await new CognitiveComplexityAnalyser(null, maxComplexity)
+        var findings = await new CognitiveComplexityAnalyser(maxComplexity)
             .AnalyzeAsync(solution, CancellationToken.None);
 
         return [.. findings];

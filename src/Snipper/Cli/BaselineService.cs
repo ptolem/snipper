@@ -13,36 +13,24 @@ using Snipper.Models;
 ///
 /// Channel safety (4A-2, measured — see <c>docs/history/1_7_0_plan.md</c>): no suppression
 /// channel can rewrite a baseline. <c>exclude.paths</c>, severity overrides and
-/// <c>--certainty-tier</c> apply after fingerprinting. Namespace exclusions and
-/// disabling a sole-rule analyser suppress *before* fingerprinting, so the caller must
-/// fingerprint the suppression-independent set instead — see
-/// <see cref="RequiresSuppressionIndependentFingerprints"/>.
+/// <c>--certainty-tier</c> apply after fingerprinting. Namespace exclusions hide findings
+/// the analysis still produced, and disabling a sole-rule analyser removes them before they
+/// exist, so the caller fingerprints the suppression-independent set instead — see
+/// <see cref="RequiresDisabledAnalyserPass"/>.
 /// </summary>
 internal static class BaselineService
 {
     /// <summary>
-    /// Whether the baseline must be written from the set of findings that exist with no
-    /// suppression applied, rather than from the visible set.
+    /// Whether the analysers a disabled rule removed must still run, so the baseline can
+    /// record their findings and re-enabling the rule does not surface them as new.
     ///
-    /// True only when a churn-prone channel is configured. The three properties this buys:
-    /// no baseline means there is nothing to churn, so no extra analysis pass is ever run
-    /// for a user who has not adopted baselines; the churn-free channels are excluded by
-    /// construction, so a user relying only on those never pays either; and with no
-    /// suppression configured the visible set already *is* the suppression-independent set,
-    /// so the caller can skip the pass instead of re-running analysis to discover that.
+    /// True only with a baseline and a removed analyser. No baseline means there is nothing to
+    /// churn, so a user who has not adopted baselines never pays for the extra pass; and the
+    /// other channels need no pass at all, because the findings they hide were produced by
+    /// the normal one.
     /// </summary>
-    public static bool RequiresSuppressionIndependentFingerprints(
-        bool baselineRequested,
-        int excludedNamespaceCount,
-        int removedAnalyserCount)
-    {
-        if (!baselineRequested)
-        {
-            return false;
-        }
-
-        return excludedNamespaceCount > 0 || removedAnalyserCount > 0;
-    }
+    public static bool RequiresDisabledAnalyserPass(bool baselineRequested, int removedAnalyserCount) =>
+        baselineRequested && removedAnalyserCount > 0;
 
     public static string ComputeFingerprint(SnipperFinding finding, string baseDirectory)
     {

@@ -27,10 +27,11 @@ internal readonly record struct FindingFilterClassification(
 /// matches are dropped, severity overrides are applied. Pure and workspace-free by
 /// design — runs after baseline fingerprinting, so it cannot churn the baseline.
 ///
-/// This filter governs only the channels that suppress findings *after* they exist.
-/// Namespace exclusions and whole-analyser rule disables remove findings before they
-/// exist; those are handled upstream (as of 4A-2 by fingerprinting the
-/// suppression-independent set) and never appear here. <see cref="Classify"/> is shared
+/// This filter governs only the channels that apply after baseline classification.
+/// Namespace exclusions apply before it (<see cref="NamespaceExclusionFilter"/>) and
+/// whole-analyser rule disables stop findings existing at all; both are kept out of the
+/// baseline's way by fingerprinting the suppression-independent set (4A-2) and never
+/// appear here. <see cref="Classify"/> is shared
 /// with the suppression audit so the two can never disagree about why a finding vanished.
 /// </summary>
 internal static class FindingFilter

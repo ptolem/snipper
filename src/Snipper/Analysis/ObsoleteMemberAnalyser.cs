@@ -18,13 +18,11 @@ using Snipper.Models;
 /// Known limitation: references arriving only from other obsolete symbols still count
 /// as references — mutually-referential dead islands are SNP0017 territory.
 /// </summary>
-public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0018"];
 
     private const string ObsoleteAttributeMetadataName = "System.ObsoleteAttribute";
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -117,7 +115,7 @@ public sealed class ObsoleteMemberAnalyser(AnalysisExclusions? exclusions = null
             return;
         }
 
-        if (ExclusionEngine.ShouldExcludeIgnoringObsolete(symbol) || ExclusionEngine.IsNamespaceExcluded(symbol, _exclusions))
+        if (ExclusionEngine.ShouldExcludeIgnoringObsolete(symbol))
         {
             return;
         }

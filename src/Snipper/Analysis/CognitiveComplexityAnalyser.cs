@@ -73,14 +73,10 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
     /// </summary>
     public const int DefaultMaxCognitiveComplexity = 15;
 
-    private readonly AnalysisExclusions _exclusions;
     private readonly int _maxComplexity;
 
-    public CognitiveComplexityAnalyser(
-        AnalysisExclusions? exclusions = null,
-        int? maxComplexity = null)
+    public CognitiveComplexityAnalyser(int? maxComplexity = null)
     {
-        _exclusions = exclusions ?? AnalysisExclusions.None;
         _maxComplexity = maxComplexity is > 0 ? maxComplexity.Value : DefaultMaxCognitiveComplexity;
     }
 
@@ -113,7 +109,7 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
         await Parallel.ForEachAsync(
             documents,
             AnalysisParallelism.CreateOptions(cancellationToken),
-            async (scopedDocument, documentToken) =>
+            (scopedDocument, documentToken) =>
             {
                 var (document, root) = scopedDocument;
 
@@ -121,7 +117,7 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
                 // fixture. Shared with SNP0033 - see ExclusionEngine.IsTestCode.
                 if (ExclusionEngine.IsTestCode(document.FilePath, document.Project.Name))
                 {
-                    return;
+                    return ValueTask.CompletedTask;
                 }
 
                 // Lambdas are excluded here because their bodies are scored inside the
@@ -142,18 +138,6 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
                         continue;
                     }
 
-                    // Same namespace-exclusion shape as SNP0033, and for the same reason:
-                    // the check needs a semantic model this analyser otherwise never asks for.
-                    if (_exclusions.Namespaces.Count > 0)
-                    {
-                        var model = await document.GetSemanticModelAsync(documentToken).ConfigureAwait(false);
-                        if (model is null
-                            || ExclusionEngine.IsNamespaceExcluded(node, model, _exclusions, documentToken))
-                        {
-                            continue;
-                        }
-                    }
-
                     var lineSpan = node.GetLocation().GetLineSpan();
                     findings.Add(new SnipperFinding(
                         RuleId: "SNP0034",
@@ -168,6 +152,8 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
                         LineNumber: lineSpan.StartLinePosition.Line + 1,
                         CharacterOffset: lineSpan.StartLinePosition.Character + 1));
                 }
+
+                return ValueTask.CompletedTask;
             }).ConfigureAwait(false);
 
         return [.. findings];

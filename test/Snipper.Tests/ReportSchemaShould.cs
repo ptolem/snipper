@@ -95,7 +95,7 @@ public sealed class ReportSchemaShould : IDisposable
             Config(paths: ["**/Generated/**"]),
             minimumCertainty: null,
             disabledRuleShadowFindings: null,
-            namespaceShadowFindings: null,
+            namespaceExcludedFindings: null,
             shadowAnalysisRan: false,
             globMatchesNoFile: null,
             namespaceExists: null);

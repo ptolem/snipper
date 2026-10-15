@@ -31,11 +31,9 @@ using Snipper.Models;
 /// never-overridden virtuals stay with SNP0023, zero-reference families with
 /// SNP0005/0006, abstract links and unconfirmed locations suppress.
 /// </summary>
-public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0023", "SNP0027"];
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -104,7 +102,7 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
                         continue;
                     }
 
-                    if (ExclusionEngine.ShouldExclude(classSymbol) || ExclusionEngine.IsNamespaceExcluded(classSymbol, _exclusions))
+                    if (ExclusionEngine.ShouldExclude(classSymbol))
                     {
                         continue;
                     }
@@ -369,7 +367,6 @@ public sealed class HierarchyDeadCodeAnalyser(AnalysisExclusions? exclusions = n
 
             if (!isCandidate
                 || ExclusionEngine.ShouldExclude(member)
-                || ExclusionEngine.IsNamespaceExcluded(member, _exclusions)
                 || InterfaceImplementationQuery.IsInterfaceImplementation(member))
             {
                 continue;

@@ -112,89 +112,39 @@ public static class ExclusionEngine
     }
 
     /// <summary>
-    /// True when the symbol's containing namespace (or any ancestor namespace) is
-    /// excluded. Findings are suppressed; usage evidence from excluded code is
-    /// gathered elsewhere and is unaffected.
-    /// </summary>
-    public static bool IsNamespaceExcluded(ISymbol symbol, AnalysisExclusions exclusions)
-    {
-        ArgumentNullException.ThrowIfNull(symbol);
-        ArgumentNullException.ThrowIfNull(exclusions);
-
-        if (exclusions.Namespaces.Count == 0)
-        {
-            return false;
-        }
-
-        if (symbol.ContainingNamespace is not { IsGlobalNamespace: false })
-        {
-            // Top-level-statements Program.cs and file-scope declarations bind to the
-            // global namespace, which no real namespace name can match. Reachable only
-            // through the <global> sentinel - previously this returned false outright,
-            // so such files were silently unexcludable.
-            return exclusions.IsGlobalNamespaceExcluded;
-        }
-
-        return exclusions.Covers(symbol.ContainingNamespace.ToDisplayString());
-    }
-
-    /// <summary>
-    /// Namespace exclusion for findings that carry no symbol (unreachable
-    /// statements, unread locals, using directives): resolved through the enclosing type
-    /// declaration, then the enclosing namespace declaration, then — for file-scope code
-    /// that declares no namespace at all — the <see cref="AnalysisExclusions.GlobalNamespaceMarker"/>
-    /// sentinel.
-    /// </summary>
-    public static bool IsNamespaceExcluded(
-        SyntaxNode node,
-        SemanticModel semanticModel,
-        AnalysisExclusions exclusions,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(node);
-        ArgumentNullException.ThrowIfNull(semanticModel);
-        ArgumentNullException.ThrowIfNull(exclusions);
-
-        if (exclusions.Namespaces.Count == 0)
-        {
-            return false;
-        }
-
-        var typeDeclaration = node.FirstAncestorOrSelf<TypeDeclarationSyntax>();
-        if (typeDeclaration is not null)
-        {
-            var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken);
-            if (typeSymbol is not null)
-            {
-                return IsNamespaceExcluded(typeSymbol, exclusions);
-            }
-        }
-
-        var namespaceName = ResolveFileScopeNamespace(node);
-        return namespaceName is null
-            ? exclusions.IsGlobalNamespaceExcluded
-            : exclusions.Covers(namespaceName);
-    }
-
-    /// <summary>
-    /// The namespace a file-scope node belongs to, or null when it declares none.
+    /// The namespace <paramref name="node"/> is declared in, or null for the global
+    /// namespace — what namespace exclusion matches a finding against. Purely syntactic,
+    /// so it needs no semantic model and gives the same answer for every rule.
     /// <para>
-    /// The enclosing <see cref="BaseNamespaceDeclarationSyntax"/> is tried first, which is
-    /// exact for anything inside a block-scoped namespace. It cannot serve file-scope
-    /// code, though: a file-scoped <c>namespace N;</c> and both forms of file-level
-    /// <c>using</c> are *siblings* of the using directive, not ancestors, so an ancestor
-    /// walk returns null for <c>using System.Text;</c> in a file that does declare
-    /// <c>namespace N;</c>. Those files therefore fall back to the unit's own namespace
-    /// declaration. Classifying them as global instead would make <c>&lt;global&gt;</c>
-    /// suppress usings in every namespaced file.
+    /// Nested declarations are joined outward, so <c>B</c> inside <c>namespace A { }</c>
+    /// resolves to <c>A.B</c>, exactly what <c>ContainingNamespace</c> would report for a
+    /// type declared there.
+    /// </para>
+    /// <para>
+    /// Code outside every namespace declaration falls back to the unit's own namespace
+    /// declaration. A file-scoped <c>namespace N;</c> is a *sibling* of the file-level
+    /// <c>using</c> directives above it, not an ancestor, so an ancestor walk alone
+    /// returns null for <c>using System.Text;</c> in a file that does declare
+    /// <c>namespace N;</c>. Classifying that as global instead would make
+    /// <c>&lt;global&gt;</c> suppress usings in every namespaced file. Only a file that
+    /// declares no namespace at all — top-level statements, a global usings file —
+    /// resolves to null, which <see cref="AnalysisExclusions.GlobalNamespaceMarker"/>
+    /// covers.
     /// </para>
     /// </summary>
-    private static string? ResolveFileScopeNamespace(SyntaxNode node)
+    public static string? ResolveNamespace(SyntaxNode node)
     {
-        var ancestor = node.FirstAncestorOrSelf<BaseNamespaceDeclarationSyntax>();
-        if (ancestor is not null)
+        ArgumentNullException.ThrowIfNull(node);
+
+        string? name = null;
+        foreach (var declaration in node.AncestorsAndSelf().OfType<BaseNamespaceDeclarationSyntax>())
         {
-            return ancestor.Name.ToString();
+            name = name is null ? declaration.Name.ToString() : $"{declaration.Name}.{name}";
+        }
+
+        if (name is not null)
+        {
+            return name;
         }
 
         var unit = node.AncestorsAndSelf().OfType<CompilationUnitSyntax>().FirstOrDefault();

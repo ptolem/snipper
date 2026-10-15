@@ -14,11 +14,9 @@ using Snipper.Models;
 /// be reached via reflection, DI registration, friend assemblies, or when it
 /// sits on an externally consumable public API surface.
 /// </summary>
-public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class UnusedNonPrivateMemberAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0005", "SNP0006"];
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -67,11 +65,6 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                     }
 
                     if (ExclusionEngine.ShouldExclude(symbol))
-                    {
-                        continue;
-                    }
-
-                    if (ExclusionEngine.IsNamespaceExcluded(symbol, _exclusions))
                     {
                         continue;
                     }

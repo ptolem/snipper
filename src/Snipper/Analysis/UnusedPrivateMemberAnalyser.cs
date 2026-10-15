@@ -7,11 +7,9 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Snipper.Models;
 
-public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions = null) : IWorkspaceAnalyser
+public sealed class UnusedPrivateMemberAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0001"];
-
-    private readonly AnalysisExclusions _exclusions = exclusions ?? AnalysisExclusions.None;
 
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution,
@@ -79,11 +77,6 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
                     }
 
                     if (ExclusionEngine.ShouldExclude(declaredSymbol))
-                    {
-                        continue;
-                    }
-
-                    if (ExclusionEngine.IsNamespaceExcluded(declaredSymbol, _exclusions))
                     {
                         continue;
                     }

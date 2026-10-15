@@ -5,8 +5,9 @@ using System.Collections.Frozen;
 /// <summary>
 /// Namespaces excluded from producing findings (exact match plus sub-namespaces:
 /// excluding "Company.Domain.Types" also excludes "Company.Domain.Types.Internal").
-/// Exclusion suppresses findings only — code in excluded namespaces still counts
-/// as usage evidence for the reference-checking rules.
+/// Exclusion suppresses findings only, and is applied to them after analysis (see
+/// <c>NamespaceExclusionFilter</c>): the analysers never see it, so code in excluded
+/// namespaces always counts as usage evidence for the reference-checking rules.
 /// </summary>
 public sealed record AnalysisExclusions
 {
@@ -56,20 +57,27 @@ public sealed record AnalysisExclusions
     public bool IsGlobalNamespaceExcluded => Namespaces.Contains(GlobalNamespaceMarker);
 
     /// <summary>
-    /// Whether <paramref name="declaredNamespace"/> is excluded: an exact match, or a
-    /// descendant of an exclusion. The single implementation of that walk, shared by the
-    /// symbol, syntax and clone-fragment paths so they cannot drift apart.
+    /// The configured exclusion that covers <paramref name="declaredNamespace"/>, or null
+    /// when none does. The single implementation of the ancestor walk: the finding filter
+    /// records its answer, and the suppression audit reports that same answer per exclusion.
+    /// When both <c>A</c> and <c>A.B</c> are configured, <c>A.B.C</c> is credited to the
+    /// nearer <c>A.B</c>.
     /// <para>
     /// An empty or null name means the global namespace, which is covered only by the
     /// <see cref="GlobalNamespaceMarker"/> sentinel — never by an ancestor walk, since
     /// there is no name to walk up from.
     /// </para>
     /// </summary>
-    public bool Covers(string? declaredNamespace)
+    public string? FindCoveringExclusion(string? declaredNamespace)
     {
+        if (Namespaces.Count == 0)
+        {
+            return null;
+        }
+
         if (string.IsNullOrEmpty(declaredNamespace))
         {
-            return IsGlobalNamespaceExcluded;
+            return IsGlobalNamespaceExcluded ? GlobalNamespaceMarker : null;
         }
 
         var name = declaredNamespace;
@@ -77,13 +85,13 @@ public sealed record AnalysisExclusions
         {
             if (Namespaces.Contains(name))
             {
-                return true;
+                return name;
             }
 
             var lastDot = name.LastIndexOf('.');
             if (lastDot < 0)
             {
-                return false;
+                return null;
             }
 
             name = name[..lastDot];

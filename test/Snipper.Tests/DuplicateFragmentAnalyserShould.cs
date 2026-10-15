@@ -2,6 +2,7 @@ namespace Snipper.Tests;
 
 using FluentAssertions;
 using Snipper.Analysis;
+using Snipper.Cli;
 using Snipper.Models;
 using Xunit;
 
@@ -20,8 +21,14 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
         AnalysisExclusions? exclusions = null,
         string? baseDirectory = null)
     {
-        var analyser = new DuplicateFragmentAnalyser(exclusions, cloneDrift: null, baseDirectory);
-        var findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+        var analyser = new DuplicateFragmentAnalyser(cloneDrift: null, baseDirectory);
+        IReadOnlyList<SnipperFinding> findings = await analyser.AnalyzeAsync(fixture.Solution, CancellationToken.None);
+
+        // Namespace exclusion is applied to findings after analysis, as the CLI applies it.
+        if (exclusions is not null)
+        {
+            findings = (await NamespaceExclusionFilter.ApplyAsync(findings, fixture.Solution, exclusions, CancellationToken.None)).Visible;
+        }
 
         return findings.Where(f => f.RuleId == Rule).ToList();
     }

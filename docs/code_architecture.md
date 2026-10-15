@@ -26,7 +26,7 @@ For *using* the tool see the [usage guide](usage.md). For *why* the design is th
 8. [The shared index pattern](#the-shared-index-pattern)
 9. [Anatomy of the syntax-only analyser](#anatomy-of-the-syntax-only-analyser)
 10. [The filtering pipeline](#the-filtering-pipeline)
-11. [The lifted shadow pass](#the-lifted-shadow-pass-and-why-it-only-runs-half-the-analysers)
+11. [Namespace exclusion is a filter, not a pass](#namespace-exclusion-is-a-filter-not-a-pass)
 12. [Performance: what was measured](#performance-what-was-measured-and-what-was-not)
 13. [Git integration](#git-integration)
 14. [Output](#output)
@@ -45,7 +45,8 @@ args ──► CommandLineParser ──► CliRunner ──► MSBuildWorkspace 
                           ├──► up to 19 IWorkspaceAnalyser instances, fanned out in parallel
                           │      each returns its own findings list
                           │
-                          ├──► (optional) shadow passes with suppressions lifted
+                          ├──► namespace exclusion over the findings
+                          ├──► (optional) disabled-rule pass
                           │
                           └──► baseline fingerprint ──► FindingFilter ──► certainty tier
                                                         │
@@ -66,9 +67,11 @@ Five things to internalise before reading further:
 3. **Compilation warm-up is deliberate and sequential.** Every analyser opens with
    `GetCompilationAsync`; without the pre-warm, 19 analysers discover the same cold compilations at
    once and serialise on Roslyn's compilation tracker. Measured: 33 s naive versus 4.6 s warmed.
-4. **Two suppression classes, and the difference is load-bearing.** Namespace exclusions and
-   whole-analyser disables remove findings *before they exist*; rule-off, path globs and severity
-   overrides filter them *after*. This is why the baseline needs a second, lifted pass.
+4. **Suppression never changes what the analysers produce.** Analysers never see namespace
+   exclusions: the CLI filters their findings afterwards, so one pass yields both the visible set
+   and the suppression-independent set the baseline is written from. The one channel that does
+   stop findings existing is a disabled sole-rule analyser, which is not run; when a baseline or
+   the audit needs its findings, it is run on its own.
 5. **Determinism is a contract.** Findings come back in analyser declaration order, not completion
    order, each analyser's findings in `FindingOrder`, and reports are byte-identical run to run.
 
@@ -125,7 +128,7 @@ flowchart TB
     AN -->|"SolutionUsageIndex.Get(solution)"| IDX
     AN -->|"findings"| FLT
     FLT --> OUT
-    AR -.->|"shadow passes"| AUD
+    AR -.->|"disabled-rule pass"| AUD
     CLI -->|"TryResolveCommitSha, numstat, log"| EXT_GIT
     CLI -->|"discover + read"| FS
     OUT -->|"report.json / report.sarif"| USER
@@ -203,9 +206,12 @@ sequenceDiagram
         AR-->>C: merged in declaration order
     end
 
-    opt baseline or audit requested
-        C->>AR: RunAsync(aware analysers, exclusions lifted)
-        AR-->>C: suppression-independent set
+    C->>MS: NamespaceExclusionFilter.ApplyAsync<br/>resolve each finding's namespace from its location
+    MS-->>C: visible + namespace-excluded
+
+    opt a rule is disabled, and a baseline or the audit is requested
+        C->>AR: RunAsync(analysers removed by disabled rules)
+        AR-->>C: their findings
     end
 
     rect rgb(252, 232, 230)
@@ -240,8 +246,9 @@ sequenceDiagram
    will not compile is an analyser concern, not a precondition for the other sixteen.
 2. **Baseline classification reads the visible set; baseline writing reads the suppression-independent
    set.** So a finding you cannot see is still recorded, and removing a suppression does not resurface
-   it as "new". Under no churn-prone suppression the two sets are the same list and the lifted pass
-   never runs.
+   it as "new". The suppression-independent set is the visible set, plus what namespace exclusion hid
+   from it, plus the disabled-rule pass when a rule is off, so namespace exclusions never cost a
+   second pass. Under no suppression the two sets are the same list.
 3. **`FindingFilter` runs after fingerprinting.** Rule-off, path globs and severity overrides can
    therefore never churn the baseline file.
 
@@ -262,7 +269,6 @@ classDiagram
 
     class CliRunner {
         +RunAsync(args) Task~int~
-        -FindingsFromExclusionAgnosticAnalysers(analysers, findings) IReadOnlyList
         -AppendEntropyLedgerEntry(path, result)
         -IsExcludedFromDenominator(path, base, config) bool
     }
@@ -292,15 +298,12 @@ classDiagram
     }
 
     class AnalyserFactory {
-        +Build(options, exclusions, targetPath) List
-        +PartitionByExclusionSensitivity(analysers) ExclusionPartition
+        +Build(options, targetPath, baseDirectory) List
         -FindRepositoryRoot(targetPath) string
-        -IsExclusionAgnostic(analyser) bool
     }
 
-    class ExclusionPartition {
-        +Aware
-        +Agnostic
+    class NamespaceExclusionFilter {
+        +ApplyAsync(findings, solution, exclusions, ct) NamespaceFilterResult
     }
 
     class ReportWriter {
@@ -360,9 +363,7 @@ classDiagram
     class ExclusionEngine {
         +ShouldSkipDocument(path, root, roots) bool
         +IsTestCode(path, projectName) bool
-        +IsNamespaceExcluded(symbol, exclusions) bool
-        +IsNamespaceExcluded(node, model, exclusions, ct) bool
-        +ResolveFileScopeNamespace(node) string~          // type → namespace → <global>
+        +ResolveNamespace(node) string          // enclosing declarations → unit → null (global)
         +IsGeneratedDocument(path) bool
         +GetAnalysisRootDirectories(solution) IReadOnlyList~string~
     }
@@ -371,6 +372,7 @@ classDiagram
         +None AnalysisExclusions
         +Namespaces FrozenSet~string~
         +Create(namespaces) AnalysisExclusions
+        +FindCoveringExclusion(namespace) string
     }
 
     class SnipperConfig {
@@ -403,11 +405,11 @@ classDiagram
         +Load(path) BaselineFile
         +Write(path, fingerprints, commitSha) void
         +ComputeFingerprint(finding, baseDirectory) string
-        +RequiresSuppressionIndependentFingerprints(...) bool
+        +RequiresDisabledAnalyserPass(baseline, removedCount) bool
     }
 
     class SuppressionAuditBuilder {
-        +Build(analysed, config, tier, disabledShadow, nsShadow, ran, globProbe, nsProbe) SuppressionAudit
+        +Build(analysed, config, tier, disabledShadow, nsExcluded, ran, globProbe, nsProbe) SuppressionAudit
     }
 
     class NamespaceInventory {
@@ -496,7 +498,8 @@ classDiagram
     CommandLineParser --> ReportFormat
     CliRunner ..> SnipperConfigLoader : Load
     CliRunner ..> AnalysisRunner : RunAsync
-    CliRunner ..> AnalyserFactory : Build, Partition
+    CliRunner ..> AnalyserFactory : Build
+    CliRunner ..> NamespaceExclusionFilter : ApplyAsync
     CliRunner ..> BaselineService : Load, Write
     CliRunner ..> EntropyRateCalculator : Compute, Append
     CliRunner ..> FindingFilter : Apply
@@ -504,10 +507,11 @@ classDiagram
     CliRunner ..> NamespaceInventory : CollectFiles
     CliRunner ..> GitMetadata : sha, numstat
     CliRunner ..> AnalysisExclusions : Create
+    NamespaceExclusionFilter ..> AnalysisExclusions : FindCoveringExclusion
+    NamespaceExclusionFilter ..> ExclusionEngine : ResolveNamespace
     CliRunner ..> ReportWriter : Write
     CliRunner ..> ConsoleRenderer : Render*
     CliRunner ..> ToolVersion : Current
-    AnalyserFactory --> ExclusionPartition : returns
     AnalyserFactory ..> DuplicateFragmentAnalyser : constructs
     AnalyserFactory ..> CloneDriftDetector : constructs
     ReportWriter ..> JsonReportSerializerContext
@@ -529,13 +533,11 @@ classDiagram
     IWorkspaceAnalyser ..> InheritanceGraph : Get(solution)
     IWorkspaceAnalyser ..> ProjectPackageUsageCache
     IWorkspaceAnalyser ..> ExclusionEngine
-    IWorkspaceAnalyser ..> AnalysisExclusions
     IWorkspaceAnalyser ..> SnipperFinding : produces
 
     DuplicateFragmentAnalyser --> TokenShingleIndex : syntax-only
     DuplicateFragmentAnalyser --> CloneDriftDetector : optional
     DuplicateFragmentAnalyser ..> ExclusionEngine
-    DuplicateFragmentAnalyser ..> AnalysisExclusions
 
     CloneDriftDetector --> GitHistory
     GitHistory --> GitProcess
@@ -628,8 +630,8 @@ confidence at each new exception type.
 - Files outside the analysis root directories (so linked files from elsewhere are not analysed twice).
 - Generated documents, by path convention and by `AutoGenerated` header.
 
-Namespace exclusion is a separate, per-node check (`IsNamespaceExcluded`), because a file can hold more
-than one namespace.
+Namespace exclusion is not a document gate at all, because a file can hold more than one namespace. It
+is applied to findings after analysis — see [Namespace exclusion is a filter, not a pass](#namespace-exclusion-is-a-filter-not-a-pass).
 
 Most analysers never call the gate themselves: `AnalysisScope.Get(solution)` applies it once per
 solution and hands back one flat list of the surviving documents of every compilable project, each with
@@ -700,8 +702,7 @@ analyser whose `RuleIds` is conditional on its constructor arguments.
 follows this shape:
 
 ```csharp
-public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions = null)
-    : IWorkspaceAnalyser
+public sealed class UnusedPrivateMemberAnalyser : IWorkspaceAnalyser
 {
     public IReadOnlyCollection<string> RuleIds { get; } = ["SNP0001"];
 
@@ -729,9 +730,8 @@ public sealed class UnusedPrivateMemberAnalyser(AnalysisExclusions? exclusions =
                 {
                     // 1. cheap syntactic pre-filter — most nodes never become candidates
                     // 2. declared symbol
-                    // 3. namespace exclusion
-                    // 4. usage proof, via the index
-                    // 5. emit into the bag
+                    // 3. usage proof, via the index
+                    // 4. emit into the bag
                 }
             });
 
@@ -748,7 +748,6 @@ The ordering is the performance design, and you should preserve it when you add 
 | `Parallel.ForEachAsync` over documents | none | Documents bind concurrently, bounded by `SNIPPER_MAX_DOP`. Anything other than findings that leaves the loop goes into a per-document slot, so later phases see scope order. |
 | Syntactic pre-filter | cheap | Reject most nodes without a symbol. Avoids a `GetDeclaredSymbol` per node. |
 | `GetDeclaredSymbol` | moderate | Only for surviving candidates. |
-| `IsNamespaceExcluded` | cheap | Before any expensive evidence work. |
 | Usage proof | expensive | `SolutionUsageIndex` name lookup is O(1); a `FindReferencesAsync` is the fallback and is **restricted to the documents the index says can contain the name**. |
 
 The index's invariant is the trick worth understanding: *any semantic reference to a named symbol
@@ -983,10 +982,10 @@ Five things to know:
 - **It was the first rule to use `<global>`.** Because it resolves namespaces syntactically through
   the enclosing namespace declaration rather than through a type, it could exclude file-scope clones
   when the symbol-based rules could not. Since 1.7.4 that marker is shared: it lives on
-  `AnalysisExclusions.GlobalNamespaceMarker`, is honoured by every namespace-aware rule, and is
-  accepted by the CLI flag as well as the config file. `DuplicateFragmentAnalyser` keeps its own
-  syntactic resolution (binding a semantic model would contradict the rule's syntax-only design) but
-  delegates the matching itself to `AnalysisExclusions.Covers`, so the ancestor walk exists once.
+  `AnalysisExclusions.GlobalNamespaceMarker`, is honoured for every rule, and is accepted by the
+  CLI flag as well as the config file. The analyser no longer resolves namespaces at all: like every
+  rule it reports every clone set, and `NamespaceExclusionFilter` judges the set by its anchor
+  afterwards, the same way a path glob does.
 - **It uses union-find** (`Find`/`Union` with path compression) to group overlapping maximal matches
   into clone sets.
 
@@ -1001,14 +1000,15 @@ part of the analyser's contract with anyone else.
 Read this top to bottom; the order is the design.
 
 ```
-allFindings                       ← what the analysers produced, exclusions already applied
+analysedFindings                  ← what the analysers produced; they never see any suppression
       │
-      ├──► [optional] shadow passes → suppression-independent set (baseline source)
-      │      · disabled-rule shadow: re-run just the removed analysers
-      │      · lifted pass: re-run everything with AnalysisExclusions.None
+      ├──► NamespaceExclusionFilter → visible + namespace-excluded (each with its exclusion)
       │
-      ├──► BaselineService: classify visible findings → newFindings
+      ├──► [optional] disabled-rule pass: run just the analysers the disabled rules removed
+      │
+      ├──► BaselineService: classify VISIBLE findings → newFindings
       │      BaselineService.Write(fingerprints of the SUPPRESSION-INDEPENDENT set, headSha)
+      │      (visible + namespace-excluded + disabled-rule findings)
       │
       ├──► EntropyRateCalculator.Compute(new, resolved, changedLines) → status + rate
       │
@@ -1025,44 +1025,47 @@ resurface it as "new". Before 4A-2 both walked the visible set, which meant addi
 exclusion *removed* fingerprints from the baseline — harmless with no gate, and a CI failure the
 moment `--entropy-budget` enforced anything.
 
-The lifted pass is conditioned so it can never cost anything it does not have to: no baseline means
-nothing to churn, and the churn-free channels are excluded by construction, so a user who only uses
-`exclude.paths` never pays for it.
+Namespace exclusion sits before classification, not with the report-time channels, so that the
+"N known, M new" line and the entropy numerator count only what the user can see — exactly what
+they counted when exclusions were applied inside the analysers.
+
+The disabled-rule pass is conditioned so it can never cost anything it does not have to: it runs
+only when a rule is disabled *and* a baseline or the audit needs that rule's findings. Every other
+channel hides findings the normal pass already produced, so it costs nothing extra.
 
 ---
 
-## The lifted shadow pass, and why it only runs half the analysers
+## Namespace exclusion is a filter, not a pass
 
 The 4A audit and the 4A-2 baseline both need the **suppression-independent** finding set: every
-finding that exists, ignoring configuration. Namespace exclusions remove findings *inside* the
-analysers, so the only way to see them is to re-run with exclusions lifted.
+finding that exists, ignoring configuration. Namespace exclusions used to be applied *inside* the
+analysers — seventeen of them took an `AnalysisExclusions` and skipped excluded candidates — so the
+only way to see what they hid was a second analysis pass with exclusions lifted. That pass needed its
+own machinery (an exclusion-sensitivity partition of the analysers, rebuilt instances so a "lifted"
+pass could not silently reuse excluded ones) and could only report an aggregate count, because a
+finding's namespace was not recoverable from the finding.
 
-That pass used to re-run all 19 analysers. Four of them cannot produce different output:
+Now the analysers never see exclusions. `NamespaceExclusionFilter` runs once over what they found:
 
-| Exclusion-agnostic | Why |
-| --- | --- |
-| `UnreferencedPackageAnalyser` | SNP0003 — reasons over the package graph, which has no containing namespace. |
-| `OrphanProjectAnalyser` | SNP0011 — reasons over `ProjectReference` edges. |
-| `RedundantTransitivePackageAnalyser` | SNP0012 — reasons over the transitive package graph. |
-| `FrameworkInboxPackageAnalyser` | SNP0013 — reads the targeting pack's `PackageOverrides.txt`. |
+1. **One resolution rule.** Each finding's anchor location (`FilePath`, `LineNumber`,
+   `CharacterOffset`) is mapped back to its syntax tree, and `ExclusionEngine.ResolveNamespace` walks
+   the enclosing namespace declarations outward, falling back to the unit's own declaration for
+   file-level code above a file-scoped `namespace N;`, and to `<global>` for a file that declares no
+   namespace at all. This replaces three paths (symbol, semantic model, syntax) that agreed only by
+   care, and fixes two shapes the old ones missed: a nested `namespace B` inside `namespace A`
+   resolves to `A.B`, and a clone fragment at file level is credited to the file's namespace.
+2. **One match rule.** `AnalysisExclusions.FindCoveringExclusion` returns the nearest configured
+   exclusion, so the audit gets one row per namespace with an exact count.
+3. **Findings outside C# source are never excluded.** Package and project findings land in project and
+   lock files, which have no namespace; they must not read as `<global>` code.
+4. **A clone set is judged by its anchor**, as a path glob already judges it. Previously excluded
+   copies were removed from the set first, so a set between excluded and non-excluded code
+   disappeared when fewer than two copies survived; now it is reported when its anchor is visible,
+   still naming every copy, and the baseline records the same set whatever is excluded.
 
-So the lifted pass now runs only the other 15 and reuses the agnostic four's findings from the
-normal pass. Measured: those four are 11.1 s of 34.8 s of summed analyser time (32%), and because
-the fan-out is concurrent the wall-clock saving on an 8-core machine is roughly 0.6 s — real, but
-at the edge of measurement noise. **It is kept because it is strictly less work and verified
-equivalent, not because it is a headline speedup.** On a 2-core CI agent, where the fan-out is
-the bottleneck rather than the total, the same saving is a larger share of the wall clock.
-
-Two conditions keep it safe:
-
-1. **The optimisation is audit-only.** When the lifted pass feeds the baseline, the full set is
-   rebuilt, so what the baseline records cannot depend on which analysers happen to be
-   exclusion-agnostic today.
-2. **The instances are rebuilt, not reused.** `AnalyserFactory.Build(options, AnalysisExclusions.None, …)`
-   constructs fresh ones. Partitioning the *already-built* list returns instances that still hold
-   the original exclusions — an unlifted pass wearing a lifted pass's name. That bug shipped
-   briefly during this refactor, reported `hidden = 0` instead of `hidden = 4`, and passed all 528
-   then-existing tests. `ShadowPassShould` now pins it, and reintroducing the bug fails three tests.
+The trade-off is that excluded candidates are now analysed and then discarded rather than skipped.
+Usage evidence from excluded code was always gathered, so only the per-candidate checks are extra; a
+run with a baseline or the audit, which used to pay a whole second pass, now pays nothing.
 
 ---
 ## Git integration
@@ -1130,7 +1133,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | 7 | Cheap syntactic filtering before `GetDeclaredSymbol` and before evidence gathering. | This ordering is the performance budget. |
 | 8 | All `AnsiConsole`/`StatusContext` writes during analysis go through the progress sink's lock (`ConsoleRenderer.CreateAnalysisProgress`). | Spectre's status is process-wide exclusive and not thread-safe. |
 | 9 | Namespace exclusion suppresses **findings**, never usage evidence. | Otherwise excluding a generated tree makes real references disappear. |
-| 9a | Namespace matching lives in exactly one place — `AnalysisExclusions.Covers` — and resolves a file-scope node as type → namespace declaration → `<global>`. | The walk was duplicated in `ExclusionEngine` and `DuplicateFragmentAnalyser`, and a file-scoped `namespace N;` is a *sibling* of its file-level `using` directives, so an ancestor-only walk classifies them as global and `<global>` then suppresses usings in every namespaced file. |
+| 9a | Namespace resolution and matching each live in exactly one place — `ExclusionEngine.ResolveNamespace` and `AnalysisExclusions.FindCoveringExclusion` — and a node resolves as enclosing namespace declarations (joined outward) → the unit's own declaration → `<global>`. | Three resolution paths (symbol, semantic model, syntax) used to agree only by care, and a file-scoped `namespace N;` is a *sibling* of its file-level `using` directives, so an ancestor-only walk classifies them as global and `<global>` then suppresses usings in every namespaced file. |
 | 10 | Baseline classification reads visible findings; baseline writing reads the suppression-independent set. | Otherwise a config toggle churns the baseline. |
 | 11 | `FindingFilter.Classify` is shared with the audit. | The audit must not be able to disagree with report behaviour. |
 | 12 | Evidence is never a finding. | A reference to a member is not a reason to flag it. |
@@ -1138,8 +1141,8 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | 14 | Git access is read-only and degrades to silence outside a checkout. | Not every consumer has a repository. |
 | 15 | Findings are ordered by `FindingOrder` alone. An analyser sorts only where its own logic depends on order, as `CloneDriftDetector`'s first-wins deduplication does. | Byte-identical reports; reviewable diffs. |
 | 16 | No `dynamic`; no exceptions for flow control. | The rules are stated per-wave; keep them. |
-| 17 | A lifted shadow pass **rebuilds** its analysers with `AnalysisExclusions.None`. | Reusing the already-built instances runs a pass that looks lifted but is not. It reports zero hidden findings, keeps the JSON valid, and fails nothing. `ShadowPassShould` exists for exactly this. |
-| 18 | The exclusion-sensitivity partition defaults new analysers to *aware*. | A newly added analyser is then re-run rather than wrongly assumed unaffected. The failure mode is extra work, not a wrong number. |
+| 17 | Analysers never take `AnalysisExclusions`; namespace exclusion is applied to their findings by `NamespaceExclusionFilter`. | The moment an analyser filters by namespace, its output depends on configuration: the baseline needs a second, exclusions-lifted pass again, and the audit can no longer say which namespace hid what. |
+| 18 | Namespace exclusion runs **before** baseline classification, and the baseline is written from visible + namespace-excluded + disabled-rule findings. | Classifying first would count excluded findings as new, and in the entropy numerator. Writing from the visible set would churn the baseline whenever an exclusion changes. |
 | 19 | A cache keyed on a csproj path must be invalidated by last-write time. | `ProjectFileReader` serves five call sites. Mutating its invalidation check so the cache never expires left **every other test green** - nothing in the suite rewrites a csproj between two reads. `ProjectFileReaderShould` exists because of that gap. |
 | 20 | Do not "optimise" a name comparison by returning a bare identifier. | Callers compare whole rendered strings, so `[Newtonsoft.Json.JsonSerializable]` deliberately does *not* match `[JsonSerializable]`. Swapping `ToString()` for `SimpleNameOf` would silently widen every attribute rule. Use `AttributeNameText`, which keeps the qualified fallback. |
 | 21 | A project path is not unique in a `Solution`. | A multi-targeted csproj appears once per TFM, and a project reached by two referencing paths can appear twice. Keying a dictionary on `project.FilePath` threw `ArgumentException: An item with the same key has already been added` and took the whole run down. `DuplicateProjectPathShould` pins the one-to-many shape. |
@@ -1223,14 +1226,15 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | `Program.cs` | Entry point. MSBuildLocator. `--version` short-circuit. |
 | `Cli/CliRunner.cs` | **Orchestration only**: `RunAsync` reads as its stages — options → workspace → plan → passes → audit → baseline → filter → report — each handing the next an immutable record. The run order lives here and nowhere else. |
 | `Cli/CommandLineParser.cs` | Pure `string[]` → `CommandLineOptions`. No workspace, no console, no git. |
-| `Cli/AnalyserFactory.cs` | Which analysers run, and the exclusion-sensitivity partition the shadow pass depends on. |
+| `Cli/AnalyserFactory.cs` | Which analysers run, and the opt-in gates. |
 | `Cli/ReportWriter.cs` | JSON and SARIF 2.1.0 serialisation, plus the report DTOs. |
 | `Cli/ConsoleRenderer.cs` | Findings table, suppression audit table, entropy table, and the thread-safe analysis progress sink. |
 | `Cli/ToolVersion.cs`, `ReportFormat.cs` | Small shared types, split out so the above do not depend on `CliRunner`. |
 | `Cli/AnalysisRunner.cs` | Compilation warm-up, parallel fan-out, progress reporting, deterministic merge. No console dependency. |
 | `Cli/SnipperConfig.cs`, `SnipperConfigLoader.cs` | `snipper.json` schema and tolerant discovery. |
 | `Cli/FindingFilter.cs` | The three report-time channels and their precedence. Shared with the audit. |
-| `Cli/BaselineService.cs` | Fingerprints, load/write, and the "does this need a lifted pass" predicate. |
+| `Cli/BaselineService.cs` | Fingerprints, load/write, and the "does a disabled rule need its own pass" predicate. |
+| `Cli/NamespaceExclusionFilter.cs` | Namespace exclusion over findings: location → namespace → covering exclusion. |
 | `Cli/SuppressionAudit.cs`, `NamespaceInventory.cs` | 4A audit, `obsolete[]` detection, glob/file and namespace probes. |
 | `Cli/EntropyRate.cs`, `EntropyLedger.cs` | 4B rate calculation, statuses, monthly ledger. |
 | `Cli/GitMetadata.cs`, `Analysis/GitProcess.cs` | git subprocess plumbing. |
@@ -1238,7 +1242,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | `Analysis/IWorkspaceAnalyser.cs` | The contract. Read this first. |
 | `Analysis/AnalysisScope.cs` | The in-scope documents most analysers walk, flat across projects. |
 | `Analysis/SolutionUsageIndex.cs` etc. | Shared solution-keyed indexes. |
-| `Analysis/ExclusionEngine.cs` | Generated/external/namespace gates, plus `IsTestCode` — complexity-only, never used by `ShouldSkipDocument`. |
+| `Analysis/ExclusionEngine.cs` | Generated/external gates, namespace resolution (`ResolveNamespace`), plus `IsTestCode` — complexity-only, never used by `ShouldSkipDocument`. |
 | `Analysis/DuplicateFragmentAnalyser.cs`, `CloneDriftDetector.cs`, `GitHistory.cs` | 4C. |
 | `Models/SnipperFinding.cs`, `CertaintyTier.cs`, `FindingCategory.cs`, `FindingOrder.cs` | The finding record, its two enums, and the one total order over findings. |
 

@@ -225,13 +225,13 @@ performance, baseline behaviour, and whether they show up in the audit.
 
 ### The two classes
 
-**Class 1 — removes findings before they exist.** Cheap (the analyser never runs, or the finding is
-never constructed) and invisible to the report-time filter.
+**Class 1 — removes findings before the report-time filter.** Invisible to that filter, and applied
+before baseline classification, so they never count as new.
 
 | Channel | Where | Cost |
 | --- | --- | --- |
-| Namespace exclusion | `exclude.namespaces` / `--exclude-namespaces` | Analyser skips the symbol. |
 | Whole-analyser disable | every rule id of an analyser set to `off` | **The analyser never runs.** |
+| Namespace exclusion | `exclude.namespaces` / `--exclude-namespaces` | Full analysis, then dropped right after it. The analysers never see exclusions. |
 
 **Class 2 — removes findings at report time.** The analysis cost is already paid.
 
@@ -246,7 +246,7 @@ never constructed) and invisible to the report-time filter.
 Evaluated in this order; first match wins:
 
 ```
-namespace exclusion        (upstream — before findings exist)
+namespace exclusion        (straight after analysis, before the baseline)
   └─> disabled rule        ┐
   └─> path glob            ├─ FindingFilter.Classify, in this order
   └─> severity override    ┘
@@ -255,7 +255,7 @@ namespace exclusion        (upstream — before findings exist)
 `FindingFilter.Classify` is shared by the report filter and the suppression audit, so the two can
 never disagree about why a finding vanished.
 
-**Consequence worth knowing:** because namespace exclusions run upstream, a path glob that covers the
+**Consequence worth knowing:** because namespace exclusions run first, a path glob that covers the
 same files will report `suppressedCount: 0` and be flagged `obsolete` — the findings were already
 gone. Overlapping channels produce audit rows that look like dead configuration.
 
@@ -263,7 +263,8 @@ gone. Overlapping channels produce audit rows that look like dead configuration.
 
 No suppression channel can rewrite a baseline. Path globs and severity overrides apply *after*
 fingerprinting, and as of 4A-2 namespace exclusions and disabled rules are fingerprinted from the
-suppression-independent finding set. **The accepted cost:** a baseline legitimately grows on its
+suppression-independent finding set. Namespace exclusions cost nothing for this, because what they hide
+is already in hand; a disabled sole-rule analyser is run on its own. **The accepted cost:** a baseline legitimately grows on its
 first run to include findings for newly excluded code.
 
 ### The audit (`--audit-suppressions`)
@@ -289,8 +290,8 @@ Adds a `suppression` section to the JSON report and a table to the console. It e
                            "ruleIds": [], "detail": "-> Advisory (was )" } ],
   "disabledRules": [],
   "namespaceExclusions": [ { "channel": "NamespaceExclusion", "selector": "Snipper.Cli",
-                             "suppressedCount": 1, "downgradedCount": 0, "ruleIds": [],
-                             "detail": "aggregate over 1 namespace(s); per-namespace split not available" } ],
+                             "suppressedCount": 1, "downgradedCount": 0, "ruleIds": ["SNP0024"],
+                             "detail": "" } ],
   "obsolete": [ { "channel": "SeverityOverride", "selector": "SNP0031",
                   "confidence": "Suspected", "reason": "no finding of this rule was downgraded" } ],
   "shadowAnalysisRan": true
@@ -303,16 +304,16 @@ Fields worth acting on:
 | --- | --- |
 | `obsolete[]` | **Find dead suppressions.** An entry means the suppression matched nothing. For a path glob this usually means the glob is wrong (see [Path globs](#path-globs)); for a namespace exclusion it usually means the namespace is renamed or the code moved. This is the single most useful CI check for suppression hygiene. |
 | `hiddenDebtPercent` | Portion of findings hidden by suppression. A high number means your visible report is flattering. |
-| `findingsHiddenByShadow` | Findings that exist but are suppressed — measured by the 4A-2 shadow pass. |
+| `findingsHiddenByShadow` | Findings that exist but are hidden by namespace exclusions and disabled rules. |
 | `suppressedCount` / `downgradedCount` | Per-channel attribution, so you can attribute debt to a specific glob. |
-| `shadowAnalysisRan` | Whether the shadow pass ran. It only runs when there is a baseline *and* a churn-prone suppression, so `false` is normal and not an error. |
+| `shadowAnalysisRan` | Whether namespace exclusions or disabled rules were configured, and so measured. `false` is normal and not an error: it means neither was. |
 
 The audit costs nothing for a user with no suppressions, and the console prints a single
 "no active suppression is hiding anything" line in that case.
 
-Namespace exclusions are reported in **aggregate** — one row for all of them, with no per-namespace
-split. If you need per-namespace attribution, run once per namespace, or read
-`hiddenDebtPercent` while bisecting.
+Each namespace exclusion gets **its own row**. A hidden finding is credited to the nearest exclusion
+that covers it, so with both `A` and `A.B` configured, code in `A.B.C` counts against `A.B`. An
+exclusion passed with `--exclude-namespaces` rather than configured gets a row when it hid something.
 
 ---
 
@@ -411,7 +412,8 @@ wrote, and worth wiring into CI permanently.
 ### Cost
 
 Path globs are Class 2 — the finding is fully analysed, then dropped. They do not save analysis
-time. If the goal is performance on a monorepo, prefer namespace exclusions, which skip work.
+time, and neither do namespace exclusions. If the goal is performance on a monorepo, disable the
+analysers you have not adopted — the only change that reduces runtime.
 
 ---
 
@@ -451,21 +453,23 @@ The consequence for a monorepo: you cannot use namespace exclusion to hide a pub
 then expect unused-member findings for the rest of the repo. The excluded assembly's types are still
 evidence that the members are used.
 
-### ⚠ Findings with no enclosing type escape namespace exclusion
+### How a finding's namespace is found
 
-Namespace exclusion for symbol-less findings (unused usings, unreachable statements, unread locals)
-is resolved through the **enclosing type declaration**. A file-level `using` directive has no
-enclosing type, so it is not covered.
+Every finding is judged by the namespace its **location** is declared in, with one rule for every
+analyser:
 
-Verified: excluding `Snipper.Analysis` removed `DuplicateFragmentAnalyser.cs:109` (SNP0024) but left
-`DuplicateFragmentAnalyser.cs:5` (SNP0019, unused using) in place.
+- the enclosing namespace declarations, joined outward — `namespace B` inside `namespace A` is `A.B`;
+- for file-level code above a file-scoped `namespace N;` (its `using` directives), `N`;
+- for a file that declares no namespace at all, `<global>`.
 
-If you exclude a large generated tree, expect residual SNP0019/SNP0020/SNP0002 findings at file
-scope **unless you exclude `<global>`** — add it alongside the namespace.
+Findings outside C# source — project files, lock files, `appsettings*.json` — have no namespace and
+are never excluded. A clone set (SNP0031/32) is judged by its anchor copy, as a path glob judges it:
+hidden when the anchor is excluded, otherwise reported naming every copy, so what you see is exactly
+what the baseline records.
 
 **File-scope code needs the `<global>` marker.** A file that declares no namespace at all — a
 top-level-statements `Program.cs`, a file of global usings — has no namespace name that can match
-`Company.Something`, so a namespace exclusion never covered it. `<global>` is the documented way to
+`Company.Something`, so only this marker covers it. `<global>` is the documented way to
 exclude it, and since **1.7.4** it works from the command line as well as the config file:
 
 ```console
@@ -477,7 +481,7 @@ snipper --exclude-namespaces "Company.Something,<global>"
 { "version": 1, "exclude": { "namespaces": ["<global>"] } }
 ```
 
-`<global>` is honoured by every namespace-aware rule, not only SNP0031. It suppresses findings in
+`<global>` is honoured for every rule, not only SNP0031. It suppresses findings in
 file-scope code; like every namespace exclusion, it retains usage evidence.
 
 ### ⚠ The CLI validates namespace syntax; the config file does not
@@ -504,8 +508,14 @@ Two consequences:
 
 ### Cost
 
-Class 1 — the analyser skips the symbol rather than discarding a finished finding. For
-monorepo-scale generated code this is the difference between a minutes-long run and an unusable one.
+Namespace exclusion is applied **after** analysis: excluded code is analysed like any other and its
+findings are dropped. That keeps the analysis independent of configuration, so a run with a baseline
+or `--audit-suppressions` needs one pass where it used to need two. Measured on an 81-project
+monorepo with five exclusions, `--baseline --audit-suppressions --duplicate-detection`: 193.5 s →
+127.1 s, the audit's 41.3 s second pass gone. A plain run pays to analyse the excluded code; on the
+same repository that was inside run-to-run noise (117.1 s before, 105.7 s after). Code generated into
+`obj/`, `*.g.cs`/`*.designer.cs` files or files with an `<auto-generated>` header is skipped before
+analysis regardless of exclusions.
 
 ---
 
@@ -718,7 +728,7 @@ pre-warms compilations for this reason.
 
 | Change | Cost |
 | --- | --- |
-| Namespace exclusion | **Reduces** work (analyser skips the symbol). |
+| Namespace exclusion | **No** saving — findings are dropped after analysis. With a baseline or `--audit-suppressions` it is free, where it used to cost a second pass. |
 | Whole-analyser disable | **Eliminates** that analyser's work. |
 | Rule off / path glob / severity override | **No** saving — the analysis is already done. |
 | `--config-analysis` | Adds settings-file parsing and options-binding resolution. |
@@ -751,8 +761,8 @@ unmeasured at that scale; the advice below is reasoned, not benchmarked — see
 - **Baseline first.** Without it, a legacy repo produces a report too large to be actionable and a
   gate that is always red.
 - **Disable whole analysers you have decided not to adopt** — the only change that reduces runtime.
-- **Exclude generated trees by namespace**, not by path glob, if the generated code has a consistent
-  namespace. Path globs pay full analysis cost.
+- **Exclude generated trees by namespace** if the generated code has a consistent namespace: it
+  covers every file of the namespace wherever it lives, and the audit reports it per namespace.
 
 ---
 
@@ -831,7 +841,8 @@ Verified against the running tool. Listed so they are not discovered the hard wa
 8. **A misspelled rule id is a warning, not an error,** and does nothing. Audit `obsolete[]` catches it.
 9. **Overlapping channels mislead the audit.** A glob covering namespaced-away files reads as
    `suppressedCount: 0` and is flagged obsolete.
-10. **Audit namespace rows are aggregate only.** No per-namespace split.
+10. **A clone set is judged by its anchor.** SNP0031/32 is hidden only when its anchor copy is in an
+    excluded namespace, as with a path glob; a visible set still names copies in excluded code.
 11. **A partially disabled multi-rule analyser still runs.** Disable every rule id, or the cost stays.
 12. **The audit's severity-override `detail` string shows an empty original tier** (`"-> Advisory
     (was )"`). Cosmetic, but it means the audit does not tell you what a finding was before you
