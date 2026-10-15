@@ -91,6 +91,14 @@ public sealed class UnreferencedPackageAnalyser : IWorkspaceAnalyser
         // cannot be verified while one exists. The claim is capped, not dropped.
         var detachedConsumers = FindDetachedConsumerPaths(solution, projectFileInfos);
 
+        // Every usage lookup below — subject, consumer or flow — is for a project
+        // with package or project references, so warm exactly those concurrently.
+        await usageCache.PrefetchAsync(
+            projectFileInfos
+                .Where(static pair => pair.Value.PackageReferences.Length > 0 || pair.Value.ProjectReferences.Length > 0)
+                .Select(static pair => pair.Key),
+            cancellationToken).ConfigureAwait(false);
+
         // Multi-targeted projects surface as one Project per TFM; usage is judged per
         // csproj (the cache unions all TFM instances) so each file is analysed once.
         var analysedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

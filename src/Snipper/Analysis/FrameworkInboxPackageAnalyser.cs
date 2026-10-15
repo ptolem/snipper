@@ -35,6 +35,7 @@ public sealed class FrameworkInboxPackageAnalyser : IWorkspaceAnalyser
         // Few distinct (TFM, web) combinations in practice — resolve once, reuse.
         var overridesCache = new Dictionary<(string Tfm, bool IncludeAspNetCore), FrameworkPackageOverrides?>();
 
+        var candidates = new List<(Project Project, string FilePath, ProjectFileInfo ProjectFile)>();
         foreach (var project in solution.Projects)
         {
             if (!project.SupportsCompilation || project.FilePath is null || !File.Exists(project.FilePath))
@@ -43,12 +44,17 @@ public sealed class FrameworkInboxPackageAnalyser : IWorkspaceAnalyser
             }
 
             var projectFile = ProjectFileReader.Read(project.FilePath);
-            if (projectFile is null || projectFile.PackageReferences.Length == 0 || projectFile.TargetFrameworks.Length == 0)
+            if (projectFile is not null && projectFile.PackageReferences.Length > 0 && projectFile.TargetFrameworks.Length > 0)
             {
-                continue;
+                candidates.Add((project, project.FilePath, projectFile));
             }
+        }
 
-            var usage = await usageCache.GetAsync(project.FilePath, cancellationToken).ConfigureAwait(false);
+        await usageCache.PrefetchAsync(candidates.Select(static c => c.FilePath), cancellationToken).ConfigureAwait(false);
+
+        foreach (var (project, projectFilePath, projectFile) in candidates)
+        {
+            var usage = await usageCache.GetAsync(projectFilePath, cancellationToken).ConfigureAwait(false);
 
             var includeAspNetCore = IsAspNetCoreProject(projectFile);
 
@@ -114,7 +120,7 @@ public sealed class FrameworkInboxPackageAnalyser : IWorkspaceAnalyser
                     Message: $"Package '{package.Id}' {package.DeclaredMinVersion} ships in the shared framework for every target of project '{project.Name}' — the PackageReference can be removed.",
                     Certainty: CertaintyTier.High,
                     Category: FindingCategory.FrameworkProvidedPackage,
-                    FilePath: project.FilePath,
+                    FilePath: projectFilePath,
                     LineNumber: package.LineNumber,
                     CharacterOffset: 1));
             }

@@ -36,8 +36,9 @@ internal sealed class ProjectPackageUsageCache
 
     /// <summary>
     /// Usage facts for the given project file, computed on first request. The
-    /// computation belongs to the first caller; concurrent callers share it
-    /// (ExecutionAndPublication) and later callers reuse the memoized result.
+    /// computation starts on the thread pool and its task is shared
+    /// (ExecutionAndPublication): concurrent callers await it rather than block on
+    /// the Lazy while the semantic walk runs, and later callers reuse the result.
     /// </summary>
     public Task<ProjectPackageUsageEntry> GetAsync(string projectFilePath, CancellationToken cancellationToken)
     {
@@ -46,11 +47,28 @@ internal sealed class ProjectPackageUsageCache
         var lazy = _entriesByProjectPath.GetOrAdd(
             projectFilePath,
             static (path, state) => new Lazy<Task<ProjectPackageUsageEntry>>(
-                () => BuildAsync(state.Solution, path, state.CancellationToken),
+                () => Task.Run(() => BuildAsync(state.Solution, path, state.CancellationToken), state.CancellationToken),
                 LazyThreadSafetyMode.ExecutionAndPublication),
             (Solution: _solution, CancellationToken: cancellationToken));
 
         return lazy.Value;
+    }
+
+    /// <summary>
+    /// Computes the entries for the given project files concurrently, bounded by
+    /// SNIPPER_MAX_DOP, so a caller's per-project loop then finds each one ready.
+    /// Without it the package analysers walked projects one at a time and every
+    /// cache miss was a full semantic walk on the critical path. Entries already
+    /// computed or in flight are shared, so overlapping prefetches cost nothing.
+    /// </summary>
+    public Task PrefetchAsync(IEnumerable<string> projectFilePaths, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(projectFilePaths);
+
+        return Parallel.ForEachAsync(
+            projectFilePaths.Distinct(StringComparer.OrdinalIgnoreCase),
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (projectFilePath, token) => await GetAsync(projectFilePath, token).ConfigureAwait(false));
     }
 
     private static async Task<ProjectPackageUsageEntry> BuildAsync(

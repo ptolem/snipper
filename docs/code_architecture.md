@@ -350,7 +350,8 @@ classDiagram
     }
 
     class ProjectPackageUsageCache {
-        +GetUsage(project) PackageAssemblyUsage
+        +GetAsync(projectFilePath, ct) ProjectPackageUsageEntry
+        +PrefetchAsync(projectFilePaths, ct) Task
     }
 
     class TokenShingleIndex {
@@ -781,6 +782,11 @@ Four things this buys, all of which matter:
   static `Dictionary<Solution, T>` would leak every workspace the process ever opened.
 - **The indexes themselves are immutable and frozen** (`FrozenDictionary`, `FrozenSet`,
   `ImmutableHashSet`) once built, so concurrent reads need no locking.
+
+`ProjectPackageUsageCache` applies the pattern per project rather than per solution. Each csproj
+entry is a semantic walk of its own, so the cache keeps one `Lazy<Task<…>>` per project path, and
+the package analysers call `PrefetchAsync` with the projects they are about to visit. That builds
+the missing entries concurrently, bounded by `SNIPPER_MAX_DOP`, before their per-project loops run.
 
 If you add a shared index, follow the same pattern. If you add a mutable field to an analyser, you
 break both the fan-out and the per-document loops inside it - `SNIPPER_MAX_DOP=1` is the escape hatch, and it is also your signal that you have
