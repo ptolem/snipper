@@ -14,8 +14,8 @@ using Snipper.Models;
 /// <see cref="BuildSarifJson"/> are separate from <see cref="Write"/>.
 /// </para>
 /// <para>
-/// Both writers sort by certainty then path, so two runs over the same findings produce
-/// byte-identical output. That determinism is a stated contract, not an accident.
+/// Both writers sort by <see cref="FindingOrder"/>, so two runs over the same findings
+/// produce byte-identical output. That determinism is a stated contract, not an accident.
 /// </para>
 /// </summary>
 internal static class ReportWriter
@@ -81,9 +81,10 @@ internal static class ReportWriter
         ArgumentNullException.ThrowIfNull(findings);
 
         var lineCache = new SourceLineCache();
-        // Total order, so the report is byte-identical across runs whatever order the
-        // analysers emitted in, and so the JSON and SARIF writers agree with each other.
-        var ordered = SortDeterministically(findings);
+        // The runner orders each analyser's findings but merges them in declaration order,
+        // so the report applies the same order across the whole list. That also makes the
+        // output byte-identical for callers that never went through the runner.
+        var ordered = FindingOrder.Sort(findings);
 
         var report = new SnipperReport(
             ToolVersion: ToolVersion.Current,
@@ -111,36 +112,6 @@ internal static class ReportWriter
     }
 
     /// <summary>
-    /// One total order over findings, shared by every output format.
-    /// <para>
-    /// Certainty and path alone are not enough. Those two keys were the whole sort once,
-    /// and being a stable sort they left every finding sharing a (certainty, path) pair -
-    /// all unused usings in one file, say - inheriting whatever order the analyser produced.
-    /// SNP0019 inherited a *parallel producer-completion* order from
-    /// <c>compilation.GetDiagnostics()</c>, so two runs over the same solution permuted those
-    /// findings. Breaking every remaining tie here makes this the last line of defence, and
-    /// means a future analyser cannot reintroduce that class of bug.
-    /// </para>
-    /// </summary>
-    private static List<SnipperFinding> SortDeterministically(IEnumerable<SnipperFinding> findings)
-    {
-        ArgumentNullException.ThrowIfNull(findings);
-
-        return
-        [
-            .. findings
-                .OrderBy(static f => f.Certainty)
-                .ThenBy(static f => f.FilePath, StringComparer.Ordinal)
-                .ThenBy(static f => f.LineNumber)
-                .ThenBy(static f => f.CharacterOffset)
-                .ThenBy(static f => f.RuleId, StringComparer.Ordinal)
-                .ThenBy(static f => f.Message, StringComparer.Ordinal)
-                .ThenBy(static f => f.Category)
-                .ThenBy(static f => f.Title, StringComparer.Ordinal)
-        ];
-    }
-
-    /// <summary>
     /// Builds a SARIF 2.1.0 log. Certainty maps to level (Guaranteed → error, High and
     /// Moderate → warning, Advisory → note) and is *also* preserved in
     /// <c>properties.certainty</c>, because a consumer that only sees SARIF levels cannot
@@ -158,7 +129,7 @@ internal static class ReportWriter
         var toolVersion = ToolVersion.Current;
         var lineCache = new SourceLineCache();
 
-        var ordered = SortDeterministically(findings);
+        var ordered = FindingOrder.Sort(findings);
 
         // Same total order as the JSON report, so both formats are stable and agree with
         // each other. GroupBy preserves first-appearance order, so the rule table needs

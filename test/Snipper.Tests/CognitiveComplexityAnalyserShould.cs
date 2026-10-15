@@ -614,21 +614,4 @@ public sealed class CognitiveComplexityAnalyserShould
         var findings = await AnalyzeAsync(source, -5);
         findings.Should().BeEmpty("a non-positive threshold falls back to the default, not to zero");
     }
-
-    [Fact]
-    public async Task Findings_Are_Ordered_Deterministically()
-    {
-        const string source = """
-            class C
-            {
-                void Z(bool a) { if (a) { } if (a) { } }
-                void A(bool a) { if (a) { } if (a) { } }
-            }
-            """;
-
-        var findings = await AnalyzeAsync(source, 1);
-
-        findings.Should().BeInAscendingOrder(f => f.FilePath, StringComparer.Ordinal);
-        findings.Should().BeInAscendingOrder(f => f.LineNumber);
-    }
 }

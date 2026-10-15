@@ -186,13 +186,7 @@ public sealed class CognitiveComplexityAnalyser : IWorkspaceAnalyser
             }
         }
 
-        return findings
-            .OrderBy(static f => f.FilePath, StringComparer.Ordinal)
-            .ThenBy(static f => f.LineNumber)
-            .ThenBy(static f => f.CharacterOffset)
-            .ThenBy(static f => f.RuleId, StringComparer.Ordinal)
-            .ThenBy(static f => f.Message, StringComparer.Ordinal)
-            .ToList();
+        return findings;
     }
 
     /// <summary>

@@ -151,16 +151,7 @@ public sealed class CyclomaticComplexityAnalyser : IWorkspaceAnalyser
             }
         }
 
-        // Document order is already deterministic — this is a syntax walk, not a
-        // diagnostic enumeration — but findings from different projects interleave,
-        // so the exit sort is what makes the report byte-stable.
-        return findings
-            .OrderBy(static f => f.FilePath, StringComparer.Ordinal)
-            .ThenBy(static f => f.LineNumber)
-            .ThenBy(static f => f.CharacterOffset)
-            .ThenBy(static f => f.RuleId, StringComparer.Ordinal)
-            .ThenBy(static f => f.Message, StringComparer.Ordinal)
-            .ToList();
+        return findings;
     }
 
     /// <summary>

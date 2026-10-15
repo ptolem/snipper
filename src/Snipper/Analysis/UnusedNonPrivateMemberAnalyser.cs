@@ -117,8 +117,8 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
         // Phase B: reference searches — the expensive FindReferencesAsync scans,
         // parallelised behind the revertible switch (SNIPPER_MAX_DOP=1 reverts to
         // sequential). Adoption gate, spike 2026-09-19: zero finding drift vs
-        // sequential on Snipper.slnx + fixture2 + the monorepo. Findings are
-        // sorted on exit, so scheduling cannot affect output.
+        // sequential on Snipper.slnx + fixture2 + the monorepo. The bag order
+        // depends on scheduling; AnalysisRunner puts it in FindingOrder.
         var findings = new ConcurrentBag<SnipperFinding>();
         await Parallel.ForEachAsync(
             candidates,
@@ -150,13 +150,7 @@ public sealed class UnusedNonPrivateMemberAnalyser(AnalysisExclusions? exclusion
                 }
             }).ConfigureAwait(false);
 
-        return findings
-            .OrderBy(static f => f.FilePath, StringComparer.Ordinal)
-            .ThenBy(static f => f.LineNumber)
-            .ThenBy(static f => f.CharacterOffset)
-            .ThenBy(static f => f.RuleId, StringComparer.Ordinal)
-            .ThenBy(static f => f.Message, StringComparer.Ordinal)
-            .ToList();
+        return [.. findings];
     }
 
     private sealed record Candidate(ISymbol Symbol, IImmutableSet<Document> CandidateDocuments, bool HasFriendAssemblies);

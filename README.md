@@ -136,7 +136,7 @@ where the investigation's own conclusions were wrong** and are corrected in plac
 
 ## Current release
 
-**1.15.0** — 30 rule IDs (SNP0001–0013, SNP0018–0034), 21 analysers, 713 tests.
+**1.15.0** — 30 rule IDs (SNP0001–0013, SNP0018–0034), 21 analysers, 714 tests.
 
 Behaviour changes by release. Every row marked **re-baseline** changes either a finding's count or
 the message its fingerprint covers, so a consumer upgrading across it must re-stamp once; the count of

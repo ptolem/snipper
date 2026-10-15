@@ -38,15 +38,9 @@ internal static class ConsoleRenderer
         table.AddColumn("[bold]Location[/]");
         table.AddColumn("[bold]Description[/]");
 
-        // StringComparer.Ordinal is load-bearing, not a micro-optimisation: without it this
-        // falls back to culture-sensitive ordering, so the console table can list the same
-        // findings in a different order than the JSON and SARIF writers, and that order can
-        // change with the machine's locale. Every other sort in the tool is explicit ordinal
-        // for the same reason - see ReportWriter.SortDeterministically.
-        var sortedFindings = findings.OrderBy(static f => f.Certainty)
-            .ThenBy(static f => f.FilePath, StringComparer.Ordinal);
-
-        foreach (var f in sortedFindings)
+        // The same order as the JSON and SARIF reports, so the table and the file list
+        // findings in the same sequence.
+        foreach (var f in FindingOrder.Sort(findings))
         {
             var certaintyMarkup = f.Certainty switch
             {

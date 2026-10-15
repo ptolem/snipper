@@ -5,7 +5,7 @@ memory, how analysers run, and how findings become a report — and, importantly
 must not break when adding to it.
 
 Written against the 1.14.0 tree, 15,632 lines of C# across 92 files in `src/Snipper` (21 registered
-analysers, 30 rule IDs, 713 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
+analysers, 30 rule IDs, 714 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
 Spectre.Console.
 
 For *using* the tool see the [usage guide](usage.md). For *why* the design is the way it is see
@@ -70,7 +70,7 @@ Five things to internalise before reading further:
    whole-analyser disables remove findings *before they exist*; rule-off, path globs and severity
    overrides filter them *after*. This is why the baseline needs a second, lifted pass.
 5. **Determinism is a contract.** Findings come back in analyser declaration order, not completion
-   order, and reports are byte-identical run to run.
+   order, each analyser's findings in `FindingOrder`, and reports are byte-identical run to run.
 
 ---
 
@@ -859,8 +859,8 @@ Verified output-neutral: the `findings` array is byte-identical on all six targe
 | `FrameworkEvidenceIndex` receiver text | `memberAccess.Expression.ToString()` ran for **every** invocation, but `receiverText` is only read for 7 method names out of ~4,500 invocations. ~99.9% of those strings were built and discarded. Now gated on the identifier first. |
 | `FrameworkEvidenceIndex` attribute names | `attribute.Name.ToString()` allocated for every attribute in every document. Now `AttributeNameText`, which is allocation-free for the common unqualified case and **deliberately still falls back to `ToString()` for qualified names** - callers compare the whole rendered string, so `[Newtonsoft.Json.JsonSerializable]` must keep *failing* the `JsonSerializable` comparison. Using a bare identifier here would be a behaviour change disguised as an allocation fix. |
 | `SolutionUsageIndex` interning | Every `SimpleNameSyntax` hashed its identifier three times. Once a name is already in the document's set, the other two lookups are provably redundant, so a `names.Add` guard collapses 3 hashes to 1 on the hottest loop in the tool. |
-| `CliRunner` fingerprints | `ComputeFingerprint` (`GetRelativePath` + replace + interpolation + UTF8 + SHA-256) ran up to 3x per finding across the audit and baseline blocks. One reference-keyed memo now serves all five call sites. Keyed by **reference** on purpose: `SnipperFinding` is a record, so default equality would run a structural comparison and two distinct findings can compare equal. |
-| `RedundancyAnalyser` tree walks | Five full `DescendantNodes()` traversals per document. Now one walk into five buckets. The buckets are still consumed in shape order, but **no longer because the report depends on it** - that was a false constraint. The report used to sort by `(Certainty, FilePath)` alone, so findings in one file shared a tie and inherited analyser order, and `SNP0019` inheriting a parallel producer-completion order from `compilation.GetDiagnostics()` permuted its results between runs. Both writers now impose a total order (`ReportWriter.SortDeterministically`), so bucket consumption order cannot reach the output. |
+| `CliRunner` fingerprints | `ComputeFingerprint` (`GetRelativePath` + replace + interpolation + UTF8 + SHA-256) ran up to 3x per finding across the audit and baseline blocks. One reference-keyed memo now serves all five call sites. Keyed by **reference**: record equality would also be correct, since the fingerprint is a function of the fields it compares, but it hashes every string field on each lookup. |
+| `RedundancyAnalyser` tree walks | Five full `DescendantNodes()` traversals per document. Now one walk into five buckets. The buckets are still consumed in shape order, but **no longer because the report depends on it** - that was a false constraint. The report used to sort by `(Certainty, FilePath)` alone, so findings in one file shared a tie and inherited analyser order, and `SNP0019` inheriting a parallel producer-completion order from `compilation.GetDiagnostics()` permuted its results between runs. The runner and both writers now impose one total order (`FindingOrder`), so bucket consumption order cannot reach the output. |
 
 ### Honest gaps
 
@@ -1079,7 +1079,7 @@ Windows, which would make per-member lookups unusable at monorepo scale.
 
 | Output | Mechanism | Notes |
 | --- | --- | --- |
-| Console | `RenderReport` | `OrderBy(Certainty).ThenBy(FilePath)`; a Spectre `Table`. |
+| Console | `RenderReport` | `FindingOrder`, the same order as the JSON and SARIF reports; a Spectre `Table`. |
 | JSON | `BuildJson` | Serialised through `JsonReportSerializerContext`, a **source-generated** context — no reflection, no trimming warnings. |
 | SARIF 2.1.0 | `BuildSarifJson` | `Guaranteed → error`, `High/Moderate → warning`, `Advisory → note`, plus `properties.certainty` and `properties.category`. |
 | Baseline | `BaselineService.Write` | SHA-256 of `RuleId \| relativePath \| Message`, plus an optional `commitSha`. |
@@ -1100,7 +1100,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 
 | # | Invariant | Why |
 | --- | --- | --- |
-| 1 | Findings are reassembled in analyser **declaration order**, not completion order. | The report must be byte-identical to a sequential run. |
+| 1 | Findings are reassembled in analyser **declaration order**, not completion order, and each analyser's slot is put in `FindingOrder`. | The merged list must be identical to a sequential run's, so an analyser may emit in any order. |
 | 2 | No mutable state on an analyser instance. | Every analyser in the run shares one `Solution` concurrently. |
 | 3 | New shared indexes use `ConditionalWeakTable<Solution, Lazy<T>>` with `ExecutionAndPublication`. | Build once; do not leak workspaces; no duplicated work. |
 | 4 | Shared indexes are frozen/immutable after build. | Lock-free concurrent reads. |
@@ -1115,7 +1115,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | 12 | Evidence is never a finding. | A reference to a member is not a reason to flag it. |
 | 13 | Config loading never throws. | A typo in `snipper.json` degrades to "less filtering", not a red build. |
 | 14 | Git access is read-only and degrades to silence outside a checkout. | Not every consumer has a repository. |
-| 15 | Output is sorted deterministically before writing. | Byte-identical reports; reviewable diffs. |
+| 15 | Findings are ordered by `FindingOrder` alone. An analyser sorts only where its own logic depends on order, as `CloneDriftDetector`'s first-wins deduplication does. | Byte-identical reports; reviewable diffs. |
 | 16 | No `dynamic`; no exceptions for flow control. | The rules are stated per-wave; keep them. |
 | 17 | A lifted shadow pass **rebuilds** its analysers with `AnalysisExclusions.None`. | Reusing the already-built instances runs a pass that looks lifted but is not. It reports zero hidden findings, keeps the JSON valid, and fails nothing. `ShadowPassShould` exists for exactly this. |
 | 18 | The exclusion-sensitivity partition defaults new analysers to *aware*. | A newly added analyser is then re-run rather than wrongly assumed unaffected. The failure mode is extra work, not a wrong number. |
@@ -1159,7 +1159,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 
 ## Testing conventions
 
-- `test/Snipper.Tests/`, xUnit + FluentAssertions. 713 tests, ~2 min per run. The test sources
+- `test/Snipper.Tests/`, xUnit + FluentAssertions. 714 tests, ~2 min per run. The test sources
   themselves are 55 files / ~8,560 lines; the remainder of the tree is the `TestAssets/SampleApp`
   fixture the analyser tests run against.
 - **The fixture must compile, and that is asserted.** `FixtureBuildShould` builds every project in
@@ -1218,7 +1218,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | `Analysis/SolutionUsageIndex.cs` etc. | Shared solution-keyed indexes. |
 | `Analysis/ExclusionEngine.cs` | Generated/external/namespace gates, plus `IsTestCode` — complexity-only, never used by `ShouldSkipDocument`. |
 | `Analysis/DuplicateFragmentAnalyser.cs`, `CloneDriftDetector.cs`, `GitHistory.cs` | 4C. |
-| `Models/SnipperFinding.cs`, `CertaintyTier.cs`, `FindingCategory.cs` | The finding record and its two enums. |
+| `Models/SnipperFinding.cs`, `CertaintyTier.cs`, `FindingCategory.cs`, `FindingOrder.cs` | The finding record, its two enums, and the one total order over findings. |
 
 ---
 

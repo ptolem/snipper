@@ -7,7 +7,8 @@ using Snipper.Models;
 using Xunit;
 
 /// <summary>
-/// Deterministic-output regression tests for the report writers.
+/// Deterministic-output regression tests for the report writers and the
+/// <see cref="FindingOrder"/> they share with the runner.
 /// <para>
 /// Both writers used to sort by <c>(Certainty, FilePath)</c> only. That is a stable
 /// sort, so every finding sharing such a pair - all unused usings in one file, for
@@ -93,6 +94,38 @@ public sealed partial class ReportOrderingShould
         entries.Should().ContainInOrder("SNP0019");
         entries.TakeWhile(r => r == "SNP0019").Should().NotBeEmpty();
         entries[^1].Should().Be("SNP0031");
+    }
+
+    [Fact]
+    public void FindingOrder_Breaks_Ties_In_Key_Order()
+    {
+        // Each finding differs from the one before it in exactly one key, walking the keys
+        // from last to first, so every tie-breaker has to fire for this order to come out.
+        var expected = new[]
+        {
+            Finding("SNP0019", "a", "C:/src/A.cs", 1, 1),
+            Finding("SNP0019", "a", "C:/src/A.cs", 1, 1) with { Title = "Z" },
+            Finding("SNP0019", "a", "C:/src/A.cs", 1, 1) with { Category = FindingCategory.Complexity },
+            Finding("SNP0019", "b", "C:/src/A.cs", 1, 1),
+            Finding("SNP0033", "a", "C:/src/A.cs", 1, 1),
+            Finding("SNP0002", "a", "C:/src/A.cs", 1, 2),
+            Finding("SNP0002", "a", "C:/src/A.cs", 2, 1),
+            Finding("SNP0002", "a", "C:/src/B.cs", 1, 1),
+            Finding("SNP0002", "a", "C:/src/A.cs", 1, 1, CertaintyTier.Advisory),
+        };
+
+        FindingOrder.Sort(expected.Reverse()).Should().Equal(expected);
+    }
+
+    [Fact]
+    public void FindingOrder_Compares_Paths_Ordinally()
+    {
+        // Ordinal puts 'B' (0x42) before 'a' (0x61); a culture-aware comparison would not,
+        // and would make the order depend on the machine's locale.
+        var lower = Finding("SNP0019", "m", "C:/src/a.cs", 1, 1);
+        var upper = Finding("SNP0019", "m", "C:/src/B.cs", 1, 1);
+
+        FindingOrder.Sort([lower, upper]).Should().Equal(upper, lower);
     }
 
     [GeneratedRegex("\"generatedAtUtc\"\\s*:\\s*\"[^\"]*\"")]

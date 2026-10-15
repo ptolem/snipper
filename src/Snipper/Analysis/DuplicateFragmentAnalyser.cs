@@ -152,15 +152,7 @@ public sealed class DuplicateFragmentAnalyser(
             findings.AddRange(detector.Detect(cloneSets));
         }
 
-        // Deterministic ordering is a hard requirement (plan guiding principle
-        // 5): clone sets are discovered through hash buckets, so without this
-        // the report order would depend on scheduling.
-        return findings
-            .OrderBy(f => f.FilePath, StringComparer.Ordinal)
-            .ThenBy(f => f.LineNumber)
-            .ThenBy(f => f.CharacterOffset)
-            .ThenBy(f => f.Message, StringComparer.Ordinal)
-            .ToList();
+        return findings;
     }
 
     private async Task<List<SourceFile>> CollectFiles(Solution solution, CancellationToken cancellationToken)

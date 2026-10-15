@@ -357,22 +357,22 @@ public sealed class DuplicateFragmentAnalyserShould(SampleSolutionFixture fixtur
     }
 
     [Fact]
-    public async Task Produce_Deterministic_Ordered_Output_For_AnalyzeAsync()
+    public async Task Produce_Deterministic_Output_For_AnalyzeAsync()
     {
+        // Order is not the analyser's contract - AnalysisRunner applies FindingOrder - so
+        // this pins the content: two runs must find exactly the same clones.
         var first = await AnalyzeAsync();
         var second = await AnalyzeAsync();
 
-        var project = first
+        var project = FindingOrder.Sort(first)
             .Select(f => (f.RuleId, f.FilePath, f.LineNumber, f.CharacterOffset, f.Message))
             .ToList();
 
-        var repeat = second
+        var repeat = FindingOrder.Sort(second)
             .Select(f => (f.RuleId, f.FilePath, f.LineNumber, f.CharacterOffset, f.Message))
             .ToList();
 
         repeat.Should().Equal(project);
-        project.Should().BeInAscendingOrder(
-            p => p.FilePath, StringComparer.Ordinal);
     }
 
     [Fact]

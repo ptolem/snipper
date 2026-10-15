@@ -21,7 +21,9 @@ using Snipper.Models;
 /// index therefore blocks on one build, never duplicates it.
 ///
 /// Findings are reassembled in analyser declaration order regardless of
-/// completion order, so the merged report is byte-identical to a sequential run.
+/// completion order, and each analyser's own findings in <see cref="FindingOrder"/>,
+/// so the merged list is identical to a sequential run's whatever order each
+/// analyser emitted in.
 /// Scheduling is bounded by <see cref="AnalysisParallelism"/>;
 /// <c>SNIPPER_MAX_DOP=1</c> restores strict sequential execution, which is also
 /// the escape hatch if a future analyser carries hidden mutable state.
@@ -79,7 +81,9 @@ internal static class AnalysisRunner
                     progress: status => ReportProgress(analyserName, status)).ConfigureAwait(false);
                 stopwatch.Stop();
 
-                results[index] = findings;
+                // Each slot is put in FindingOrder here, so an analyser may emit in
+                // whatever order its traversal or its parallelism produces.
+                results[index] = FindingOrder.Sort(findings);
 
                 lock (consoleSync)
                 {
