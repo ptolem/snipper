@@ -148,7 +148,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
         return [.. findings];
     }
 
-    private async Task<SnipperFinding?> TryEvaluateCanBeStaticAsync(
+    private static async Task<SnipperFinding?> TryEvaluateCanBeStaticAsync(
         MethodDeclarationSyntax methodDeclaration,
         SemanticModel semanticModel,
         ReferenceSearch referenceSearch,
@@ -229,7 +229,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
             $"Method '{method.Name}' does not use instance state and can be static.");
     }
 
-    private async Task<SnipperFinding?> TryEvaluateCanBeReadonlyAsync(
+    private static async Task<SnipperFinding?> TryEvaluateCanBeReadonlyAsync(
         SyntaxNode declaratorNode,
         FieldDeclarationSyntax fieldDeclaration,
         SemanticModel semanticModel,
@@ -313,7 +313,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
             $"Field '{field.Name}' is assigned only during construction and can be readonly.");
     }
 
-    private async Task<SnipperFinding?> TryEvaluateCanBeSealedAsync(
+    private static async Task<SnipperFinding?> TryEvaluateCanBeSealedAsync(
         ClassDeclarationSyntax classDeclaration,
         SemanticModel semanticModel,
         ReferenceSearch referenceSearch,
@@ -405,7 +405,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
         return false;
     }
 
-    private async Task<SnipperFinding?> TryEvaluateCanBePrivateAsync(
+    private static async Task<SnipperFinding?> TryEvaluateCanBePrivateAsync(
         ISymbol member,
         ReferenceSearch referenceSearch,
         FrameworkEvidenceIndex frameworkEvidence,

@@ -339,7 +339,7 @@ public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
         return [.. findings];
     }
 
-    private void CollectFamilyCandidates(INamedTypeSymbol classSymbol, List<ISymbol> familyCandidates)
+    private static void CollectFamilyCandidates(INamedTypeSymbol classSymbol, List<ISymbol> familyCandidates)
     {
         foreach (var member in classSymbol.GetMembers())
         {

@@ -91,7 +91,7 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
         return [.. findings];
     }
 
-    private async Task EvaluateCandidateAsync(
+    private static async Task EvaluateCandidateAsync(
         ISymbol symbol,
         AttributeSyntax attribute,
         ReferenceSearch referenceSearch,

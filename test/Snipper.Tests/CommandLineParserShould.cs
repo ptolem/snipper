@@ -1,7 +1,6 @@
 namespace Snipper.Tests;
 
 using FluentAssertions;
-using Snipper.Analysis;
 using Snipper.Cli;
 using Snipper.Models;
 using Xunit;
