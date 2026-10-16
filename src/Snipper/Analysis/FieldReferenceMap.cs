@@ -1,40 +1,34 @@
 namespace Snipper.Analysis;
 
-using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.FindSymbols;
 
 /// <summary>
 /// Shared field-reference enumeration for the value-flow rules (SNP0021
 /// write-only, SNP0024 can-be-readonly): every confirmed reference location of
 /// a field, resolved to its innermost <see cref="SimpleNameSyntax"/> for
 /// <see cref="FieldReferenceClassifier"/> to judge. Extracted from
-/// WriteOnlyFieldAnalyser so both rules read identical evidence.
+/// WriteOnlyFieldAnalyser so both rules read identical evidence, from the one
+/// <see cref="ReferenceSearch"/> both share.
 /// </summary>
 internal static class FieldReferenceMap
 {
     public static async Task<IReadOnlyList<FieldReferenceLocation>> GetReferencesAsync(
         IFieldSymbol field,
-        Solution solution,
-        IImmutableSet<Document> candidateDocuments,
+        ReferenceSearch referenceSearch,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(field);
-        ArgumentNullException.ThrowIfNull(solution);
-        ArgumentNullException.ThrowIfNull(candidateDocuments);
+        ArgumentNullException.ThrowIfNull(referenceSearch);
 
-        var references = await SymbolFinder.FindReferencesAsync(field, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+        var references = await referenceSearch.FindAsync(field, cancellationToken).ConfigureAwait(false);
 
-        var locations = new List<FieldReferenceLocation>();
-        foreach (var reference in references)
+        var locations = new List<FieldReferenceLocation>(references.Length);
+        foreach (var location in references)
         {
-            foreach (var location in reference.Locations)
-            {
-                var node = location.Location.SourceTree?.GetRoot(cancellationToken)
-                    .FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true) as SimpleNameSyntax;
-                locations.Add(new FieldReferenceLocation(node, location.IsCandidateLocation));
-            }
+            var node = location.Location.SourceTree?.GetRoot(cancellationToken)
+                .FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true) as SimpleNameSyntax;
+            locations.Add(new FieldReferenceLocation(node, location.IsCandidateLocation));
         }
 
         return locations;

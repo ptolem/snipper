@@ -2,7 +2,6 @@ namespace Snipper.Analysis;
 
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
-using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -42,7 +41,7 @@ public sealed class WriteOnlyFieldAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         // Same cost profile as UnusedPrivateMemberAnalyser.
         var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
@@ -93,17 +92,7 @@ public sealed class WriteOnlyFieldAnalyser : IWorkspaceAnalyser
                         continue;
                     }
 
-                    // A private field is reachable only from its containing type
-                    // (including nested types), which lives in a single project — the
-                    // project-scopedDocument textual pre-filter is sound, and an empty set
-                    // proves zero references (SNP0001's territory, not ours).
-                    var candidateDocuments = usageIndex.GetDocumentsUsingName(document.Project, field.Name);
-                    if (candidateDocuments.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    var usage = await ClassifyFieldUsageAsync(field, solution, candidateDocuments, documentToken).ConfigureAwait(false);
+                    var usage = await ClassifyFieldUsageAsync(field, referenceSearch, documentToken).ConfigureAwait(false);
                     if (usage is not FieldUsage.WriteOnly)
                     {
                         continue;
@@ -128,11 +117,10 @@ public sealed class WriteOnlyFieldAnalyser : IWorkspaceAnalyser
 
     private static async Task<FieldUsage> ClassifyFieldUsageAsync(
         IFieldSymbol field,
-        Solution solution,
-        IImmutableSet<Document> candidateDocuments,
+        ReferenceSearch referenceSearch,
         CancellationToken cancellationToken)
     {
-        var references = await FieldReferenceMap.GetReferencesAsync(field, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+        var references = await FieldReferenceMap.GetReferencesAsync(field, referenceSearch, cancellationToken).ConfigureAwait(false);
 
         var sawWrite = false;
         foreach (var reference in references)

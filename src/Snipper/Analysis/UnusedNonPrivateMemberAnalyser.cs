@@ -2,7 +2,6 @@ namespace Snipper.Analysis;
 
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
-using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -28,12 +27,12 @@ public sealed class UnusedNonPrivateMemberAnalyser : IWorkspaceAnalyser
         ArgumentNullException.ThrowIfNull(solution);
         progress?.Invoke("UnusedNonPrivateMemberAnalyser: scanning DI registrations");
         var diRegisteredTypes = await DiRegistrationScanner.ScanAsync(solution, cancellationToken).ConfigureAwait(false);
-        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         var frameworkEvidence = await FrameworkEvidenceIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         // Phase A: enumerate candidates. Cheap semantic work (declared symbols,
-        // evidence filters, usage-index search-document pre-computation),
-        // in parallel across documents. Phase B is order-independent, so a bag will do.
+        // evidence filters), in parallel across documents. Phase B is
+        // order-independent, so a bag will do.
         var candidates = new ConcurrentBag<Candidate>();
         var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"UnusedNonPrivateMemberAnalyser: scanning {documents.Count} documents");
@@ -79,13 +78,7 @@ public sealed class UnusedNonPrivateMemberAnalyser : IWorkspaceAnalyser
                         continue;
                     }
 
-                    // Internal members without friend assemblies can only be referenced
-                    // within their own project; public members can be referenced anywhere.
-                    // The usage index restricts the search to documents that textually
-                    // contain the symbol name; an empty set proves the symbol is unused.
-                    var candidateDocuments = GetCandidateDocuments(usageIndex, document.Project, symbol, scopedDocument.HasFriendAssemblies);
-
-                    candidates.Add(new Candidate(symbol, candidateDocuments, scopedDocument.HasFriendAssemblies));
+                    candidates.Add(new Candidate(symbol, scopedDocument.HasFriendAssemblies));
                 }
             }).ConfigureAwait(false);
 
@@ -100,21 +93,23 @@ public sealed class UnusedNonPrivateMemberAnalyser : IWorkspaceAnalyser
             AnalysisParallelism.CreateOptions(cancellationToken),
             async (candidate, searchToken) =>
             {
-                var hasReference = candidate.CandidateDocuments.Count > 0
-                    && await SymbolReferenceQuery.HasAnyReferenceAsync(candidate.Symbol, solution, candidate.CandidateDocuments, searchToken).ConfigureAwait(false);
+                // ReferenceSearch decides where a reference could be: internal members
+                // without friend assemblies only in their own project, and only in
+                // documents that spell the name - none proves the symbol unused.
+                var hasReference = await referenceSearch.HasAnyAsync(candidate.Symbol, searchToken).ConfigureAwait(false);
 
                 // Rescue passes run only when the symbol has no direct references of
-                // its own — each costs its own FindReferencesAsync scan.
+                // its own — each costs a reference search of its own.
                 if (!hasReference
                     && candidate.Symbol is IMethodSymbol method
-                    && await HasUsedInterfaceContractAsync(method, solution, usageIndex, searchToken).ConfigureAwait(false))
+                    && await HasUsedInterfaceContractAsync(method, referenceSearch, searchToken).ConfigureAwait(false))
                 {
                     return;
                 }
 
                 if (!hasReference
                     && candidate.Symbol is INamedTypeSymbol { IsStatic: true } staticType
-                    && await ExtensionMethodUsageQuery.HasAnyUsedExtensionMethodAsync(staticType, solution, usageIndex, searchToken).ConfigureAwait(false))
+                    && await ExtensionMethodUsageQuery.HasAnyUsedExtensionMethodAsync(staticType, referenceSearch, searchToken).ConfigureAwait(false))
                 {
                     hasReference = true;
                 }
@@ -128,36 +123,7 @@ public sealed class UnusedNonPrivateMemberAnalyser : IWorkspaceAnalyser
         return [.. findings];
     }
 
-    private sealed record Candidate(ISymbol Symbol, IImmutableSet<Document> CandidateDocuments, bool HasFriendAssemblies);
-
-    private static IImmutableSet<Document> GetCandidateDocuments(
-        SolutionUsageIndex usageIndex,
-        Project project,
-        ISymbol symbol,
-        bool hasFriendAssemblies)
-    {
-        var projectScoped = symbol.DeclaredAccessibility == Accessibility.Internal && !hasFriendAssemblies;
-        var documents = projectScoped
-            ? usageIndex.GetDocumentsUsingName(project, symbol.Name)
-            : usageIndex.GetDocumentsUsingName(symbol.Name);
-
-        // Attribute applications omit the "Attribute" suffix, so the textual
-        // usage index only ever sees the short spelling — a full-name lookup
-        // finds nothing and every applied attribute class looks unreferenced
-        // (milkrun 1.6.1: test-priority attributes flagged while in active
-        // use). Union the short spelling's documents; the semantic reference
-        // search still does the real filtering.
-        if (symbol is INamedTypeSymbol { Name: { Length: > 9 } typeName }
-            && typeName.EndsWith("Attribute", StringComparison.Ordinal))
-        {
-            var shortName = typeName[..^"Attribute".Length];
-            documents = documents.Union(projectScoped
-                ? usageIndex.GetDocumentsUsingName(project, shortName)
-                : usageIndex.GetDocumentsUsingName(shortName));
-        }
-
-        return documents;
-    }
+    private sealed record Candidate(ISymbol Symbol, bool HasFriendAssemblies);
 
     private static bool IsPotentiallyNonPrivateDeclaration(SyntaxNode node)
     {
@@ -262,8 +228,7 @@ public sealed class UnusedNonPrivateMemberAnalyser : IWorkspaceAnalyser
 
     private static async Task<bool> HasUsedInterfaceContractAsync(
         IMethodSymbol method,
-        Solution solution,
-        SolutionUsageIndex usageIndex,
+        ReferenceSearch referenceSearch,
         CancellationToken cancellationToken)
     {
         var containingType = method.ContainingType;
@@ -284,9 +249,7 @@ public sealed class UnusedNonPrivateMemberAnalyser : IWorkspaceAnalyser
 
                 // A call dispatched through the interface references the interface
                 // member, whose name must appear at the call site.
-                var candidateDocuments = usageIndex.GetDocumentsUsingName(interfaceMember.Name);
-                if (candidateDocuments.Count > 0
-                    && await SymbolReferenceQuery.HasAnyReferenceAsync(interfaceMember, solution, candidateDocuments, cancellationToken).ConfigureAwait(false))
+                if (await referenceSearch.HasAnyAsync(interfaceMember, cancellationToken).ConfigureAwait(false))
                 {
                     return true;
                 }

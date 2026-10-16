@@ -4,7 +4,6 @@ using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Text;
 using Snipper.Models;
 
@@ -39,7 +38,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         var graph = await InheritanceGraph.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         var frameworkEvidence = await FrameworkEvidenceIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
@@ -69,9 +68,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
                             if (await TryEvaluateCanBeStaticAsync(
                                     methodDeclaration,
                                     semanticModel,
-                                    document.Project,
-                                    solution,
-                                    usageIndex,
+                                    referenceSearch,
                                     documentToken).ConfigureAwait(false) is { } staticFinding)
                             {
                                 findings.Add(staticFinding);
@@ -81,8 +78,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
                                 && semanticModel.GetDeclaredSymbol(methodDeclaration, documentToken) is { } methodSymbol
                                 && await TryEvaluateCanBePrivateAsync(
                                     methodSymbol,
-                                    solution,
-                                    usageIndex,
+                                    referenceSearch,
                                     frameworkEvidence,
                                     documentToken).ConfigureAwait(false) is { } methodPrivateFinding)
                             {
@@ -96,8 +92,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
                                 && semanticModel.GetDeclaredSymbol(propertyDeclaration, documentToken) is { } propertySymbol
                                 && await TryEvaluateCanBePrivateAsync(
                                     propertySymbol,
-                                    solution,
-                                    usageIndex,
+                                    referenceSearch,
                                     frameworkEvidence,
                                     documentToken).ConfigureAwait(false) is { } propertyPrivateFinding)
                             {
@@ -110,11 +105,8 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
                             if (await TryEvaluateCanBeSealedAsync(
                                     classDeclaration,
                                     semanticModel,
-                                    document.Project,
-                                    solution,
-                                    usageIndex,
+                                    referenceSearch,
                                     graph,
-                                    scopedDocument.HasFriendAssemblies,
                                     documentToken).ConfigureAwait(false) is { } sealedFinding)
                             {
                                 findings.Add(sealedFinding);
@@ -130,9 +122,8 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
                                     node,
                                     fieldDeclaration,
                                     semanticModel,
-                                    document.Project,
                                     solution,
-                                    usageIndex,
+                                    referenceSearch,
                                     documentToken).ConfigureAwait(false) is { } readonlyFinding)
                             {
                                 findings.Add(readonlyFinding);
@@ -142,8 +133,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
                                 && semanticModel.GetDeclaredSymbol(node, documentToken) is IFieldSymbol fieldSymbol
                                 && await TryEvaluateCanBePrivateAsync(
                                     fieldSymbol,
-                                    solution,
-                                    usageIndex,
+                                    referenceSearch,
                                     frameworkEvidence,
                                     documentToken).ConfigureAwait(false) is { } fieldPrivateFinding)
                             {
@@ -161,9 +151,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
     private async Task<SnipperFinding?> TryEvaluateCanBeStaticAsync(
         MethodDeclarationSyntax methodDeclaration,
         SemanticModel semanticModel,
-        Project project,
-        Solution solution,
-        SolutionUsageIndex usageIndex,
+        ReferenceSearch referenceSearch,
         CancellationToken cancellationToken)
     {
         // Syntax gates: instance methods only (no static/abstract/virtual/
@@ -201,11 +189,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
 
         // Usage gate: a method nothing calls belongs to SNP0001/0005/0006 —
         // tightening it would double-report their finding.
-        var candidateDocuments = method.DeclaredAccessibility == Accessibility.Private
-            ? usageIndex.GetDocumentsUsingName(project, method.Name)
-            : usageIndex.GetDocumentsUsingName(method.Name);
-        if (candidateDocuments.Count == 0
-            || !await SymbolReferenceQuery.HasAnyReferenceAsync(method, solution, candidateDocuments, cancellationToken).ConfigureAwait(false))
+        if (!await referenceSearch.HasAnyAsync(method, cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
@@ -249,9 +233,8 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
         SyntaxNode declaratorNode,
         FieldDeclarationSyntax fieldDeclaration,
         SemanticModel semanticModel,
-        Project project,
         Solution solution,
-        SolutionUsageIndex usageIndex,
+        ReferenceSearch referenceSearch,
         CancellationToken cancellationToken)
     {
         // Syntax gate: readonly/const/volatile are settled one way or the other.
@@ -281,17 +264,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
             return null;
         }
 
-        // Private fields are confined to their containing type's project;
-        // everything else searches solution-wide.
-        var candidateDocuments = field.DeclaredAccessibility == Accessibility.Private
-            ? usageIndex.GetDocumentsUsingName(project, field.Name)
-            : usageIndex.GetDocumentsUsingName(field.Name);
-        if (candidateDocuments.Count == 0)
-        {
-            return null;
-        }
-
-        var references = await FieldReferenceMap.GetReferencesAsync(field, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
+        var references = await FieldReferenceMap.GetReferencesAsync(field, referenceSearch, cancellationToken).ConfigureAwait(false);
         var semanticModels = new Dictionary<SyntaxTree, SemanticModel>();
         var sawRead = false;
 
@@ -343,11 +316,8 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
     private async Task<SnipperFinding?> TryEvaluateCanBeSealedAsync(
         ClassDeclarationSyntax classDeclaration,
         SemanticModel semanticModel,
-        Project project,
-        Solution solution,
-        SolutionUsageIndex usageIndex,
+        ReferenceSearch referenceSearch,
         InheritanceGraph graph,
-        bool hasFriendAssemblies,
         CancellationToken cancellationToken)
     {
         if (classDeclaration.Modifiers.Any(static m => m.IsKind(SyntaxKind.StaticKeyword)
@@ -374,13 +344,8 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
         }
 
         // Usage gate: an unreferenced class is plain dead code (SNP0005), not a
-        // tightening invitation. Friend assemblies widen the search to the
-        // whole solution.
-        var candidateDocuments = hasFriendAssemblies
-            ? usageIndex.GetDocumentsUsingName(classSymbol.Name)
-            : usageIndex.GetDocumentsUsingName(project, classSymbol.Name);
-        if (candidateDocuments.Count == 0
-            || !await SymbolReferenceQuery.HasAnyReferenceAsync(classSymbol, solution, candidateDocuments, cancellationToken).ConfigureAwait(false))
+        // tightening invitation.
+        if (!await referenceSearch.HasAnyAsync(classSymbol, cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
@@ -442,8 +407,7 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
 
     private async Task<SnipperFinding?> TryEvaluateCanBePrivateAsync(
         ISymbol member,
-        Solution solution,
-        SolutionUsageIndex usageIndex,
+        ReferenceSearch referenceSearch,
         FrameworkEvidenceIndex frameworkEvidence,
         CancellationToken cancellationToken)
     {
@@ -478,8 +442,8 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
         }
 
         // Usage gate: a member nothing references belongs to SNP0001/0005/0006.
-        var candidateDocuments = usageIndex.GetDocumentsUsingName(member.Name);
-        if (candidateDocuments.Count == 0)
+        var references = await referenceSearch.FindAsync(member, cancellationToken).ConfigureAwait(false);
+        if (references.IsEmpty)
         {
             return null;
         }
@@ -491,31 +455,19 @@ public sealed class TighteningAnalyser : IWorkspaceAnalyser
         // references from an enclosing type read as external and suppress,
         // even though private would remain legal there.
         var containingSpans = GetContainingTypeSpans(containingType, cancellationToken);
-        var references = await SymbolFinder.FindReferencesAsync(member, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
-        var sawReference = false;
-
-        foreach (var referencedSymbol in references)
+        foreach (var location in references)
         {
-            foreach (var location in referencedSymbol.Locations)
+            // Unconfirmed (candidate) locations are unknown evidence —
+            // never a tightening invitation.
+            if (location.IsCandidateLocation)
             {
-                // Unconfirmed (candidate) locations are unknown evidence —
-                // never a tightening invitation.
-                if (location.IsCandidateLocation)
-                {
-                    return null;
-                }
-
-                sawReference = true;
-                if (!IsInsideAnySpan(location.Location, containingSpans))
-                {
-                    return null;
-                }
+                return null;
             }
-        }
 
-        if (!sawReference)
-        {
-            return null;
+            if (!IsInsideAnySpan(location.Location, containingSpans))
+            {
+                return null;
+            }
         }
 
         return CreateFinding(

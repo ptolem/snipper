@@ -1,7 +1,6 @@
 namespace Snipper.Analysis;
 
 using System.Collections.Concurrent;
-using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Snipper.Models;
@@ -33,7 +32,7 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         var frameworkEvidence = await FrameworkEvidenceIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         var enumOrdinals = await EnumOrdinalContractIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
@@ -75,7 +74,7 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
                         {
                             if (semanticModel.GetDeclaredSymbol(variable, documentToken) is { } fieldSymbol)
                             {
-                                await EvaluateCandidateAsync(fieldSymbol, attribute, document.Project, solution, usageIndex, frameworkEvidence, enumOrdinals, findings, documentToken).ConfigureAwait(false);
+                                await EvaluateCandidateAsync(fieldSymbol, attribute, referenceSearch, frameworkEvidence, enumOrdinals, findings, documentToken).ConfigureAwait(false);
                             }
                         }
 
@@ -84,7 +83,7 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
 
                     if (semanticModel.GetDeclaredSymbol(declaration, documentToken) is { } declaredSymbol)
                     {
-                        await EvaluateCandidateAsync(declaredSymbol, attribute, document.Project, solution, usageIndex, frameworkEvidence, enumOrdinals, findings, documentToken).ConfigureAwait(false);
+                        await EvaluateCandidateAsync(declaredSymbol, attribute, referenceSearch, frameworkEvidence, enumOrdinals, findings, documentToken).ConfigureAwait(false);
                     }
                 }
             }).ConfigureAwait(false);
@@ -95,9 +94,7 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
     private async Task EvaluateCandidateAsync(
         ISymbol symbol,
         AttributeSyntax attribute,
-        Project project,
-        Solution solution,
-        SolutionUsageIndex usageIndex,
+        ReferenceSearch referenceSearch,
         FrameworkEvidenceIndex frameworkEvidence,
         EnumOrdinalContractIndex enumOrdinals,
         ConcurrentBag<SnipperFinding> findings,
@@ -122,22 +119,12 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
             return;
         }
 
-        if (await IsLiveContractAsync(symbol, solution, usageIndex, frameworkEvidence, enumOrdinals, cancellationToken).ConfigureAwait(false))
+        if (await IsLiveContractAsync(symbol, referenceSearch, frameworkEvidence, enumOrdinals, cancellationToken).ConfigureAwait(false))
         {
             return;
         }
 
-        // Solution-wide candidate set: callers of public/internal obsolete members
-        // routinely live in other projects (private members simply match nothing
-        // outside their own). Indexers have no usable source name (consumed via
-        // this[...]) — search the whole project (rare), as SNP0001 does.
-        var candidateDocuments = symbol is IPropertySymbol { IsIndexer: true }
-            ? project.Documents.ToImmutableHashSet()
-            : usageIndex.GetDocumentsUsingName(symbol.Name);
-
-        var hasReference = candidateDocuments.Count > 0
-            && await SymbolReferenceQuery.HasAnyReferenceAsync(symbol, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
-        if (hasReference)
+        if (await referenceSearch.HasAnyAsync(symbol, cancellationToken).ConfigureAwait(false))
         {
             return;
         }
@@ -224,8 +211,7 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
     /// </summary>
     private static async Task<bool> IsLiveContractAsync(
         ISymbol symbol,
-        Solution solution,
-        SolutionUsageIndex usageIndex,
+        ReferenceSearch referenceSearch,
         FrameworkEvidenceIndex frameworkEvidence,
         EnumOrdinalContractIndex enumOrdinals,
         CancellationToken cancellationToken)
@@ -236,7 +222,7 @@ public sealed class ObsoleteMemberAnalyser : IWorkspaceAnalyser
         }
 
         return symbol is INamedTypeSymbol { IsStatic: true } obsoleteStaticType
-            && await ExtensionMethodUsageQuery.HasAnyUsedExtensionMethodAsync(obsoleteStaticType, solution, usageIndex, cancellationToken).ConfigureAwait(false);
+            && await ExtensionMethodUsageQuery.HasAnyUsedExtensionMethodAsync(obsoleteStaticType, referenceSearch, cancellationToken).ConfigureAwait(false);
     }
 
     private static bool IsEligibleKind(ISymbol symbol)

@@ -1,7 +1,6 @@
 namespace Snipper.Analysis;
 
 using System.Collections.Concurrent;
-using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -20,10 +19,10 @@ public sealed class UnusedPrivateMemberAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         // Documents bind in parallel, and each reference search is restricted to the
-        // handful of documents that textually contain the member name.
+        // handful of documents in the project that textually contain the member name.
         var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"UnusedPrivateMemberAnalyser: scanning {documents.Count} documents");
         await Parallel.ForEachAsync(
@@ -91,18 +90,7 @@ public sealed class UnusedPrivateMemberAnalyser : IWorkspaceAnalyser
                         continue;
                     }
 
-                    // The usage index restricts the search to documents that textually
-                    // contain the member name; an empty set proves the member is unused
-                    // with no semantic search at all. Indexers have no usable source
-                    // name (consumed via this[...]) — search the whole project (rare).
-                    var candidateDocuments = declaredSymbol is IPropertySymbol { IsIndexer: true }
-                        ? document.Project.Documents.ToImmutableHashSet()
-                        : usageIndex.GetDocumentsUsingName(document.Project, declaredSymbol.Name);
-
-                    var hasReference = candidateDocuments.Count > 0
-                        && await SymbolReferenceQuery.HasAnyReferenceAsync(declaredSymbol, solution, candidateDocuments, documentToken).ConfigureAwait(false);
-
-                    if (!hasReference)
+                    if (!await referenceSearch.HasAnyAsync(declaredSymbol, documentToken).ConfigureAwait(false))
                     {
                         var lineSpan = declaredSymbol.Locations[0].GetLineSpan();
                         findings.Add(new SnipperFinding(

@@ -14,35 +14,22 @@ using Microsoft.CodeAnalysis;
 /// with <see cref="CancellationToken.None"/>, so Ctrl+C waited for it.
 /// </para>
 /// <para>
-/// The build runs under the token of the caller that started it. If that caller cancels,
-/// the cancelled build is dropped from the cache: a later caller starts a fresh one, and a
-/// caller already waiting on it with a live token of its own starts a fresh one too,
-/// rather than inheriting somebody else's cancellation. A build that fails stays failed,
-/// as it did with <c>Lazy</c>.
+/// The build runs under the token of the caller that started it, with the cancellation
+/// rules of <see cref="SharedTask{T}"/>: a cancelled build is dropped from the cache and
+/// never inherited by a caller still waiting with a live token, and a build that fails
+/// stays failed, as it did with <c>Lazy</c>.
 /// </para>
 /// </summary>
 internal sealed class SolutionIndexCache<T>(Func<Solution, CancellationToken, Task<T>> build)
     where T : class
 {
-    private readonly ConditionalWeakTable<Solution, PendingBuild> _builds = new();
+    private readonly ConditionalWeakTable<Solution, SharedTask<T>> _builds = new();
     private readonly Lock _gate = new();
 
-    public async Task<T> GetAsync(Solution solution, CancellationToken cancellationToken)
+    public Task<T> GetAsync(Solution solution, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(solution);
-
-        while (true)
-        {
-            var pending = GetOrStart(solution, cancellationToken);
-            try
-            {
-                return await pending.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (pending.WasCancelledByAnotherCaller(cancellationToken))
-            {
-                // Somebody else's build, abandoned by its caller; this caller still wants it.
-            }
-        }
+        return SharedTask<T>.AwaitAsync(() => GetOrStart(solution, cancellationToken), cancellationToken);
     }
 
     /// <summary>Whether the index for <paramref name="solution"/> has been built.</summary>
@@ -52,30 +39,18 @@ internal sealed class SolutionIndexCache<T>(Func<Solution, CancellationToken, Ta
         return _builds.TryGetValue(solution, out var pending) && pending.Task.IsCompletedSuccessfully;
     }
 
-    private PendingBuild GetOrStart(Solution solution, CancellationToken cancellationToken)
+    private SharedTask<T> GetOrStart(Solution solution, CancellationToken cancellationToken)
     {
         lock (_gate)
         {
-            if (_builds.TryGetValue(solution, out var existing) && !existing.Task.IsCanceled)
+            if (_builds.TryGetValue(solution, out var existing) && existing.IsReusable)
             {
                 return existing;
             }
 
-            // Task.Run, so the build's synchronous prologue never runs under the lock.
-            var started = new PendingBuild(Task.Run(() => build(solution, cancellationToken), cancellationToken), cancellationToken);
+            var started = SharedTask<T>.Start(ct => build(solution, ct), cancellationToken);
             _builds.AddOrUpdate(solution, started);
             return started;
-        }
-    }
-
-    private sealed record PendingBuild(Task<T> Task, CancellationToken StartedWith)
-    {
-        public bool WasCancelledByAnotherCaller(CancellationToken caller)
-        {
-            return Task.IsCanceled
-                && !caller.IsCancellationRequested
-                && StartedWith != caller
-                && StartedWith.IsCancellationRequested;
         }
     }
 }

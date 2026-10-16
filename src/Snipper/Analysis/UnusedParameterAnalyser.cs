@@ -1,11 +1,9 @@
 namespace Snipper.Analysis;
 
 using System.Collections.Concurrent;
-using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.FindSymbols;
 using Snipper.Models;
 
 /// <summary>
@@ -30,6 +28,7 @@ public sealed class UnusedParameterAnalyser : IWorkspaceAnalyser
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
         var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"UnusedParameterAnalyser: scanning {documents.Count} documents");
@@ -82,9 +81,7 @@ public sealed class UnusedParameterAnalyser : IWorkspaceAnalyser
                     // method is SNP0001's finding, not this rule's), and every reference
                     // must be a direct invocation — a method-group reference fixes the
                     // signature through the delegate contract.
-                    var methodDocuments = usageIndex.GetDocumentsUsingName(document.Project, method.Name);
-                    if (methodDocuments.Count == 0
-                        || !await IsExclusivelyDirectInvokedAsync(method, solution, methodDocuments, documentToken).ConfigureAwait(false))
+                    if (!await IsExclusivelyDirectInvokedAsync(method, referenceSearch, documentToken).ConfigureAwait(false))
                     {
                         continue;
                     }
@@ -156,29 +153,22 @@ public sealed class UnusedParameterAnalyser : IWorkspaceAnalyser
 
     private static async Task<bool> IsExclusivelyDirectInvokedAsync(
         IMethodSymbol method,
-        Solution solution,
-        IImmutableSet<Document> candidateDocuments,
+        ReferenceSearch referenceSearch,
         CancellationToken cancellationToken)
     {
-        var references = await SymbolFinder.FindReferencesAsync(method, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
-        var anyReference = false;
+        var references = await referenceSearch.FindAsync(method, cancellationToken).ConfigureAwait(false);
 
-        foreach (var reference in references)
+        foreach (var location in references)
         {
-            foreach (var location in reference.Locations)
+            var root = await location.Document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            var node = root?.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
+            if (node is null || !IsDirectInvocation(node))
             {
-                anyReference = true;
-
-                var root = await location.Document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-                var node = root?.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                if (node is null || !IsDirectInvocation(node))
-                {
-                    return false;
-                }
+                return false;
             }
         }
 
-        return anyReference;
+        return !references.IsEmpty;
     }
 
     private static bool IsDirectInvocation(SyntaxNode node)

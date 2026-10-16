@@ -4,7 +4,6 @@ using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Text;
 using Snipper.Models;
 
@@ -44,7 +43,7 @@ public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         var graph = await InheritanceGraph.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         // Phase 1: gather candidate classes (syntax pre-filtered, symbol-confirmed),
@@ -186,7 +185,7 @@ public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
                     // Check 2: class-level finding requires the class itself to be used —
                     // an unreferenced class is plain dead code (SNP0005/0006), and its
                     // members fail the usage gate with it, so no member checks run here.
-                    var hasReference = await HasAnyReferenceAsync(classSymbol, candidate, solution, usageIndex, candidateToken).ConfigureAwait(false);
+                    var hasReference = await referenceSearch.HasAnyAsync(classSymbol, candidateToken).ConfigureAwait(false);
                     if (hasReference)
                     {
                         var lineSpan = classSymbol.Locations[0].GetLineSpan();
@@ -209,7 +208,7 @@ public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
                 IReadOnlyList<INamedTypeSymbol>? derivedClosure = null;
                 foreach (var member in candidate.VirtualMembers)
                 {
-                    if (!await HasAnyReferenceAsync(member, candidate, solution, usageIndex, candidateToken).ConfigureAwait(false))
+                    if (!await referenceSearch.HasAnyAsync(member, candidateToken).ConfigureAwait(false))
                     {
                         continue;
                     }
@@ -285,12 +284,6 @@ public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
                 continue;
             }
 
-            var candidateDocuments = usageIndex.GetDocumentsUsingName(familyRoot.Name);
-            if (candidateDocuments.Count == 0)
-            {
-                continue;
-            }
-
             // External-caller proof: every confirmed reference to every family
             // member must land inside a family member's own declaration span
             // (base. and sibling-chain calls). Unconfirmed locations suppress —
@@ -301,27 +294,19 @@ public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
 
             foreach (var familyMember in family)
             {
-                var references = await SymbolFinder.FindReferencesAsync(familyMember, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
-                foreach (var referencedSymbol in references)
+                var references = await referenceSearch.FindAsync(familyMember, cancellationToken).ConfigureAwait(false);
+                foreach (var location in references)
                 {
-                    foreach (var location in referencedSymbol.Locations)
+                    if (location.IsCandidateLocation)
                     {
-                        if (location.IsCandidateLocation)
-                        {
-                            sawExternalOrUnknown = true;
-                            break;
-                        }
-
-                        sawReference = true;
-                        if (!IsInsideAnySpan(location.Location, familySpans))
-                        {
-                            sawExternalOrUnknown = true;
-                            break;
-                        }
+                        sawExternalOrUnknown = true;
+                        break;
                     }
 
-                    if (sawExternalOrUnknown)
+                    sawReference = true;
+                    if (!IsInsideAnySpan(location.Location, familySpans))
                     {
+                        sawExternalOrUnknown = true;
                         break;
                     }
                 }
@@ -468,23 +453,6 @@ public sealed class HierarchyDeadCodeAnalyser : IWorkspaceAnalyser
         }
 
         return false;
-    }
-
-    private static async Task<bool> HasAnyReferenceAsync(
-        ISymbol symbol,
-        CandidateClass candidate,
-        Solution solution,
-        SolutionUsageIndex usageIndex,
-        CancellationToken cancellationToken)
-    {
-        // Internal types without friend assemblies can only be referenced within
-        // their own project; everything else searches solution-wide (SNP0005 scoping).
-        var candidateDocuments = candidate.Symbol.DeclaredAccessibility == Accessibility.Internal && !candidate.HasFriendAssemblies
-            ? usageIndex.GetDocumentsUsingName(candidate.Project, symbol.Name)
-            : usageIndex.GetDocumentsUsingName(symbol.Name);
-
-        return candidateDocuments.Count > 0
-            && await SymbolReferenceQuery.HasAnyReferenceAsync(symbol, solution, candidateDocuments, cancellationToken).ConfigureAwait(false);
     }
 
     private static bool IsOverriddenInClosure(ISymbol member, IReadOnlyList<INamedTypeSymbol> derivedClosure)

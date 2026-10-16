@@ -126,7 +126,7 @@ flowchart TB
     CLI --> AR
     AR --> AN
     AR -->|"SharedIndexes.BuildAsync"| IDX
-    AN -->|"SolutionUsageIndex.GetAsync"| IDX
+    AN -->|"SolutionUsageIndex.GetAsync,<br/>ReferenceSearch.FindAsync"| IDX
     AN -->|"findings"| FLT
     FLT --> OUT
     AR -.->|"disabled-rule pass"| AUD
@@ -197,7 +197,7 @@ sequenceDiagram
         AR->>AR: SharedIndexes.BuildAsync — the union of the<br/>indexes the analysers declare, concurrently, timed
         par fan-out, bounded by SNIPPER_FANOUT_DOP
             AN->>AN: await AnalysisScope / SolutionUsageIndex<br/>already built, so a cache hit
-            AN->>AN: prove or refute each candidate
+            AN->>AN: prove or refute each candidate,<br/>reference searches shared through ReferenceSearch
             AN-->>AR: findings into indexed slot
         and
             AN->>AN: TokenShingleIndex.Build (syntax-only)
@@ -350,6 +350,12 @@ classDiagram
 
     class InheritanceGraph {
         -Get(solution) InheritanceGraph
+    }
+
+    class ReferenceSearch {
+        +GetAsync(solution, ct) ReferenceSearch
+        +FindAsync(symbol, ct) ImmutableArray~ReferenceLocation~
+        +HasAnyAsync(symbol, ct) bool
     }
 
     class ProjectPackageUsageCache {
@@ -532,6 +538,8 @@ classDiagram
     IWorkspaceAnalyser ..> SolutionUsageIndex : Get(solution)
     IWorkspaceAnalyser ..> FrameworkEvidenceIndex : Get(solution)
     IWorkspaceAnalyser ..> InheritanceGraph : Get(solution)
+    IWorkspaceAnalyser ..> ReferenceSearch : FindAsync(symbol)
+    ReferenceSearch --> SolutionUsageIndex : candidate documents
     IWorkspaceAnalyser ..> ProjectPackageUsageCache
     IWorkspaceAnalyser ..> ExclusionEngine
     IWorkspaceAnalyser ..> SnipperFinding : produces
@@ -699,7 +707,7 @@ analyser whose `RuleIds` is conditional on its constructor arguments.
 
 ## Anatomy of a semantic analyser
 
-`UnusedPrivateMemberAnalyser` is 179 lines and is the cleanest example. Every semantic analyser
+`UnusedPrivateMemberAnalyser` is 162 lines and is the cleanest example. Every semantic analyser
 follows this shape:
 
 ```csharp
@@ -713,7 +721,7 @@ public sealed class UnusedPrivateMemberAnalyser : IWorkspaceAnalyser
     public async Task<IReadOnlyList<SnipperFinding>> AnalyzeAsync(
         Solution solution, CancellationToken cancellationToken, Action<string>? progress = null)
     {
-        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken);   // shared, built once
+        var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken);   // shared by every rule
 
         // In-scope documents of every compilable project: generated and external
         // code is already gone, decided once per solution.
@@ -734,7 +742,7 @@ public sealed class UnusedPrivateMemberAnalyser : IWorkspaceAnalyser
                 {
                     // 1. cheap syntactic pre-filter — most nodes never become candidates
                     // 2. declared symbol
-                    // 3. usage proof, via the index
+                    // 3. usage proof: referenceSearch.HasAnyAsync(symbol)
                     // 4. emit into the bag
                 }
             });
@@ -752,7 +760,7 @@ The ordering is the performance design, and you should preserve it when you add 
 | `Parallel.ForEachAsync` over documents | none | Documents bind concurrently, bounded by `SNIPPER_MAX_DOP`. Anything other than findings that leaves the loop goes into a per-document slot, so later phases see scope order. |
 | Syntactic pre-filter | cheap | Reject most nodes without a symbol. Avoids a `GetDeclaredSymbol` per node. |
 | `GetDeclaredSymbol` | moderate | Only for surviving candidates. |
-| Usage proof | expensive | `SolutionUsageIndex` name lookup is O(1); a `FindReferencesAsync` is the fallback and is **restricted to the documents the index says can contain the name**. |
+| Usage proof | expensive | `ReferenceSearch`: an O(1) `SolutionUsageIndex` name lookup, then a `FindReferencesAsync` **restricted to the documents the index says can contain the name**, run once per symbol however many rules ask. |
 
 The index's invariant is the trick worth understanding: *any semantic reference to a named symbol
 must spell its name in source*. So "this name appears in no in-scope document" **proves** zero
@@ -827,6 +835,50 @@ If you add a shared index, give it a `SolutionIndexCache<T>`, a `SharedIndex` me
 `SharedIndexes`, and declare it on the analysers that read it. If you add a mutable field to an
 analyser, you break both the fan-out and the per-document loops inside it - `SNIPPER_MAX_DOP=1` is
 the escape hatch, and it is also your signal that you have done something wrong.
+
+### The shared reference search
+
+`SymbolFinder.FindReferencesAsync` is the most expensive call the analysers make, and several rules
+make it for the same symbol. A private field is searched by SNP0001, by SNP0021 and by SNP0024's
+can-be-readonly check. A public or internal member is searched by SNP0005/6 and again by SNP0024's
+can-be-private and can-be-static checks. Every search goes through `ReferenceSearch` instead, which
+is per solution like the shared indexes and memoizes per symbol:
+
+```csharp
+var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken);
+
+var used = await referenceSearch.HasAnyAsync(symbol, cancellationToken);    // any reference at all?
+var locations = await referenceSearch.FindAsync(symbol, cancellationToken); // or every location
+```
+
+The first rule to ask starts the search, and every later one, including one that arrives while it is
+still running, awaits the same result. Sharing costs nothing in precision: the search cannot stop at
+its first hit, so a rule that only wants "any reference?" already paid for all of them. The start,
+join and cancellation rules are `SolutionIndexCache<T>`'s, from the `SharedTask<T>` they both use.
+
+The documents to search are decided inside `ReferenceSearch`, from the symbol alone, which is what
+makes one result per symbol sound:
+
+| Symbol | Documents searched |
+| --- | --- |
+| Private anywhere in its containment chain | The declaring project's documents that spell the name. |
+| Internal anywhere in its chain, assembly has no `InternalsVisibleTo` | The same. |
+| Anything else, including any override, interface implementation, or public method, property or event | Every document in the solution that spells the name. |
+| An explicit interface implementation | Spelled as the interface member (`Greet`, not `IGreeter.Greet`). |
+| An attribute class | Also the documents that spell its short name (`[Marker]` for `MarkerAttribute`). |
+| An indexer | Every document in scope, since it has no name to spell. |
+
+The project scope only spares Roslyn documents it would skip anyway, because it never searches a
+project the symbol is invisible to. The exceptions are the members whose search cascades: Roslyn
+follows an override to the member it overrides and an implementation to the interface member, and
+returns that member's references too, which can be anywhere *it* is visible. A public member is an
+implementation more often than its own type shows. On MILKRUN, the internal abstract `MilkrunCache`
+implements no interface, but its derived caches implement the public `IMilkrunCache` with the
+`GetAsync` they inherit, so every call to it goes through the interface from other projects. A first
+version of this rule confined `MilkrunCache.GetAsync` to its project and reported four false findings.
+`ReferenceSearchShould` pins both shapes.
+
+Results are held for the life of the solution, as a flat array of locations.
 
 ### Per-symbol and per-node memos
 
@@ -1164,6 +1216,7 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | 1 | Findings are reassembled in analyser **declaration order**, not completion order, and each analyser's slot is put in `FindingOrder`. | The merged list must be identical to a sequential run's, so an analyser may emit in any order. |
 | 2 | No mutable state on an analyser instance. | Every analyser in the run shares one `Solution` concurrently. |
 | 3 | New shared indexes use `SolutionIndexCache<T>` and are declared through `IWorkspaceAnalyser.SharedIndexes`. | Build once, awaited not blocked on, cancellable; do not leak workspaces; build time reported as its own stage. |
+| 3a | Reference searches go through `ReferenceSearch`; no analyser calls `SymbolFinder` or picks its own candidate documents. | One search per symbol however many rules ask, and the same answer whichever asks first. |
 | 4 | Shared indexes are frozen/immutable after build. | Lock-free concurrent reads. |
 | 5 | `MSBuildLocator.RegisterDefaults()` runs before any MSBuild-touching code. | Runtime MSBuild resolution; a compile-time reference breaks on SDK upgrades. |
 | 6 | Every analyser walks `AnalysisScope`, or calls `ExclusionEngine.ShouldSkipDocument` before binding when it needs its own document set. | Generated code is a correctness problem, not just noise. |
@@ -1280,6 +1333,8 @@ Each of these is load-bearing, and several exist because breaking them was measu
 | `Analysis/AnalysisScope.cs` | The in-scope documents most analysers walk, flat across projects. |
 | `Analysis/SharedIndex.cs` | The shared indexes an analyser can declare, and their build as a set. |
 | `Analysis/SolutionIndexCache.cs` | The awaitable, cancellable once-per-solution memo behind each of them. |
+| `Analysis/SharedTask.cs` | Start-or-join with the cancellation rules both memos share. |
+| `Analysis/ReferenceSearch.cs` | Every reference search, once per symbol, and the one rule for which documents it covers. |
 | `Analysis/SolutionUsageIndex.cs` etc. | Shared solution-keyed indexes. |
 | `Analysis/ExclusionEngine.cs` | Generated/external gates, namespace resolution (`ResolveNamespace`), plus `IsTestCode` — complexity-only, never used by `ShouldSkipDocument`. |
 | `Analysis/DuplicateFragmentAnalyser.cs`, `CloneDriftDetector.cs`, `GitHistory.cs` | 4C. |

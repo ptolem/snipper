@@ -4,7 +4,6 @@ using System.Collections.Concurrent;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.FindSymbols;
 using Snipper.Models;
 
 /// <summary>
@@ -31,7 +30,7 @@ public sealed class EventNeverInvokedAnalyser : IWorkspaceAnalyser
     {
         ArgumentNullException.ThrowIfNull(solution);
         var findings = new ConcurrentBag<SnipperFinding>();
-        var usageIndex = await SolutionUsageIndex.GetAsync(solution, cancellationToken).ConfigureAwait(false);
+        var referenceSearch = await ReferenceSearch.GetAsync(solution, cancellationToken).ConfigureAwait(false);
 
         var documents = await AnalysisScope.GetAsync(solution, cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"EventNeverInvokedAnalyser: scanning {documents.Count} documents");
@@ -81,28 +80,16 @@ public sealed class EventNeverInvokedAnalyser : IWorkspaceAnalyser
                     // evidence is never a finding.
                     var sawSubscription = false;
                     var sawRaiseShapedOrUnknown = false;
-                    var candidateDocuments = usageIndex.GetDocumentsUsingName(eventSymbol.Name);
-                    if (candidateDocuments.Count > 0)
+                    var references = await referenceSearch.FindAsync(eventSymbol, documentToken).ConfigureAwait(false);
+                    foreach (var location in references)
                     {
-                        var references = await SymbolFinder.FindReferencesAsync(eventSymbol, solution, candidateDocuments, documentToken).ConfigureAwait(false);
-                        foreach (var referencedSymbol in references)
+                        if (location.IsCandidateLocation || !IsSubscription(location.Location, documentToken))
                         {
-                            foreach (var location in referencedSymbol.Locations)
-                            {
-                                if (location.IsCandidateLocation || !IsSubscription(location.Location, documentToken))
-                                {
-                                    sawRaiseShapedOrUnknown = true;
-                                    break;
-                                }
-
-                                sawSubscription = true;
-                            }
-
-                            if (sawRaiseShapedOrUnknown)
-                            {
-                                break;
-                            }
+                            sawRaiseShapedOrUnknown = true;
+                            break;
                         }
+
+                        sawSubscription = true;
                     }
 
                     if (sawRaiseShapedOrUnknown)

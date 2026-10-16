@@ -16,11 +16,11 @@ internal static class ExtensionMethodUsageQuery
 {
     public static async Task<bool> HasAnyUsedExtensionMethodAsync(
         INamedTypeSymbol staticType,
-        Solution solution,
-        SolutionUsageIndex usageIndex,
+        ReferenceSearch referenceSearch,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(staticType);
+        ArgumentNullException.ThrowIfNull(referenceSearch);
 
         foreach (var member in staticType.GetMembers())
         {
@@ -29,9 +29,7 @@ internal static class ExtensionMethodUsageQuery
                 continue;
             }
 
-            var candidateDocuments = usageIndex.GetDocumentsUsingName(extensionMethod.Name);
-            if (candidateDocuments.Count > 0
-                && await SymbolReferenceQuery.HasAnyReferenceAsync(extensionMethod, solution, candidateDocuments, cancellationToken).ConfigureAwait(false))
+            if (await referenceSearch.HasAnyAsync(extensionMethod, cancellationToken).ConfigureAwait(false))
             {
                 return true;
             }
