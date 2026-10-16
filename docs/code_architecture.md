@@ -831,6 +831,20 @@ entry is a semantic walk of its own, so the cache keeps one `Lazy<Task<…>>` pe
 the package analysers call `PrefetchAsync` with the projects they are about to visit. That builds
 the missing entries concurrently, bounded by `SNIPPER_MAX_DOP`, before their per-project loops run.
 
+Within an entry, `SymbolUsageCollector` walks the project's documents in parallel too. Projects in
+parallel were not enough: on MILKRUN one 379-document test project took about 30 s on a single
+thread, and the package analysers finished when it did, about 10 s after everything else. Each
+document collects its assemblies into its own set and merges it once at the end, so the binding loop
+never takes a lock, and a union does not depend on order. Measured alternating, 4 rounds, with
+byte-identical reports:
+
+| Target | package analysers | analysis | wall |
+| --- | --- | --- | --- |
+| MILKRUN (full, `--duplicate-detection`) | 36.1 -> 18.6 s | 49.4 -> 40.1 s | 68.1 -> 59.2 s |
+| Snipper.slnx | 4.0 -> 2.0 s | 5.6 -> 4.1 s | 7.7 -> 6.2 s |
+
+Peak working set did not change.
+
 If you add a shared index, give it a `SolutionIndexCache<T>`, a `SharedIndex` member and an entry in
 `SharedIndexes`, and declare it on the analysers that read it. If you add a mutable field to an
 analyser, you break both the fan-out and the per-document loops inside it - `SNIPPER_MAX_DOP=1` is
@@ -869,8 +883,8 @@ alternating, 4 rounds, with byte-identical reports:
 | MILKRUN (full, `--duplicate-detection`) | 46.4 -> 24.9 s | 58.8 -> 48.0 s | 77.7 -> 67.1 s |
 | Snipper.slnx | unchanged (~1.9 s) | unchanged (~5.6 s) | unchanged |
 
-The package analysers (`ProjectPackageUsageCache`), not SNP0005/6, are now the last to finish on
-MILKRUN.
+After that, the package analysers (`ProjectPackageUsageCache`) were the last to finish on MILKRUN,
+until their per-document walk was parallelised (above).
 
 The documents to search are decided inside `ReferenceSearch`, from the symbol alone, which is what
 makes one result per symbol sound:

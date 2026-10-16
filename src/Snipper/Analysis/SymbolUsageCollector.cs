@@ -24,47 +24,69 @@ internal static class SymbolUsageCollector
 
         var usedAssemblies = new HashSet<IAssemblySymbol>(SymbolEqualityComparer.Default);
 
-        foreach (var document in project.Documents)
-        {
-            if (!document.SupportsSyntaxTree)
+        // Documents are walked in parallel: the package analysers' prefetch already
+        // runs projects concurrently, but one large project walked a document at a
+        // time was their whole tail (MILKRUN: a 379-document test project, ~30s on
+        // one thread). Each document fills its own set and merges once, so the
+        // binding loop takes no lock; a union is order-independent.
+        await Parallel.ForEachAsync(
+            project.Documents,
+            AnalysisParallelism.CreateOptions(cancellationToken),
+            async (document, documentToken) =>
             {
-                continue;
-            }
-
-            var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-            var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-            if (semanticModel is null || root is null)
-            {
-                continue;
-            }
-
-            foreach (var node in root.DescendantNodes())
-            {
-                if (node is not (ExpressionSyntax or AttributeSyntax))
+                var documentAssemblies = await CollectDocumentAssembliesAsync(document, documentToken).ConfigureAwait(false);
+                lock (usedAssemblies)
                 {
-                    continue;
+                    usedAssemblies.UnionWith(documentAssemblies);
+                }
+            }).ConfigureAwait(false);
+
+        // Frozen: built once per project, then queried for every declared package/project reference.
+        return usedAssemblies.ToFrozenSet((IEqualityComparer<IAssemblySymbol>)SymbolEqualityComparer.Default);
+    }
+
+    private static async Task<HashSet<IAssemblySymbol>> CollectDocumentAssembliesAsync(
+        Document document,
+        CancellationToken cancellationToken)
+    {
+        var usedAssemblies = new HashSet<IAssemblySymbol>(SymbolEqualityComparer.Default);
+        if (!document.SupportsSyntaxTree)
+        {
+            return usedAssemblies;
+        }
+
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+        var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+        if (semanticModel is null || root is null)
+        {
+            return usedAssemblies;
+        }
+
+        foreach (var node in root.DescendantNodes())
+        {
+            if (node is not (ExpressionSyntax or AttributeSyntax))
+            {
+                continue;
+            }
+
+            var symbolInfo = semanticModel.GetSymbolInfo(node, cancellationToken);
+            AddSymbolAssembly(symbolInfo.Symbol, usedAssemblies);
+
+            if (symbolInfo.Symbol is null)
+            {
+                foreach (var candidate in symbolInfo.CandidateSymbols)
+                {
+                    AddSymbolAssembly(candidate, usedAssemblies);
                 }
 
-                var symbolInfo = semanticModel.GetSymbolInfo(node, cancellationToken);
-                AddSymbolAssembly(symbolInfo.Symbol, usedAssemblies);
-
-                if (symbolInfo.Symbol is null)
+                if (node is ExpressionSyntax expression)
                 {
-                    foreach (var candidate in symbolInfo.CandidateSymbols)
-                    {
-                        AddSymbolAssembly(candidate, usedAssemblies);
-                    }
-
-                    if (node is ExpressionSyntax expression)
-                    {
-                        AddSymbolAssembly(semanticModel.GetTypeInfo(expression, cancellationToken).Type, usedAssemblies);
-                    }
+                    AddSymbolAssembly(semanticModel.GetTypeInfo(expression, cancellationToken).Type, usedAssemblies);
                 }
             }
         }
 
-        // Frozen: built once per project, then queried for every declared package/project reference.
-        return usedAssemblies.ToFrozenSet((IEqualityComparer<IAssemblySymbol>)SymbolEqualityComparer.Default);
+        return usedAssemblies;
     }
 
     private static void AddSymbolAssembly(ISymbol? symbol, HashSet<IAssemblySymbol> usedAssemblies)

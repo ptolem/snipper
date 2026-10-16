@@ -44,4 +44,36 @@ public sealed class SymbolUsageCollectorShould
         // Assert: the library assembly is used even though no non-skipped document references it.
         usedAssemblies.Should().Contain(a => a.Name == "Lib");
     }
+
+    [Fact]
+    public async Task Union_The_Assemblies_Each_Document_Uses()
+    {
+        // Documents are walked in parallel; every document's evidence must still land
+        // in the one result, and a referenced library no document touches must not.
+        using var workspace = new AdhocWorkspace();
+        var corlib = MetadataReference.CreateFromFile(typeof(object).Assembly.Location);
+        var consumerId = ProjectId.CreateNewId("Consumer");
+        var solution = workspace.CurrentSolution
+            .AddProject(ProjectInfo.Create(consumerId, VersionStamp.Create(), "Consumer", "Consumer", LanguageNames.CSharp)
+                .WithMetadataReferences([corlib]));
+
+        foreach (var name in new[] { "LibA", "LibB", "LibC", "Unused" })
+        {
+            var libId = ProjectId.CreateNewId(name);
+            solution = solution
+                .AddProject(ProjectInfo.Create(libId, VersionStamp.Create(), name, name, LanguageNames.CSharp))
+                .AddDocument(DocumentId.CreateNewId(libId), "Type.cs", SourceText.From($"namespace {name}; public sealed class Type {{ }}"))
+                .AddProjectReference(consumerId, new ProjectReference(libId));
+        }
+
+        foreach (var name in new[] { "LibA", "LibB", "LibC" })
+        {
+            solution = solution.AddDocument(DocumentId.CreateNewId(consumerId), $"Uses{name}.cs", SourceText.From(
+                $"namespace Consumer; public static class Uses{name} {{ public static {name}.Type? Create() => null; }}"));
+        }
+
+        var usedAssemblies = await SymbolUsageCollector.CollectUsedAssembliesAsync(solution.GetProject(consumerId)!, CancellationToken.None);
+
+        usedAssemblies.Select(static a => a.Name).Should().Contain(["LibA", "LibB", "LibC"]).And.NotContain("Unused");
+    }
 }
