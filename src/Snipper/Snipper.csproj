@@ -27,11 +27,23 @@
          deltas under ~5% wall as noise on this box.
 
          Re-enable with DOTNET_TieredPGO=1 if a future workload regresses. TieredCompilation
-         itself stays ON: disabling it costs 27% on a run this short. Server GC was measured
-         and is NOT enabled - neutral-to-worse here, because startup cost dominates a
-         single-shot process. See docs/code_architecture.md. -->
+         itself stays ON: disabling it costs 27% on a run this short.
+
+         Server GC is ENABLED. An earlier measurement on small targets (Cscli 7.91 -> 8.79s)
+         rejected it because startup dominated; on a large solution the fan-out is GC-bound
+         instead. Under workstation GC, MILKRUN's SNP0005/6 reference searches spent 34-41%
+         of their wall time in gen0 pauses (~3,100 collections) and the process used ~7.5 of
+         16 logical cores. Server GC (with .NET 10's DATAS sizing) measured, alternating:
+
+             target              analysis        wall           peak WS   GC pause share
+             MILKRUN (full)    ~93 -> ~58.5s   ~112 -> ~77s     ~2.6GB      41% -> 5%
+             Snipper.slnx      6.8 -> 5.7s     8.9 -> 7.7s    +~120MB
+
+         Reports are byte-identical. Revert with DOTNET_gcServer=0 if a memory-constrained
+         host needs it. See docs/code_architecture.md. -->
     <PropertyGroup>
       <TieredPGO>false</TieredPGO>
+      <ServerGarbageCollection>true</ServerGarbageCollection>
     </PropertyGroup>
 
   <!-- .NET global tool packaging -->

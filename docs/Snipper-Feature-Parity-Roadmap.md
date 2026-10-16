@@ -191,7 +191,9 @@ findings gate the cut. Full detail, measurements and honest gaps in
   worth doing: **−2.9% to −18.1% wall, −7.8% to −25.3% CPU** across six targets, with the
   `findings` array byte-identical on all six.
 - **Two hypotheses measured and rejected** so they are not retried: Server GC (worse — startup
-  dominates a single-shot process) and `TieredCompilation=0` (+27% worse).
+  dominates a single-shot process) and `TieredCompilation=0` (+27% worse). *Server GC was later
+  re-measured on a large solution and enabled: there the fan-out is GC-bound and it cut analysis
+  time ~37% (see `docs/code_architecture.md`).*
 - **Methodology note, because it changes how future perf claims must be made:** non-interleaved
   before/after comparison is not evidence on this class of machine — one verified improvement
   measured 3.8% *slower* non-interleaved, and identical binaries differed >2× under load.

@@ -939,10 +939,25 @@ optimised code saves:
 CPU falls further and more consistently than wall clock, which is the signature of less work rather
 than rescheduling. Override with `DOTNET_TieredPGO=1` if a future workload regresses.
 
-Two knobs were measured and **rejected**, which is worth recording so nobody re-litigates them:
+**Server GC is on** (`ServerGarbageCollection` in `Snipper.csproj`). It was first measured on small
+targets and rejected - neutral to *worse* (Cscli 7.91 -> 8.79 s), because startup cost dominates a
+single-shot process that short. On a large solution the picture reverses: the analyser fan-out is
+**GC-bound**, not CPU-bound. Under workstation GC every gen0 collection suspends all sixteen search
+threads, and on MILKRUN the SNP0005/6 reference-search phase spent 34-41% of its wall time in GC
+pauses (~3,100 gen0 collections) while the process averaged ~7.5 of 16 logical cores. Measured
+alternating:
 
-- **Server GC** - neutral to *worse* (Cscli 7.91 -> 8.79 s). Startup cost dominates a single-shot
-  process.
+| Target | analysis | wall | peak working set | GC pause share (SNP0005/6 phase B) |
+| --- | --- | --- | --- | --- |
+| MILKRUN (full, `--duplicate-detection`) | ~93 -> ~58.5 s | ~112 -> ~77 s | ~2.6 GB, unchanged | 41% -> 5% |
+| Snipper.slnx | 6.8 -> 5.7 s | 8.9 -> 7.7 s | +~120 MB | - |
+
+Reports are byte-identical. .NET 10's DATAS sizing keeps the server-GC heap close to workstation
+size. Override with `DOTNET_gcServer=0` on a memory-constrained host. Before calling any run
+CPU-bound, check `GC.GetTotalPauseDuration()` against wall time.
+
+One knob was measured and **rejected**, which is worth recording so nobody re-litigates it:
+
 - **`TieredCompilation=0`** - **+27% worse**. Disabling tiered JIT entirely is far too expensive for
   a 7-second run.
 
