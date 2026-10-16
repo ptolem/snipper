@@ -852,9 +852,25 @@ var locations = await referenceSearch.FindAsync(symbol, cancellationToken); // o
 ```
 
 The first rule to ask starts the search, and every later one, including one that arrives while it is
-still running, awaits the same result. Sharing costs nothing in precision: the search cannot stop at
-its first hit, so a rule that only wants "any reference?" already paid for all of them. The start,
-join and cancellation rules are `SolutionIndexCache<T>`'s, from the `SharedTask<T>` they both use.
+still running, awaits the same result. The start, join and cancellation rules are
+`SolutionIndexCache<T>`'s, from the `SharedTask<T>` they both use.
+
+`HasAnyAsync` does not wait for every location. Unless a full search for the symbol is already
+running, it starts one of its own through `FindReferencesAsync`'s `IFindReferencesProgress`
+overload and cancels it at the first `OnReferenceFound`, and that answer is memoized separately.
+Roslyn builds the full result from the same progress reports, so the answer is the same. It matters
+because almost every candidate SNP0005/6 searches turns out to be used: on MILKRUN, searches that
+found a reference were 93% of SNP0005/6's search time. Some were extreme. Each `Equals(T)` search
+cascades through `IEquatable<T>` to every `Equals` call in the solution, taking about 18 s. Measured
+alternating, 4 rounds, with byte-identical reports:
+
+| Target | SNP0005/6 | analysis | wall |
+| --- | --- | --- | --- |
+| MILKRUN (full, `--duplicate-detection`) | 46.4 -> 24.9 s | 58.8 -> 48.0 s | 77.7 -> 67.1 s |
+| Snipper.slnx | unchanged (~1.9 s) | unchanged (~5.6 s) | unchanged |
+
+The package analysers (`ProjectPackageUsageCache`), not SNP0005/6, are now the last to finish on
+MILKRUN.
 
 The documents to search are decided inside `ReferenceSearch`, from the symbol alone, which is what
 makes one result per symbol sound:

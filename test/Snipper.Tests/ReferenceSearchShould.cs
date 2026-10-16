@@ -187,6 +187,47 @@ public sealed class ReferenceSearchShould
         (await search.FindAsync(show, CancellationToken.None)).Should().NotBeEmpty();
     }
 
+    [Fact]
+    public async Task Answer_Any_Reference_The_Same_Way_The_Full_Search_Does()
+    {
+        // HasAnyAsync runs on a solution of its own, so it takes the stopping path rather
+        // than reusing a full search; FindAsync on a second solution is the yardstick.
+        var (anySolution, anyLib) = await BuildAsync(friends: false);
+        var (allSolution, allLib) = await BuildAsync(friends: false);
+        var anySearch = await ReferenceSearch.GetAsync(anySolution, CancellationToken.None);
+        var allSearch = await ReferenceSearch.GetAsync(allSolution, CancellationToken.None);
+        var pick = new Func<Compilation, ISymbol>[]
+        {
+            static c => Member(c, "Lib.Visible", "Show"),
+            static c => Member(c, "Lib.Visible", "_count"),
+            static c => Member(c, "Lib.Hidden", "Run"),
+            static c => Member(c, "Lib.FetcherBase", "Fetch"),
+            static c => c.GetTypeByMetadataName("Lib.Marked")!,
+            static c => c.GetTypeByMetadataName("Lib.Uses")!,
+        };
+
+        foreach (var symbolIn in pick)
+        {
+            var any = await anySearch.HasAnyAsync(symbolIn(anyLib), CancellationToken.None);
+            var all = await allSearch.FindAsync(symbolIn(allLib), CancellationToken.None);
+
+            any.Should().Be(!all.IsEmpty, "HasAnyAsync must agree with FindAsync for {0}", symbolIn(anyLib).Name);
+        }
+    }
+
+    [Fact]
+    public async Task Answer_Any_Reference_Again_After_A_Cancelled_Search()
+    {
+        var (solution, lib) = await BuildAsync(friends: false);
+        var search = await ReferenceSearch.GetAsync(solution, CancellationToken.None);
+        var show = Member(lib, "Lib.Visible", "Show");
+
+        var cancelled = () => search.HasAnyAsync(show, new CancellationToken(canceled: true));
+        await cancelled.Should().ThrowAsync<OperationCanceledException>();
+
+        (await search.HasAnyAsync(show, CancellationToken.None)).Should().BeTrue();
+    }
+
     private static ISymbol Member(Compilation compilation, string typeName, string memberName)
     {
         return compilation.GetTypeByMetadataName(typeName)!.GetMembers(memberName).Single();
