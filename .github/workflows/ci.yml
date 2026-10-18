@@ -29,7 +29,20 @@ jobs:
         run: dotnet build Snipper.slnx -c Release --no-restore
 
       - name: Test
-        run: dotnet test Snipper.slnx -c Release --no-build
+        # `shell: bash` plus an explicit pipefail, because tee sits in the middle of the
+        # pipeline and the default Linux shell is `bash -e`, which does not set it. Without
+        # this a red suite would be logged and the step would still pass.
+        shell: bash
+        run: |
+          set -o pipefail
+          dotnet test Snipper.slnx -c Release --no-build 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      - name: Documented test count
+        # The suite count is restated by hand in five current-state documents, and a
+        # hand-restated number drifts - 714 sat in code_architecture.md for one above
+        # the real 713. Anchors are explicit, so the historical counts these documents
+        # also carry ("127 tests", "~560 tests") are deliberately not gated.
+        run: pwsh -File scripts/check-documented-test-count.ps1 -TestOutputPath "$RUNNER_TEMP/test.log"
 
       - name: Vulnerable packages
         # Directory.Build.props keeps NuGet audit a warning so a newly published advisory does

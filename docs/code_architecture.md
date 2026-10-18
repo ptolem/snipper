@@ -5,7 +5,7 @@ memory, how analysers run, and how findings become a report — and, importantly
 must not break when adding to it.
 
 Written against the 1.16.0 tree, 15,922 lines of C# across 98 files in `src/Snipper` (21 registered
-analysers, 30 rule IDs, 714 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
+analysers, 30 rule IDs, 755 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
 Spectre.Console.
 
 For *using* the tool see the [usage guide](usage.md). For *why* the design is the way it is see
@@ -1321,6 +1321,16 @@ Each of these is load-bearing, and several exist because breaking them was measu
 - `test/Snipper.Tests/`, xUnit + FluentAssertions. 755 tests, ~2 min per run. The test sources
   themselves are 58 files / ~9,050 lines; the remainder of the tree is the `TestAssets/SampleApp`
   fixture the analyser tests run against.
+- **The documented count is gated in CI, because a hand-restated number drifts.**
+  `scripts/check-documented-test-count.ps1` fails the build when any current-state document
+  disagrees with the suite. It exists because this file carried `714 tests` for a release whose
+  suite was 755 — and had previously carried `689`, the count that was correct when 1.14.0 shipped.
+  Five documents quote the live count and each is listed in the script's `$Anchors` with the exact
+  shape of its sentence, because these documents *also* carry historical counts that must stay
+  ungated ("Wave 1 SHIPPED as 1.2.0 (16 rules, 127 tests)", "581 tests still passed"). A scan for
+  `/N tests/` would fail on all of them. If an anchor stops matching the script fails rather than
+  passing quietly, so rewording a sentence cannot switch the gate off. Run it locally with no
+  arguments to have it execute the suite itself.
 - **The fixture must compile, and that is asserted.** `FixtureBuildShould` builds every project in
   `SampleApp` and fails on any diagnostic. Before it existed, `SampleApp` carried 8 compile defects
   (duplicate `JsonIncludeAttribute`, five `CS0122` on internal fixtures, a void call bound to a
