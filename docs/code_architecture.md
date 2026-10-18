@@ -4,7 +4,7 @@ A map of the codebase for people who want to contribute to it. It explains how S
 memory, how analysers run, and how findings become a report — and, importantly, which invariants you
 must not break when adding to it.
 
-Written against the 1.14.0 tree, 15,632 lines of C# across 92 files in `src/Snipper` (21 registered
+Written against the 1.16.0 tree, 15,922 lines of C# across 98 files in `src/Snipper` (21 registered
 analysers, 30 rule IDs, 714 tests), zero third-party runtime dependencies beyond Roslyn, MSBuild, and
 Spectre.Console.
 
@@ -471,7 +471,7 @@ classDiagram
         +string FilePath
         +int LineNumber
         +int CharacterOffset
-        +ISymbol Symbol
+        +IReadOnlyList<RelatedLocation>? RelatedLocations
     }
 
     class CertaintyTier {
@@ -1318,8 +1318,8 @@ Each of these is load-bearing, and several exist because breaking them was measu
 
 ## Testing conventions
 
-- `test/Snipper.Tests/`, xUnit + FluentAssertions. 714 tests, ~2 min per run. The test sources
-  themselves are 55 files / ~8,560 lines; the remainder of the tree is the `TestAssets/SampleApp`
+- `test/Snipper.Tests/`, xUnit + FluentAssertions. 755 tests, ~2 min per run. The test sources
+  themselves are 58 files / ~9,050 lines; the remainder of the tree is the `TestAssets/SampleApp`
   fixture the analyser tests run against.
 - **The fixture must compile, and that is asserted.** `FixtureBuildShould` builds every project in
   `SampleApp` and fails on any diagnostic. Before it existed, `SampleApp` carried 8 compile defects
